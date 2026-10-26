@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UnderwriteIQ — Guideline Intelligence Workspace</title>
+<style>
+  :root {
+    --forest-900: #152b26;
+    --forest-800: #1c3a32;
+    --forest-700: #245048;
+    --forest-600: #1f5c4d;
+    --forest-100: #e3efe9;
+    --accent-soft: #8fd6b4;
+    --ink: #1c2321;
+    --muted: #5c6b66;
+    --line: #dfe7e2;
+    --panel: #f4f7f5;
+    --white: #ffffff;
+    --error-bg: #fdecea;
+    --error-ink: #8f1d22;
+    --warn-bg: #fdf3d7;
+    --warn-ink: #7a5b00;
+    --ok-bg: #e3f2e8;
+    --ok-ink: #1d5c34;
+    --info-bg: #e0edf7;
+    --info-ink: #144a7c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    font-size: 0.92rem;
+    line-height: 1.5;
+    background: var(--white);
+  }
+  .app { display: flex; min-height: 100vh; }
+
+  /* ---- Sidebar ---- */
+  .sidebar {
+    width: 264px;
+    flex-shrink: 0;
+    background: var(--forest-800);
+    color: #e8efec;
+    display: flex;
+    flex-direction: column;
+    padding: 1.25rem 1rem;
+    gap: 1.25rem;
+  }
+  .brand { display: flex; align-items: center; gap: 0.65rem; }
+  .brand-mark {
+    width: 2.1rem;
+    height: 2.1rem;
+    border-radius: 8px;
+    background: var(--accent-soft);
+    color: var(--forest-900);
+    font-weight: 800;
+    font-size: 1.1rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .brand-name { font-weight: 700; font-size: 1.02rem; letter-spacing: 0.01em; }
+  .brand-tag { font-size: 0.74rem; color: #9db5ac; }
+  .steps-label { font-size: 0.72rem; font-weight: 600; color: #9db5ac; margin: 0 0 0.5rem 0.25rem; }
+  .steps { display: flex; flex-direction: column; gap: 0.15rem; }
+  .step {
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    padding: 0.5rem 0.6rem;
+    border-radius: 8px;
+    color: #c9d8d1;
+    text-decoration: none;
+  }
+  .step strong { display: block; font-size: 0.86rem; font-weight: 600; }
+  .step small { display: block; font-size: 0.72rem; color: #9db5ac; }
+  .step .num {
+    width: 1.55rem;
+    height: 1.55rem;
+    border-radius: 50%;
+    border: 1.5px solid #5f7d74;
+    color: #9db5ac;
+    font-size: 0.78rem;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .step.active { background: rgba(255, 255, 255, 0.08); color: #ffffff; }
+  .step.active .num { border-color: var(--accent-soft); color: var(--accent-soft); }
+  .step.active small { color: #c9d8d1; }
+  .step.done .num { background: var(--accent-soft); border-color: var(--accent-soft); color: var(--forest-900); }
+  .step.done .num::before { content: "✓"; font-size: 0.8rem; }
+  .step.done .num span { display: none; }
+  .side-foot { margin-top: auto; display: flex; flex-direction: column; gap: 0.6rem; font-size: 0.78rem; }
+  .side-job { color: #9db5ac; border-top: 1px solid rgba(255, 255, 255, 0.14); padding-top: 0.6rem; }
+  .side-job:empty { display: none; }
+
+  /* ---- Workspace ---- */
+  .workspace { flex: 1; min-width: 0; padding: 1.5rem 2rem 4rem; max-width: 1080px; }
+  .topbar h1 { font-size: 1.35rem; margin: 0; font-weight: 700; letter-spacing: -0.01em; }
+  .topbar .sub { color: var(--muted); margin: 0.2rem 0 0; font-size: 0.88rem; }
+  section { margin-top: 1.5rem; }
+  section > h2 {
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+    font-size: 1rem;
+    margin: 0 0 0.75rem;
+    padding-bottom: 0.45rem;
+    border-bottom: 2px solid var(--forest-800);
+  }
+  section > h2 .step-no {
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: var(--white);
+    background: var(--forest-800);
+    border-radius: 6px;
+    padding: 0.1rem 0.45rem;
+  }
+  section > h2 .hint { font-size: 0.78rem; font-weight: 400; color: var(--muted); margin-left: auto; }
+
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 1rem 1.1rem; }
+  .row { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }
+
+  button {
+    padding: 0.5rem 1rem;
+    border-radius: 7px;
+    border: 1px solid #9fb3aa;
+    background: var(--white);
+    color: var(--ink);
+    font: inherit;
+    font-size: 0.86rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button.primary { background: var(--forest-600); border-color: var(--forest-600); color: #fff; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible,
+  summary:focus-visible, a:focus-visible {
+    outline: 2px solid #2f7d62;
+    outline-offset: 2px;
+  }
+  input[type="file"] { font: inherit; font-size: 0.84rem; color: var(--muted); }
+  input[type="file"]::file-selector-button {
+    font: inherit;
+    font-weight: 600;
+    padding: 0.45rem 0.8rem;
+    margin-right: 0.7rem;
+    border-radius: 7px;
+    border: 1px solid #9fb3aa;
+    background: var(--white);
+    cursor: pointer;
+  }
+
+  #status { margin-top: 0.8rem; font-size: 0.87rem; border-radius: 7px; }
+  #status:empty { display: none; }
+  #status:not(:empty) { background: var(--info-bg); color: var(--info-ink); padding: 0.55rem 0.8rem; }
+  #status.error { background: var(--error-bg); color: var(--error-ink); padding: 0.55rem 0.8rem; }
+
+  /* ---- Job facts ---- */
+  .facts { display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: stretch; }
+  .fact {
+    background: var(--white);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 0.45rem 0.8rem;
+    min-width: 7rem;
+  }
+  .fact .k { font-size: 0.7rem; color: var(--muted); }
+  .fact .v { font-size: 0.92rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+
+  /* ---- Pills & chips ---- */
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.74rem;
+    font-weight: 650;
+    border-radius: 999px;
+    padding: 0.15rem 0.65rem;
+    white-space: nowrap;
+  }
+  .pill.warning { background: var(--warn-bg); color: var(--warn-ink); }
+  .pill.error { background: var(--error-bg); color: var(--error-ink); }
+  .pill.recorded, .pill.ok { background: var(--ok-bg); color: var(--ok-ink); }
+  .pill.live, .pill.info { background: var(--info-bg); color: var(--info-ink); }
+  .pill.neutral { background: #edf1ee; color: #3d4a46; }
+  .id-chip {
+    font-size: 0.74rem;
+    font-weight: 700;
+    background: var(--forest-800);
+    color: #fff;
+    border-radius: 6px;
+    padding: 0.15rem 0.5rem;
+    flex-shrink: 0;
+    font-variant-numeric: tabular-nums;
+  }
+  .page-chip {
+    font-size: 0.74rem;
+    font-weight: 600;
+    color: var(--forest-600);
+    background: var(--forest-100);
+    border-radius: 6px;
+    padding: 0.15rem 0.5rem;
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+
+  /* ---- Requirement cards ---- */
+  .card {
+    background: var(--white);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 0.9rem 1rem;
+    margin-top: 0.8rem;
+  }
+  .card-head { display: flex; align-items: center; gap: 0.6rem; }
+  .title-input {
+    flex: 1;
+    border: none;
+    border-bottom: 1px dashed transparent;
+    font: inherit;
+    font-weight: 650;
+    font-size: 0.95rem;
+    padding: 0.15rem 0.1rem;
+    min-width: 0;
+  }
+  .title-input:hover { border-bottom-color: #b9c7c1; }
+  .evidence { margin-top: 0.55rem; }
+  .evidence summary {
+    cursor: pointer;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--forest-600);
+  }
+  .evidence-body {
+    margin: 0.4rem 0 0;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    padding: 0.55rem 0.7rem;
+    font-size: 0.82rem;
+    color: #33403c;
+  }
+  .table-wrap { overflow-x: auto; margin-top: 0.6rem; border: 1px solid var(--line); border-radius: 8px; }
+  table.grid { border-collapse: collapse; width: 100%; font-size: 0.84rem; font-variant-numeric: tabular-nums; }
+  table.grid th {
+    background: var(--forest-800);
+    color: #fff;
+    text-align: left;
+    padding: 0.4rem 0.5rem;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  table.grid td { border-top: 1px solid var(--line); padding: 0.3rem 0.5rem; }
+  table.grid tbody tr:nth-child(even) { background: #fafcfb; }
+  table.grid input {
+    width: 100%;
+    border: none;
+    background: transparent;
+    font: inherit;
+    padding: 0.1rem;
+    min-width: 4rem;
+  }
+  table.grid th input { color: #fff; font-weight: 600; }
+
+  .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 0.9rem; margin-top: 0.4rem; }
+  .field-grid .full { grid-column: 1 / -1; }
+  label.field { display: block; font-size: 0.76rem; font-weight: 600; color: var(--muted); margin-top: 0.6rem; }
+  label.field input[type="text"], label.field textarea, label.field select {
+    display: block;
+    width: 100%;
+    margin-top: 0.25rem;
+    font: inherit;
+    font-weight: 400;
+    font-size: 0.86rem;
+    color: var(--ink);
+    border: 1px solid #c3d0c9;
+    border-radius: 7px;
+    padding: 0.4rem 0.55rem;
+    background: var(--white);
+  }
+  label.field textarea { min-height: 3.4rem; resize: vertical; }
+  .mono { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 0.82rem; }
+
+  /* ---- Issues ---- */
+  .issue {
+    display: flex;
+    gap: 0.6rem;
+    align-items: baseline;
+    background: var(--warn-bg);
+    border-radius: 8px;
+    padding: 0.55rem 0.75rem;
+    margin-top: 0.45rem;
+    font-size: 0.86rem;
+  }
+  .issue.error { background: var(--error-bg); }
+  .issue .msg { flex: 1; min-width: 0; }
+  .issue code { font-size: 0.78rem; color: var(--muted); }
+  .empty-note { color: var(--muted); font-size: 0.87rem; }
+  .actions { display: flex; gap: 0.7rem; margin-top: 0.9rem; flex-wrap: wrap; }
+
+  @media (max-width: 900px) {
+    .app { flex-direction: column; }
+    .sidebar { width: auto; flex-direction: column; }
+    .steps { flex-direction: row; overflow-x: auto; }
+    .step small { display: none; }
+    .workspace { padding: 1rem 1rem 3rem; }
+    .field-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">U</div>
+      <div>
+        <div class="brand-name">UnderwriteIQ</div>
+        <div class="brand-tag">Guideline intelligence</div>
+      </div>
+    </div>
+    <nav aria-label="Workflow">
+      <p class="steps-label">Workflow</p>
+      <div class="steps">
+        <a class="step" data-step="1" href="#upload"><span class="num"><span>1</span></span><span><strong>Upload</strong><small>Guideline PDF</small></span></a>
+        <a class="step" data-step="2" href="#jobSection"><span class="num"><span>2</span></span><span><strong>Extract</strong><small>Tables &amp; routines</small></span></a>
+        <a class="step" data-step="3" href="#tablesSection"><span class="num"><span>3</span></span><span><strong>Tables</strong><small>Rating tables</small></span></a>
+        <a class="step" data-step="4" href="#routinesSection"><span class="num"><span>4</span></span><span><strong>Routines</strong><small>Formulas &amp; steps</small></span></a>
+        <a class="step" data-step="5" href="#reviewSection"><span class="num"><span>5</span></span><span><strong>Validate &amp; export</strong><small>Issues &amp; Excel</small></span></a>
+      </div>
+    </nav>
+    <div class="side-foot">
+      <span id="modelBadge"></span>
+      <div id="sideJob" class="side-job"></div>
+    </div>
+  </aside>
+
+  <main class="workspace">
+    <header class="topbar">
+      <h1>UnderwriteIQ</h1>
+      <p class="sub">Turn underwriting guideline PDFs into traceable rating requirements — review tables &amp; routines against their source evidence, then export to Excel.</p>
+    </header>
+
+    <section id="upload">
+      <h2><span class="step-no">1</span> Upload <span class="hint">One guideline PDF per run</span></h2>
+      <div class="panel">
+        <div class="row">
+          <input type="file" id="file" accept="application/pdf">
+          <button id="uploadBtn" class="primary">Extract from PDF</button>
+          <button id="sampleBtn">Load sample guideline (offline)</button>
+        </div>
+        <div id="status" role="status"></div>
+      </div>
+    </section>
+
+    <section id="jobSection" hidden>
+      <h2><span class="step-no">2</span> Extraction <span class="hint">Source document &amp; totals</span></h2>
+      <div id="jobSummary"></div>
+    </section>
+
+    <section id="tablesSection" hidden>
+      <h2><span class="step-no">3</span> Rating tables <span class="hint">Click any cell to correct it before export</span></h2>
+      <div id="tables"></div>
+    </section>
+
+    <section id="routinesSection" hidden>
+      <h2><span class="step-no">4</span> Rating routines <span class="hint">Formulas, conditions, calculation steps</span></h2>
+      <div id="routines"></div>
+    </section>
+
+    <section id="reviewSection" hidden>
+      <h2><span class="step-no">5</span> Review &amp; export <span class="hint">Deterministic validation — no model calls</span></h2>
+      <div id="issues"></div>
+      <div class="actions">
+        <button id="saveBtn" class="primary">Save edits &amp; re-validate</button>
+        <button id="exportBtn">Export Excel</button>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+let state = null; // { id, job, source }
+
+const $ = (id) => document.getElementById(id);
+function setStatus(msg, isError = false) {
+  const el = $('status');
+  el.textContent = msg;
+  el.className = isError ? 'error' : '';
+}
+function esc(s) {
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function pagesLabel(pages) {
+  return (pages && pages.length > 0) ? `p. ${pages.join(', ')}` : 'p. —';
+}
+
+async function init() {
+  try {
+    const res = await fetch('/api/health');
+    const health = await res.json();
+    $('modelBadge').innerHTML = health.modelEnabled
+      ? '<span class="pill live">Meta model: enabled</span>'
+      : '<span class="pill recorded">Meta model: disabled (offline demo)</span>';
+  } catch { $('modelBadge').textContent = ''; }
+  updateSteps();
+}
+
+function updateSteps() {
+  // Presentational only: extraction done once a job exists; review/export is current.
+  document.querySelectorAll('.step').forEach((el) => {
+    const n = Number(el.dataset.step);
+    el.classList.toggle('done', !!state && n <= 4);
+    el.classList.toggle('active', (!state && n === 1) || (!!state && n === 5));
+  });
+}
+
+function render() {
+  if (!state) return;
+  const { id, job, source } = state;
+  $('jobSection').hidden = false;
+  $('tablesSection').hidden = false;
+  $('routinesSection').hidden = false;
+  $('reviewSection').hidden = false;
+  updateSteps();
+  const errors = job.issues.filter((i) => i.severity === 'error').length;
+  const warnings = job.issues.filter((i) => i.severity === 'warning').length;
+  $('jobSummary').innerHTML =
+    `<div class="facts">` +
+    `<div class="fact"><div class="k">Source</div><div class="v"><span class="pill ${esc(source)}">${esc(source)}</span></div></div>` +
+    `<div class="fact"><div class="k">Document</div><div class="v">${esc(job.document.filename)}</div></div>` +
+    `<div class="fact"><div class="k">Pages</div><div class="v">${esc(job.document.page_count)}</div></div>` +
+    `<div class="fact"><div class="k">Tables</div><div class="v">${job.tables.length}</div></div>` +
+    `<div class="fact"><div class="k">Routines</div><div class="v">${job.routines.length}</div></div>` +
+    `<div class="fact"><div class="k">Errors</div><div class="v">${errors}</div></div>` +
+    `<div class="fact"><div class="k">Warnings</div><div class="v">${warnings}</div></div>` +
+    `</div>`;
+  $('sideJob').textContent = `${job.document.filename} · ${job.tables.length} tables · ${job.routines.length} routines · job ${id.slice(0, 8)}`;
+
+  $('tables').innerHTML = job.tables.map((t, ti) => `
+    <div class="card" data-table="${ti}">
+      <div class="card-head">
+        <span class="id-chip">${esc(t.id)}</span>
+        <input class="title-input" type="text" data-f="name" value="${esc(t.name)}" aria-label="table name">
+        <span class="page-chip">${esc(pagesLabel(t.source_pages))}</span>
+      </div>
+      <details class="evidence"><summary>Source evidence</summary><p class="evidence-body">${esc(t.evidence_text || '—')}</p></details>
+      <div class="table-wrap"><table class="grid"><thead><tr>
+        ${t.headers.map((h, hi) => `<th><input type="text" data-h="${hi}" value="${esc(h)}" aria-label="header ${hi + 1}"></th>`).join('')}
+      </tr></thead><tbody>
+        ${t.rows.map((row, ri) => `<tr>${row.map((cell, ci) => `<td><input type="text" data-r="${ri}" data-c="${ci}" value="${esc(cell)}" aria-label="row ${ri + 1} column ${ci + 1}"></td>`).join('')}</tr>`).join('')}
+      </tbody></table></div>
+    </div>`).join('') || '<p class="empty-note">No tables extracted.</p>';
+
+  const kindLabels = { formula: 'Formula', condition: 'Condition', calculation_steps: 'Calculation steps' };
+  $('routines').innerHTML = job.routines.map((r, ri) => `
+    <div class="card" data-routine="${ri}">
+      <div class="card-head">
+        <span class="id-chip">${esc(r.id)}</span>
+        <input class="title-input" type="text" data-f="name" value="${esc(r.name)}" aria-label="routine name">
+        <span class="page-chip">${esc(pagesLabel(r.source_pages))}</span>
+      </div>
+      <details class="evidence"><summary>Source evidence</summary><p class="evidence-body">${esc(r.evidence_text || '—')}</p></details>
+      <div class="field-grid">
+        <label class="field">Kind
+          <select data-f="kind">
+            ${['formula', 'condition', 'calculation_steps'].map((k) => `<option value="${k}"${k === r.kind ? ' selected' : ''}>${kindLabels[k] || k}</option>`).join('')}
+          </select>
+        </label>
+        <label class="field">Notes <input type="text" data-f="notes" value="${esc(r.notes)}"></label>
+        <label class="field full">Expression <input class="mono" type="text" data-f="expression_text" value="${esc(r.expression_text)}"></label>
+        <label class="field">Conditions (one per line) <textarea data-f="conditions">${esc(r.conditions.join('\n'))}</textarea></label>
+        <label class="field">Steps (one per line) <textarea data-f="steps">${esc(r.steps.join('\n'))}</textarea></label>
+        <label class="field full">Depends on (one per line) <textarea data-f="depends_on" style="min-height:2.2rem;">${esc(r.depends_on.join('\n'))}</textarea></label>
+      </div>
+    </div>`).join('') || '<p class="empty-note">No routines extracted.</p>';
+
+  $('issues').innerHTML = job.issues.map((i) => `
+    <div class="issue ${i.severity}"><span class="pill ${i.severity}">${esc(i.severity)}</span>
+    <span class="msg"><strong>${esc(i.id)}</strong> ${esc(i.message)} <code>[${esc(i.target_type)} ${esc(i.target_id)}]</code></span>
+    <span class="page-chip">${esc(pagesLabel(i.source_pages))}</span></div>`).join('')
+    || '<p class="empty-note">No validation issues.</p>';
+}
+
+function collectEdits() {
+  const tables = [...document.querySelectorAll('[data-table]')].map((card, ti) => {
+    const orig = state.job.tables[ti];
+    const headers = [...card.querySelectorAll('[data-h]')].map((el) => el.value);
+    const rowCount = orig.rows.length;
+    const colCount = orig.rows[0] ? orig.rows[0].length : 0;
+    const rows = [];
+    for (let r = 0; r < rowCount; r += 1) {
+      const row = [];
+      for (let c = 0; c < colCount; c += 1) {
+        row.push(card.querySelector(`[data-r="${r}"][data-c="${c}"]`).value);
+      }
+      rows.push(row);
+    }
+    return { ...orig, name: card.querySelector('[data-f="name"]').value, headers, rows };
+  });
+  const routines = [...document.querySelectorAll('[data-routine]')].map((card, ri) => {
+    const orig = state.job.routines[ri];
+    const lines = (key) => card.querySelector(`[data-f="${key}"]`).value.split('\n').map((s) => s.trim()).filter(Boolean);
+    return {
+      ...orig,
+      name: card.querySelector('[data-f="name"]').value,
+      kind: card.querySelector('[data-f="kind"]').value,
+      expression_text: card.querySelector('[data-f="expression_text"]').value,
+      conditions: lines('conditions'),
+      steps: lines('steps'),
+      depends_on: lines('depends_on'),
+      notes: card.querySelector('[data-f="notes"]').value,
+    };
+  });
+  return { tables, routines };
+}
+
+async function loadJobPayload(res) {
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(payload.error || `Request failed (${res.status})`);
+  return payload;
+}
+
+$('sampleBtn').addEventListener('click', async () => {
+  setStatus('Loading sample guideline…');
+  try {
+    const res = await fetch('/api/demo/sample', { method: 'POST' });
+    state = await loadJobPayload(res);
+    render();
+    setStatus('Sample loaded. Review below, then export.');
+  } catch (err) { setStatus(err.message, true); }
+});
+
+$('uploadBtn').addEventListener('click', async () => {
+  const file = $('file').files[0];
+  if (!file) { setStatus('Choose a PDF first.', true); return; }
+  setStatus('Uploading and extracting…');
+  try {
+    const res = await fetch('/api/jobs', {
+      method: 'POST',
+      headers: { 'content-type': 'application/pdf', 'x-filename': file.name },
+      body: file,
+    });
+    state = await loadJobPayload(res);
+    render();
+    setStatus('Extraction complete. Review below, then export.');
+  } catch (err) { setStatus(err.message, true); }
+});
+
+$('saveBtn').addEventListener('click', async () => {
+  if (!state) return;
+  setStatus('Saving and re-validating…');
+  try {
+    const res = await fetch(`/api/jobs/${state.id}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(collectEdits()),
+    });
+    state = await loadJobPayload(res);
+    render();
+    setStatus('Saved. Validation re-ran deterministically (no model call).');
+  } catch (err) { setStatus(err.message, true); }
+});
+
+$('exportBtn').addEventListener('click', () => {
+  if (!state) return;
+  window.location.href = `/api/jobs/${state.id}.xlsx`;
+});
+
+init();
+</script>
+</body>
+</html>

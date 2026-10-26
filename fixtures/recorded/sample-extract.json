@@ -1,0 +1,67 @@
+{
+  "comment": "Recorded extraction for fixtures/sample-guideline.pdf. Offline stand-in until the Meta API key is configured. G1 uses unfamiliar syntax on purpose to exercise review-flagging.",
+  "tables": [
+    {
+      "name": "Table 1 - Base Rate by Driver Class",
+      "source_pages": [1],
+      "evidence_text": "Table 1 - Base Rate by Driver Class (annual, $) | Driver Class | Base Rate | Preferred | 480 | Standard | 620 | High Risk | 940",
+      "headers": ["Driver Class", "Base Rate"],
+      "rows": [["Preferred", "480"], ["Standard", "620"], ["High Risk", "940"]],
+      "notes": "Annual base rates in dollars."
+    },
+    {
+      "name": "Table 2 - Territory Factor",
+      "source_pages": [2],
+      "evidence_text": "Table 2 - Territory Factor (2026 schedule) | Territory | Factor | T01 Urban Core | 1.35 | T02 Suburban North | 1.10 | T03 Rural – South | 0.92",
+      "headers": ["Territory", "Factor"],
+      "rows": [["T01 Urban Core", "1.35"], ["T02 Suburban North", "1.10"], ["T03 Rural – South", "0.92"]],
+      "notes": "2026 schedule."
+    }
+  ],
+  "routines": [
+    {
+      "name": "B1 - Base premium formula",
+      "kind": "formula",
+      "source_pages": [1],
+      "evidence_text": "Routine B1 - Base premium formula: base_premium = base_rate * territory_factor",
+      "expression_text": "base_premium = base_rate * territory_factor",
+      "conditions": [],
+      "steps": [],
+      "depends_on": ["Table 1 - Base Rate by Driver Class", "Table 2 - Territory Factor"],
+      "notes": "Applies to all new business."
+    },
+    {
+      "name": "T1 - Territory eligibility condition",
+      "kind": "condition",
+      "source_pages": [2],
+      "evidence_text": "Routine T1 - Territory eligibility condition: IF territory IN (T01, T02, T03) THEN apply Table 2 factor ELSE refer to underwriter (code REF-TERR).",
+      "expression_text": "",
+      "conditions": ["IF territory IN (T01, T02, T03) THEN apply Table 2 factor", "ELSE refer to underwriter (code REF-TERR)"],
+      "steps": [],
+      "depends_on": ["Table 2 - Territory Factor"],
+      "notes": ""
+    },
+    {
+      "name": "F1 - Final premium calculation",
+      "kind": "calculation_steps",
+      "source_pages": [3],
+      "evidence_text": "Routine F1 - Final premium calculation steps: Step 1: Look up base_rate from Table 1 ... Step 4: Round final_premium to the nearest dollar.",
+      "expression_text": "final_premium = base_premium + policy_fee",
+      "conditions": [],
+      "steps": ["Look up base_rate from Table 1 using driver class.", "Look up territory_factor from Table 2 using territory.", "final_premium = base_premium + policy_fee, where policy_fee = 25.", "Round final_premium to the nearest dollar."],
+      "depends_on": ["B1 - Base premium formula", "T1 - Territory eligibility condition"],
+      "notes": "policy_fee = 25."
+    },
+    {
+      "name": "G1 - Legacy surcharge note",
+      "kind": "formula",
+      "source_pages": [3],
+      "evidence_text": "Routine G1 - Legacy surcharge note: APPLY legacy_matrix_v2 surcharge curve.",
+      "expression_text": "APPLY legacy_matrix_v2 surcharge curve",
+      "conditions": [],
+      "steps": [],
+      "depends_on": [],
+      "notes": "Unfamiliar syntax; needs analyst review."
+    }
+  ]
+}

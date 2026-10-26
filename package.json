@@ -1,0 +1,14 @@
+{
+  "name": "underwriteiq",
+  "version": "0.1.0",
+  "description": "Hackathon demo: extract rating tables and routines from underwriting guideline PDFs into traceable Excel.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/models.test.js tests/ingest.test.js tests/extract.test.js tests/validate.test.js tests/excel.test.js tests/pipeline.test.js tests/server.test.js",
+    "start": "node src/server.js",
+    "sample": "node scripts/make-sample-pdf.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
