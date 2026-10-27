@@ -2,13 +2,15 @@
 // Sheets: Cover, Table Summary, Routine Summary, Table Columns, one sheet
 // per rating table, one sheet per routine, Issues.
 // Rating-table sheets hold only the title, headers, and factor rows.
-// Routine sheets hold the name, identity details, then the rating execution
-// flow (inputs with sources, ordered steps, final calculation), followed by
-// conditions, dependencies, unresolved items, and source evidence.
+// Rating-routine sheets hold the name, identity details, and ordered rating
+// steps (Step, Instruction, Operation, Operand, Comment), followed by
+// conditions, unresolved items, and source evidence. Condition routines and
+// routines without steps or an expression keep the legacy layout (inputs,
+// final calculation, dependencies) so underwriting rules stay out of scope.
 // Cover and the summaries link each asset name to its detail worksheet.
 // Fixed ZIP timestamps keep builds byte-deterministic.
 import { deflateRawSync } from 'node:zlib';
-import { normalizeVariableKey, resolveTableReference, tableReferenceTerms } from './models.js';
+import { normalizeVariableKey, parseAssignmentOperands, resolveTableReference, tableReferenceTerms } from './models.js';
 
 // ---------- CRC32 + minimal ZIP writer ----------
 
@@ -483,12 +485,15 @@ function resolveInputSources(routine, routines, tables) {
   return out;
 }
 
-// Line Comment for one step: the lookup's table and result plus how each
+// Step comment for one entry: the lookup's table and result plus how each
 // input was produced — an earlier step in this routine or another routine's
 // output. Returns '' when nothing is traceable; unknown references stay
 // silent here because the validator flags them. priorOutputs maps normalized
 // output -> { seq, table } for earlier steps in order.
-function stepLineComment(step, routine, routines, tables, tableTerms, priorOutputs) {
+// Rating-routine sheets pass { lookupPrefix: false }: the table reference
+// already lives in the Operand column, so only the unresolved-table flag
+// and the uses-from traceability survive here.
+function stepComment(step, routine, routines, tables, tableTerms, priorOutputs, { lookupPrefix = true } = {}) {
   const det = step.det ?? null;
   const output = step.output || '';
   const parts = [];
@@ -506,12 +511,12 @@ function stepLineComment(step, routine, routines, tables, tableTerms, priorOutpu
     }
     const outputBit = output ? ` → ${output}` : '';
     if (resolved.length > 0) {
-      parts.push(`lookup ${resolved.map((t) => String(t.name ?? t.id ?? '')).join('; ')}${outputBit}`);
+      if (lookupPrefix) parts.push(`lookup ${resolved.map((t) => String(t.name ?? t.id ?? '')).join('; ')}${outputBit}`);
     } else if (mentions.length > 0) {
-      parts.push(`lookup "${mentions[0]}"${outputBit}`);
+      if (lookupPrefix) parts.push(`lookup "${mentions[0]}"${outputBit}`);
       flags.push('table unresolved — verify');
     } else if (output) {
-      parts.push(`lookup${outputBit}`);
+      if (lookupPrefix) parts.push(`lookup${outputBit}`);
     }
   }
   const routineTerms = new Set(
@@ -732,7 +737,7 @@ function selectFinalCalculation(routine, stepEntries, finalExpression) {
 // for formatting; routineSheetRows remains the single source of sheet content.
 const ROUTINE_SECTION_HEADERS = new Map([
   ['Inputs', ['Input', 'Source', 'Lookup keys']],
-  ['Steps', ['Step #', 'Instruction', 'Op', 'Operand', 'Line Comment']],
+  ['Steps', ['Step #', 'Instruction', 'Operation', 'Operand', 'Comment']],
   ['Final calculation', ['Calculation', 'Output']],
   ['Conditions', ['#', 'Condition', 'True branch', 'False branch', 'Referral code']],
   ['Dependencies', ['Target', 'Type', 'Explicit/Inferred', 'Variable / Keys']],
@@ -740,15 +745,10 @@ const ROUTINE_SECTION_HEADERS = new Map([
   ['Source evidence', null],
 ]);
 
-// One worksheet body per routine: name in A1 and identity details, then the
-// rating execution flow in order — Inputs (required variables with sources),
-// ordered Steps (lookups with keys and returned variables, then intermediate
-// calculations), and the Final calculation with its output — followed by the
-// clearly labelled Conditions, Dependencies, Unresolved items, and Source
-// evidence sections. Only available content is included; missing fields stay
-// blank and empty sections are omitted.
-function routineSheetRows(r, routineIssues, ctx = {}) {
-  const rows = [[String(r.name ?? '')]];
+// Shared routine-sheet sections used by both the rating-routine layout and the
+// legacy layout below. Extracted verbatim so the legacy output is unchanged.
+function pushRoutineHeader(rows, r) {
+  rows.push([String(r.name ?? '')]);
   const detail = (label, value) => {
     if (value !== '' && value !== null && value !== undefined) rows.push([label, String(value)]);
   };
@@ -757,6 +757,274 @@ function routineSheetRows(r, routineIssues, ctx = {}) {
   detail('Applicability', String(r.applicability ?? ''));
   detail('Execution context', String(r.execution_context ?? ''));
   detail('Notes', String(r.notes ?? ''));
+}
+
+function buildCondEntries(r) {
+  const conds = r.conditions ?? [];
+  const condDetailed = r.conditions_detailed ?? [];
+  const condAligned = condDetailed.length > 0 && condDetailed.length === conds.length;
+  const condCount = Math.max(conds.length, condDetailed.length);
+  const condEntries = [];
+  for (let idx = 0; idx < condCount; idx += 1) {
+    const text = idx < conds.length ? String(conds[idx] ?? '') : '';
+    const det = condAligned ? condDetailed[idx] : (idx < condDetailed.length ? condDetailed[idx] : null);
+    if (!text.trim() && !det) continue;
+    condEntries.push({
+      num: String(idx + 1),
+      condition: text || String(det?.condition ?? det?.original_text ?? ''),
+      trueBranch: String(det?.true_branch ?? ''),
+      falseBranch: String(det?.false_branch ?? ''),
+      referral: String(det?.referral_code ?? ''),
+      det,
+    });
+  }
+  return condEntries;
+}
+
+function pushConditionsSection(rows, condEntries) {
+  if (condEntries.length === 0) return;
+  rows.push(['Conditions']);
+  rows.push(['#', 'Condition', 'True branch', 'False branch', 'Referral code']);
+  for (const e of condEntries) {
+    rows.push([e.num, e.condition, e.trueBranch, e.falseBranch, e.referral]);
+  }
+}
+
+function pushUnresolvedItems(rows, routineIssues) {
+  if ((routineIssues ?? []).length === 0) return;
+  rows.push(['Unresolved items']);
+  rows.push(['Issue ID', 'Severity', 'Message']);
+  for (const issue of routineIssues) {
+    rows.push([String(issue.id ?? ''), String(issue.severity ?? ''), String(issue.message ?? '')]);
+  }
+}
+
+function pushRoutineEvidence(rows, r, stepEntries, condEntries, depEntries) {
+  const evidenceRows = [];
+  const pages = pagesLabel(r.source_pages);
+  if (pages) evidenceRows.push(['Source pages', pages]);
+  if (String(r.source_location ?? '')) evidenceRows.push(['Source location', String(r.source_location)]);
+  if (String(r.evidence_text ?? '')) evidenceRows.push(['Evidence', String(r.evidence_text)]);
+  (stepEntries ?? []).forEach((e) => {
+    const det = e.det;
+    if (!det) return;
+    const tag = e.seq !== '' ? `Step ${e.seq}` : 'Step';
+    const sp = det.source_pages?.length ? pagesLabel(det.source_pages) : '';
+    const ev = String(det.evidence ?? '');
+    const status = String(det.interpretation_status ?? '');
+    if (sp) evidenceRows.push([`${tag} pages`, sp]);
+    if (ev) evidenceRows.push([`${tag} evidence`, ev]);
+    if (status) evidenceRows.push([`${tag} status`, status]);
+  });
+  (condEntries ?? []).forEach((e) => {
+    const det = e.det;
+    if (!det) return;
+    const sp = det.source_pages?.length ? pagesLabel(det.source_pages) : '';
+    const ev = String(det.evidence ?? '');
+    const status = String(det.interpretation_status ?? '');
+    if (sp) evidenceRows.push([`Condition ${e.num} pages`, sp]);
+    if (ev) evidenceRows.push([`Condition ${e.num} evidence`, ev]);
+    if (status) evidenceRows.push([`Condition ${e.num} status`, status]);
+  });
+  (depEntries ?? []).forEach((e) => {
+    const det = e.det;
+    if (!det) return;
+    const sp = det.source_pages?.length ? pagesLabel(det.source_pages) : '';
+    const ev = String(det.evidence ?? '');
+    if (sp) evidenceRows.push([`Dependency ${e.target} pages`, sp]);
+    if (ev) evidenceRows.push([`Dependency ${e.target} evidence`, ev]);
+  });
+  if (evidenceRows.length === 0) return;
+  rows.push(['Source evidence']);
+  for (const row of evidenceRows) rows.push(row);
+}
+
+// ---------- Stepwise rating-routine steps ----------
+
+// Lookup keys render with dots as spaces ('Coverage.Name' to 'Coverage
+// Name'): the spaced label communicates the same key without implying an
+// object path. Display-only; model data is untouched.
+function humanizeLookupKey(key) {
+  return String(key ?? '').trim().replace(/\./g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+// Operand for a lookup step: `table:Name (key1, key2)` with the resolved
+// extracted table name when it resolves uniquely, else the verbatim source
+// mention. Keys-only and table-only lookups degrade gracefully; a lookup
+// with neither yields '' so nothing is invented.
+function lookupOperand(det, tables) {
+  const mention = (det?.depends_on ?? []).map((d) => String(d ?? '').trim()).find(Boolean) ?? '';
+  const resolved = mention ? resolveTableReference(tables, mention) : null;
+  const table = resolved ? String(resolved.name ?? resolved.id ?? '') : mention;
+  const keys = (det?.inputs ?? []).map((k) => humanizeLookupKey(k)).filter(Boolean);
+  if (table && keys.length > 0) return `table:${table} (${keys.join(', ')})`;
+  if (table) return `table:${table}`;
+  return keys.join(', ');
+}
+
+// Right-hand side of an assignment step: strip an optional 'Calculate' verb
+// and sentence-final period, then split 'output = rhs'. Returns
+// { output, rhs } or null when no plain assignment is evidenced (prose,
+// comparisons, and conditionals fall back to the verbatim source text).
+function splitAssignment(det) {
+  const raw = String(det?.expression ?? '');
+  if (!raw.trim()) {
+    const output = String(det?.output ?? '');
+    const operand = String(det?.operand ?? '');
+    if (output && operand.trim()) return { output, rhs: operand };
+    return null;
+  }
+  const clean = raw.replace(/^\s*calculate\s+(?=[A-Za-z_]\w*\s*=)/i, '').replace(/\.\s*$/, '').trim();
+  if (/^(if|else|when|otherwise)\b/i.test(clean)) return null;
+  const m = /^\s*([A-Za-z_]\w*)\s*=\s*([\s\S]+?)\s*$/.exec(clean);
+  if (!m || !m[2].trim()) return null;
+  if (/^[=<>!]/.test(m[2].trim())) return null;
+  return { output: String(det?.output ?? '') || m[1], rhs: m[2].trim() };
+}
+
+// Operand for a partially parsed step: keep whatever the parser evidenced
+// (expression, operand, or keys) without inventing an operation for it.
+function fallbackOperand(det) {
+  for (const v of [det?.expression, det?.operand]) {
+    const s = String(v ?? '').trim();
+    if (s) return s;
+  }
+  return (det?.inputs ?? []).map((k) => String(k ?? '').trim()).filter(Boolean).join(', ');
+}
+
+// One stepwise rating-routine entry { instruction, operation, operand, output, det }.
+// Pure assignments (lookups, `output = rhs`) read as `output <-- operand`;
+// rounding, conditions, explicit symbolic operations (such as '*'), and anything
+// unparsed keep the verbatim source text so no detail is lost or invented.
+function renderRatingStep(text, det, tables) {
+  const instruction = String(text ?? '');
+  if (det && isLookupOperation(det.operation)) {
+    const operand = lookupOperand(det, tables);
+    const output = String(det.output ?? '');
+    if (output && operand) return { instruction: output, operation: '<--', operand, output, det };
+    return { instruction, operation: '', operand: '', output, det };
+  }
+  const word = String(det?.operation ?? '').toLowerCase();
+  if (det && (word === 'expression' || word === 'assignment')) {
+    const split = splitAssignment(det);
+    if (split) return { instruction: split.output, operation: '<--', operand: split.rhs, output: split.output, det };
+    return { instruction, operation: '', operand: fallbackOperand(det), output: String(det.output ?? ''), det };
+  }
+  if (det && word === 'rounding') {
+    const operand = [det.operand, det.output].map((v) => String(v ?? '').trim()).find(Boolean) ?? '';
+    return { instruction, operation: 'R', operand, output: String(det.output ?? det.operand ?? ''), det };
+  }
+  if (det && word === 'condition') {
+    const clause = String(det.expression ?? '');
+    const operation = /^\s*(else|otherwise)\b/i.test(clause || instruction) ? 'ELSE' : 'IF';
+    return { instruction, operation, operand: String(det.output ?? ''), output: String(det.output ?? ''), det };
+  }
+  if (det && det.operation !== undefined && det.operation !== null && String(det.operation) !== '') {
+    return { instruction, operation: String(det.operation), operand: fallbackOperand(det), output: String(det.output ?? ''), det };
+  }
+  return { instruction, operation: '', operand: '', output: '', det: det ?? null };
+}
+
+// A formula-only routine (no steps) still renders one stepwise row
+// from its stated expression: `output = rhs` becomes `output <-- rhs`.
+// Anything else stays verbatim with no invented operation.
+function synthesizedExpressionEntry(r) {
+  const raw = String(r.expression_text ?? '');
+  if (!raw.trim()) return null;
+  const clean = raw.replace(/^\s*calculate\s+(?=[A-Za-z_]\w*\s*=)/i, '').replace(/\.\s*$/, '').trim();
+  const parsed = parseAssignmentOperands(clean);
+  const rhs = parsed ? clean.replace(/^\s*[A-Za-z_]\w*\s*=\s*/, '') : '';
+  if (parsed && parsed.outputs[0] && rhs.trim() && !/^[=<>!]/.test(rhs.trim())) {
+    return {
+      seq: '1',
+      instruction: parsed.outputs[0],
+      operation: '<--',
+      operand: rhs.trim(),
+      output: parsed.outputs[0],
+      det: { inputs: parsed.inputs, output: parsed.outputs[0] },
+    };
+  }
+  return { seq: '1', instruction: raw, operation: '', operand: '', output: '', det: null };
+}
+
+function buildRatingStepEntries(r, tables) {
+  const steps = r.steps ?? [];
+  const detailed = r.steps_detailed ?? [];
+  const aligned = detailed.length > 0 && detailed.length === steps.length;
+  const entries = [];
+  const push = (text, det, index) => {
+    const rendered = renderRatingStep(text, det, tables);
+    const seq = det?.sequence !== undefined && det?.sequence !== null && String(det.sequence) !== ''
+      ? String(det.sequence)
+      : parseStepSequence(String(text ?? ''), index);
+    entries.push({ seq, ...rendered });
+  };
+  if (steps.length > 0) {
+    steps.forEach((stepText, idx) => push(stepText, aligned ? detailed[idx] : null, idx));
+  } else if (detailed.length > 0) {
+    detailed.forEach((det, idx) => push(det?.instruction ?? det?.original_text ?? '', det, idx));
+  } else {
+    const synth = synthesizedExpressionEntry(r);
+    if (synth) entries.push(synth);
+  }
+  return entries;
+}
+
+// One worksheet body per rating routine: name in A1 and identity details, then
+// the ordered rating steps that communicate the complete routine,
+// followed by conditions, unresolved items, and source evidence. No separate
+// Inputs, Final calculation, or Dependencies sections: the steps carry the
+// assignments, lookups, arithmetic, rounding, and IF/ELSE logic in source
+// order, and the validator flags genuine ambiguity in Unresolved items.
+function ratingRoutineSheetRows(r, routineIssues, ctx = {}) {
+  const rows = [];
+  pushRoutineHeader(rows, r);
+  const routines = ctx.routines ?? [];
+  const tables = ctx.tables ?? [];
+  const stepEntries = buildRatingStepEntries(r, tables);
+  if (stepEntries.length > 0) {
+    rows.push(['Steps']);
+    rows.push(['Step #', 'Instruction', 'Operation', 'Operand', 'Comment']);
+    const tableTerms = tableReferenceTerms(tables);
+    const priorOutputs = new Map();
+    for (const e of stepEntries) {
+      rows.push([e.seq, e.instruction, e.operation, e.operand, stepComment(e, r, routines, tables, tableTerms, priorOutputs, { lookupPrefix: false })]);
+      if (e.output) priorOutputs.set(normalizeVariableKey(e.output), { seq: e.seq ?? '', table: priorTableForStep(e.det, tables) });
+    }
+  }
+  const condEntries = buildCondEntries(r);
+  pushConditionsSection(rows, condEntries);
+  pushUnresolvedItems(rows, routineIssues);
+  pushRoutineEvidence(rows, r, stepEntries, condEntries, []);
+  return rows;
+}
+
+// Rating routines (anything with steps or a stated expression, other than
+// condition routines) render the simplified stepwise sheet. Condition
+// routines and routines without steps or an expression keep the legacy
+// layout, so underwriting rules stay out of scope and no content is hidden.
+function isRatingRoutineSheet(r) {
+  if (String(r?.kind ?? '') === 'condition') return false;
+  const hasSteps = (r?.steps ?? []).length > 0 || (r?.steps_detailed ?? []).length > 0;
+  if (hasSteps) return true;
+  return String(r?.expression_text ?? '').trim() !== '';
+}
+
+function routineSheetRows(r, routineIssues, ctx = {}) {
+  if (isRatingRoutineSheet(r)) return ratingRoutineSheetRows(r, routineIssues, ctx);
+  return legacyRoutineSheetRows(r, routineIssues, ctx);
+}
+
+// One worksheet body per routine (legacy layout): name in A1 and identity
+// details, then the rating execution flow in order — Inputs (required
+// variables with sources), ordered Steps (lookups with keys and returned
+// variables, then intermediate calculations), and the Final calculation with
+// its output — followed by the clearly labelled Conditions, Dependencies,
+// Unresolved items, and Source evidence sections. Only available content is
+// included; missing fields stay blank and empty sections are omitted.
+function legacyRoutineSheetRows(r, routineIssues, ctx = {}) {
+  const rows = [];
+  pushRoutineHeader(rows, r);
 
   const routines = ctx.routines ?? [];
   const tables = ctx.tables ?? [];
@@ -809,11 +1077,11 @@ function routineSheetRows(r, routineIssues, ctx = {}) {
   }
   if (stepEntries.length > 0) {
     rows.push(['Steps']);
-    rows.push(['Step #', 'Instruction', 'Op', 'Operand', 'Line Comment']);
+    rows.push(['Step #', 'Instruction', 'Operation', 'Operand', 'Comment']);
     const tableTerms = tableReferenceTerms(tables);
     const priorOutputs = new Map();
     for (const e of stepEntries) {
-      rows.push([e.seq, e.instruction, e.operation, stepOperandCell(e), stepLineComment(e, r, routines, tables, tableTerms, priorOutputs)]);
+      rows.push([e.seq, e.instruction, e.operation, stepOperandCell(e), stepComment(e, r, routines, tables, tableTerms, priorOutputs)]);
       if (e.output) priorOutputs.set(normalizeVariableKey(e.output), { seq: e.seq ?? '', table: priorTableForStep(e.det, tables) });
     }
   }
@@ -832,31 +1100,8 @@ function routineSheetRows(r, routineIssues, ctx = {}) {
     rows.push([finalEntry.calculation, finalEntry.output]);
   }
 
-  const conds = r.conditions ?? [];
-  const condDetailed = r.conditions_detailed ?? [];
-  const condAligned = condDetailed.length > 0 && condDetailed.length === conds.length;
-  const condCount = Math.max(conds.length, condDetailed.length);
-  const condEntries = [];
-  for (let idx = 0; idx < condCount; idx += 1) {
-    const text = idx < conds.length ? String(conds[idx] ?? '') : '';
-    const det = condAligned ? condDetailed[idx] : (idx < condDetailed.length ? condDetailed[idx] : null);
-    if (!text.trim() && !det) continue;
-    condEntries.push({
-      num: String(idx + 1),
-      condition: text || String(det?.condition ?? det?.original_text ?? ''),
-      trueBranch: String(det?.true_branch ?? ''),
-      falseBranch: String(det?.false_branch ?? ''),
-      referral: String(det?.referral_code ?? ''),
-      det,
-    });
-  }
-  if (condEntries.length > 0) {
-    rows.push(['Conditions']);
-    rows.push(['#', 'Condition', 'True branch', 'False branch', 'Referral code']);
-    for (const e of condEntries) {
-      rows.push([e.num, e.condition, e.trueBranch, e.falseBranch, e.referral]);
-    }
-  }
+  const condEntries = buildCondEntries(r);
+  pushConditionsSection(rows, condEntries);
 
   const dependsOn = r.depends_on ?? [];
   const depDetailed = r.dependencies ?? [];
@@ -980,52 +1225,8 @@ function routineSheetRows(r, routineIssues, ctx = {}) {
     }
   }
 
-  if ((routineIssues ?? []).length > 0) {
-    rows.push(['Unresolved items']);
-    rows.push(['Issue ID', 'Severity', 'Message']);
-    for (const issue of routineIssues) {
-      rows.push([String(issue.id ?? ''), String(issue.severity ?? ''), String(issue.message ?? '')]);
-    }
-  }
-
-  const evidenceRows = [];
-  const pages = pagesLabel(r.source_pages);
-  if (pages) evidenceRows.push(['Source pages', pages]);
-  if (String(r.source_location ?? '')) evidenceRows.push(['Source location', String(r.source_location)]);
-  if (String(r.evidence_text ?? '')) evidenceRows.push(['Evidence', String(r.evidence_text)]);
-  stepEntries.forEach((e) => {
-    const det = e.det;
-    if (!det) return;
-    const tag = e.seq !== '' ? `Step ${e.seq}` : 'Step';
-    const sp = det.source_pages?.length ? pagesLabel(det.source_pages) : '';
-    const ev = String(det.evidence ?? '');
-    const status = String(det.interpretation_status ?? '');
-    if (sp) evidenceRows.push([`${tag} pages`, sp]);
-    if (ev) evidenceRows.push([`${tag} evidence`, ev]);
-    if (status) evidenceRows.push([`${tag} status`, status]);
-  });
-  condEntries.forEach((e) => {
-    const det = e.det;
-    if (!det) return;
-    const sp = det.source_pages?.length ? pagesLabel(det.source_pages) : '';
-    const ev = String(det.evidence ?? '');
-    const status = String(det.interpretation_status ?? '');
-    if (sp) evidenceRows.push([`Condition ${e.num} pages`, sp]);
-    if (ev) evidenceRows.push([`Condition ${e.num} evidence`, ev]);
-    if (status) evidenceRows.push([`Condition ${e.num} status`, status]);
-  });
-  depEntries.forEach((e) => {
-    const det = e.det;
-    if (!det) return;
-    const sp = det.source_pages?.length ? pagesLabel(det.source_pages) : '';
-    const ev = String(det.evidence ?? '');
-    if (sp) evidenceRows.push([`Dependency ${e.target} pages`, sp]);
-    if (ev) evidenceRows.push([`Dependency ${e.target} evidence`, ev]);
-  });
-  if (evidenceRows.length > 0) {
-    rows.push(['Source evidence']);
-    for (const row of evidenceRows) rows.push(row);
-  }
+  pushUnresolvedItems(rows, routineIssues);
+  pushRoutineEvidence(rows, r, stepEntries, condEntries, depEntries);
 
   return rows;
 }
@@ -1051,12 +1252,12 @@ function jobRows(job, source) {
     ['Warnings', String(warnings)],
   ];
   const coverLinks = [];
-  cover.push(['Included Rate Tables']);
+  cover.push(['Included Rating Tables']);
   tables.forEach((t, idx) => {
     cover.push([t.id ?? '', t.name ?? '']);
     coverLinks.push({ r: cover.length - 1, c: 1, location: sheetLocation(tableSheetNameList[idx]) });
   });
-  cover.push(['Included Rate Routines']);
+  cover.push(['Included Rating Routines']);
   routines.forEach((r, idx) => {
     cover.push([r.id ?? '', r.name ?? '']);
     coverLinks.push({ r: cover.length - 1, c: 1, location: sheetLocation(routineSheetNameList[idx]) });

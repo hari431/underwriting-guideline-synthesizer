@@ -192,7 +192,7 @@ test('models: lookup keys and table derive from "using key in table" wording', (
       routines: [{
         name: 'Calc', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'ev',
         steps: [
-          'Step 1: Look up base_rate using vehicle_class in the Base rate table.',
+          'Step 1: Look up base_rate using vehicle_class in the Base rating table.',
           'Look up driver_factor using years_licensed in the Driver experience factor table.',
           'Look up r using k in The Ledger.',
         ],
@@ -205,7 +205,7 @@ test('models: lookup keys and table derive from "using key in table" wording', (
   assert.equal(det[0].operation, 'lookup');
   assert.equal(det[0].output, 'base_rate');
   assert.deepEqual(det[0].inputs, ['vehicle_class']);
-  assert.deepEqual(det[0].depends_on, ['Base rate table']);
+  assert.deepEqual(det[0].depends_on, ['Base rating table']);
   assert.equal(det[1].operation, 'lookup');
   assert.equal(det[1].output, 'driver_factor');
   assert.deepEqual(det[1].inputs, ['years_licensed']);
@@ -544,7 +544,7 @@ test('models: table aliases resolve via prefix both ways, keywords, and dash var
   assert.equal(resolveTableReference(tables, 'Table A')?.id, 'T1');
   assert.equal(resolveTableReference(tables, 'Table A \u2014 Base property rate')?.id, 'T1');
   assert.equal(resolveTableReference(tables, 'Table A - Base property rate')?.id, 'T1');
-  assert.equal(resolveTableReference(tables, 'Base rate table')?.id, 'T1');
+  assert.equal(resolveTableReference(tables, 'Base property table')?.id, 'T1');
   assert.equal(resolveTableReference(tables, 'Protection factor table')?.id, 'T3');
   assert.equal(resolveTableReference(tables, 'factor table'), null);
   assert.equal(resolveTableReference(tables, 'Table'), null);

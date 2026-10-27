@@ -385,7 +385,7 @@ function normalizeOneStep(entry, index) {
 
 // Fill a sparse explicit step object from its own instruction text: when the
 // source states the operation only in prose ('Find ... in Table Q'), derive
-// the structured fields so Op/Operand/Line Comment populate. Explicitly
+// the structured fields so Operation/Operand/Comment populate. Explicitly
 // provided fields are never overwritten.
 function enrichSparseStep(out) {
   if (!out || out.operation) return;
@@ -637,7 +637,9 @@ function splitMainClause(text) {
 
 // Parse an explicit top-level assignment `output = rhs`. Returns null unless
 // the text starts with a single identifier, '=', and a non-empty RHS.
-function parseAssignmentOperands(text) {
+// Exported for the Excel routine-step renderer (display only); the normalized
+// model behavior is unchanged.
+export function parseAssignmentOperands(text) {
   const t = String(text ?? '').trim();
   if (!t || /^(if|else|when|otherwise)\b/i.test(t)) return null;
   const main = splitMainClause(t);
@@ -661,8 +663,8 @@ function splitKeys(text) {
     .filter(Boolean);
 }
 
-// Drop a lowercase prose article from a table mention ("in the Base rate
-// table" refers to "Base rate table"). Capitalized names stay verbatim so a
+// Drop a lowercase prose article from a table mention ("in the Base rating
+// table" refers to "Base rating table"). Capitalized names stay verbatim so a
 // table actually named "The Ledger" keeps its exact reference.
 function stripLeadingArticle(text) {
   return String(text ?? '').replace(/^(the|a|an)\s+/, '').trim();
@@ -698,7 +700,7 @@ function tableMentionKeywords(text) {
 // (dash-insensitive), else a unique word-boundary prefix in either direction
 // (short "Table 1" to long "Table 1 - ..." and long mentions to short
 // extracted names), else a unique keyword-subset match for valid aliases
-// ("Base rate table" to "Table A - Base property rate"). Returns the table or
+// ("Base property table" to "Table A - Base property rate"). Returns the table or
 // null when there is no single confident match.
 export function resolveTableReference(tables, mention) {
   const raw = String(mention ?? '').trim();

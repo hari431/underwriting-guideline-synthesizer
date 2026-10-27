@@ -76,7 +76,7 @@ function appendIncrementalUpdate(basePdf, revisedPage2Lines) {
 test('ingest: incremental-update PDF resolves the full xref chain with newest revision winning', () => {
   const base = buildPdf(
     [
-      ['Incremental sample page one', 'Base rate table goes here'],
+      ['Incremental sample page one', 'Base rating table goes here'],
       ['Incremental sample page two ORIGINAL'],
     ],
     { compress: true }

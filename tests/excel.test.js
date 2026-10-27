@@ -211,16 +211,15 @@ test('excel: sample routine sheets populate fields supported by the source', asy
   const routineSheets = routineSheetNames(job.routines, tableSheetNames(job.tables));
   const byIndex = (i) => sheetRowsAsValues(sheetXmlByName(zip, workbook, routineSheets[i]), strings);
 
-  // B1: inputs/outputs populated from the explicit assignment; wording kept.
+  // B1: the stated formula renders as one assignment step; no separate
+  // Inputs, Final calculation, or Dependencies sections.
   const b1 = byIndex(0);
   assert.deepEqual(b1[0], ['B1 - Base premium formula']);
   assert.ok(!b1.some((row) => row.length === 2 && (row[0] === 'Inputs' || row[0] === 'Outputs' || row[0] === 'Expression')));
-  assert.deepEqual(sectionRows(b1, 'Inputs').body, [
-    ['base_rate', 'Table 1 - Base Rate by Driver Class', ''],
-    ['territory_factor', 'Table 2 - Territory Factor', ''],
-  ]);
-  assert.deepEqual(sectionRows(b1, 'Final calculation').body, [['base_premium = base_rate * territory_factor', 'base_premium']]);
-  assert.equal(sectionRows(b1, 'Steps'), null);
+  assert.equal(sectionRows(b1, 'Inputs'), null);
+  assert.equal(sectionRows(b1, 'Dependencies'), null);
+  assert.equal(sectionRows(b1, 'Final calculation'), null);
+  assert.deepEqual(sectionRows(b1, 'Steps').body, [['1', 'base_premium', '<--', 'base_rate * territory_factor', '']]);
 
   // T1: true/false branches and referral code populated from explicit text.
   const t1 = byIndex(1);
@@ -233,23 +232,26 @@ test('excel: sample routine sheets populate fields supported by the source', asy
   assert.equal(t1conds.body[1][4], 'REF-TERR');
   assert.equal(sectionRows(t1, 'Final calculation'), null); // no formula or steps: nothing to close the flow
 
-  // F1: ordered operations with traced tables, keys, results, and sources.
+  // F1: stepwise rating steps — lookups assign table values to variables,
+  // arithmetic keeps its symbols, rounding keeps its source text, and the
+  // cross-routine input stays traced. No separate inventory sections.
   const f1 = byIndex(2);
   const f1steps = sectionRows(f1, 'Steps');
-  assert.deepEqual(f1steps.header, ['Step #', 'Instruction', 'Op', 'Operand', 'Line Comment']);
+  assert.deepEqual(f1steps.header, ['Step #', 'Instruction', 'Operation', 'Operand', 'Comment']);
   assert.deepEqual(f1steps.body.map((row) => row[0]), ['1', '2', '3', '4']);
-  assert.deepEqual(f1steps.body.map((row) => row[2]), ['lookup', 'lookup', 'expression', 'rounding']);
-  assert.deepEqual(f1steps.body[0], ['1', 'Look up base_rate from Table 1 using driver class.', 'lookup', 'driver class', 'lookup Table 1 - Base Rate by Driver Class → base_rate']);
-  assert.deepEqual(f1steps.body[1], ['2', 'Look up territory_factor from Table 2 using territory.', 'lookup', 'territory', 'lookup Table 2 - Territory Factor → territory_factor']);
-  assert.deepEqual(f1steps.body[2], ['3', 'final_premium = base_premium + policy_fee, where policy_fee = 25.', 'expression', 'final_premium = base_premium + policy_fee', 'uses base_premium from B1 - Base premium formula']);
-  assert.deepEqual(f1steps.body[3], ['4', 'Round final_premium to the nearest dollar.', 'rounding', 'final_premium', '']);
-  assert.equal(sectionRows(f1, 'Lookups'), null);
-  assert.deepEqual(sectionRows(f1, 'Final calculation').body, [['final_premium = base_premium + policy_fee', 'final_premium']]);
+  assert.deepEqual(f1steps.body.map((row) => row[2]), ['<--', '<--', '<--', 'R']);
+  assert.deepEqual(f1steps.body[0], ['1', 'base_rate', '<--', 'table:Table 1 - Base Rate by Driver Class (driver class)', '']);
+  assert.deepEqual(f1steps.body[1], ['2', 'territory_factor', '<--', 'table:Table 2 - Territory Factor (territory)', '']);
+  assert.deepEqual(f1steps.body[2], ['3', 'final_premium', '<--', 'base_premium + policy_fee', 'uses base_premium from B1 - Base premium formula']);
+  assert.deepEqual(f1steps.body[3], ['4', 'Round final_premium to the nearest dollar.', 'R', 'final_premium', '']);
+  assert.equal(sectionRows(f1, 'Inputs'), null);
+  assert.equal(sectionRows(f1, 'Dependencies'), null);
+  assert.equal(sectionRows(f1, 'Final calculation'), null);
 
   // G1: unfamiliar wording kept verbatim with nothing invented, flagged instead.
   const g1 = byIndex(3);
-  assert.deepEqual(sectionRows(g1, 'Final calculation').body, [['APPLY legacy_matrix_v2 surcharge curve', '']]);
-  assert.equal(sectionRows(g1, 'Steps'), null);
+  assert.deepEqual(sectionRows(g1, 'Steps').body, [['1', 'APPLY legacy_matrix_v2 surcharge curve', '', '', '']]);
+  assert.equal(sectionRows(g1, 'Final calculation'), null);
   const g1issues = sectionRows(g1, 'Unresolved items');
   assert.ok(g1issues !== null && g1issues.body.length >= 1);
   assert.ok(g1issues.body.some((row) => row[2].includes('cannot reliably interpret')));
@@ -308,7 +310,7 @@ test('excel: each table gets a clean sheet with title, headers, and rows only', 
   assert.equal((rows[3].match(/<c /g) || []).length, 2);
 });
 
-test('excel: routine sheet keeps steps, conditions, and dependencies as separate rows', () => {
+test('excel: rating routine sheet keeps steps and conditions as separate rows', () => {
   const job = normalizeJob(
     createJob({
       document: createDocument({ filename: 'g.pdf', pageCount: 3 }),
@@ -330,19 +332,19 @@ test('excel: routine sheet keeps steps, conditions, and dependencies as separate
   const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Calc'), strings);
   assert.deepEqual(values[0], ['Calc']); // routine name in A1
   const steps = sectionRows(values, 'Steps');
-  assert.deepEqual(steps.header, ['Step #', 'Instruction', 'Op', 'Operand', 'Line Comment']);
-  assert.equal(steps.body.length, 2);
-  assert.equal(steps.body[0][0], '1'); // original numbering gaps preserved
-  assert.equal(steps.body[1][0], '3');
-  assert.equal(steps.body[0][1], 'Step 1: first');
-  assert.equal(steps.body[1][1], 'Step 3: third');
+  assert.deepEqual(steps.header, ['Step #', 'Instruction', 'Operation', 'Operand', 'Comment']);
+  assert.deepEqual(steps.body, [
+    ['1', 'Step 1: first', '', '', ''],
+    ['3', 'Step 3: third', '', '', ''], // original numbering gaps preserved
+  ]);
   assert.ok(steps.body.every((row) => row.length === 5));
   const conditions = sectionRows(values, 'Conditions');
   assert.equal(conditions.body.length, 2);
   assert.equal(conditions.body[0][1], 'IF x THEN y');
   assert.equal(conditions.body[1][1], 'ELSE refer');
-  const deps = sectionRows(values, 'Dependencies');
-  assert.deepEqual(deps.body.map((row) => row[0]), ['Base', 'Elsewhere']);
+  assert.equal(sectionRows(values, 'Dependencies'), null);
+  assert.equal(sectionRows(values, 'Inputs'), null);
+  assert.equal(sectionRows(values, 'Final calculation'), null);
   // Step table stays free of source columns; evidence lives in its own section.
   assert.ok(!steps.header.includes('Source pages'));
   assert.ok(!steps.header.includes('Evidence'));
@@ -411,7 +413,7 @@ test('excel: sheet names are safe and unique', () => {
   assert.ok(names[2].includes('Bad'), 'sanitized name keeps readable base');
 });
 
-test('excel: routine sheet preserves structured operations, operands, and lookups', () => {
+test('excel: rating routine sheet renders structured steps in stepwise form', () => {
   const job = normalizeJob(
     createJob({
       document: createDocument({ filename: 'g.pdf', pageCount: 2 }),
@@ -437,16 +439,18 @@ test('excel: routine sheet preserves structured operations, operands, and lookup
   assert.ok(values.some((row) => row[0] === 'Applicability' && row[1] === 'Each item'));
   assert.ok(values.some((row) => row[0] === 'Execution context' && row[1] === 'per item'));
   const steps = sectionRows(values, 'Steps');
-  assert.deepEqual(steps.header, ['Step #', 'Instruction', 'Op', 'Operand', 'Line Comment']);
+  assert.deepEqual(steps.header, ['Step #', 'Instruction', 'Operation', 'Operand', 'Comment']);
   assert.deepEqual(steps.body.map((row) => row[0]), ['1', '2', '4']); // gaps preserved
-  assert.deepEqual(steps.body.map((row) => row[2]), ['assignment', 'lookup', 'rounding']);
-  assert.deepEqual(steps.body[0], ['1', 'Initialize limit', 'assignment', 'x = 0', '']);
-  assert.deepEqual(steps.body[1], ['2', 'Look up factor', 'lookup', 'key_a; key_b', 'lookup → f']);
-  assert.deepEqual(steps.body[2], ['4', 'Round result', 'rounding', 'round to whole', '']);
-  assert.equal(sectionRows(values, 'Lookups'), null); // lookup detail lives in the step row
+  assert.deepEqual(steps.body.map((row) => row[2]), ['<--', '<--', 'R']);
+  assert.deepEqual(steps.body[0], ['1', 'x', '<--', '0', '']);
+  assert.deepEqual(steps.body[1], ['2', 'f', '<--', 'key_a, key_b', '']);
+  assert.deepEqual(steps.body[2], ['4', 'Round result', 'R', 'round to whole', '']);
+  assert.equal(sectionRows(values, 'Inputs'), null);
+  assert.equal(sectionRows(values, 'Dependencies'), null);
+  assert.equal(sectionRows(values, 'Final calculation'), null);
 });
 
-test('excel: line comments trace routine outputs and flag unresolved tables', () => {
+test('excel: step comments trace routine outputs and flag unresolved tables', () => {
   const job = normalizeJob(
     createJob({
       document: createDocument({ filename: 'g.pdf', pageCount: 2 }),
@@ -470,9 +474,10 @@ test('excel: line comments trace routine outputs and flag unresolved tables', ()
   const strings = zip.get('xl/sharedStrings.xml');
   const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Downstream'), strings);
   const steps = sectionRows(values, 'Steps');
-  assert.deepEqual(steps.body[0], ['1', 'Compute total', 'expression', 'total = shared + fee', 'uses shared from Upstream']);
-  assert.deepEqual(steps.body[1], ['2', 'Look up rate', 'lookup', 'K', 'lookup "Table 9" → rate; table unresolved — verify']);
-  assert.equal(sectionRows(values, 'Lookups'), null);
+  assert.deepEqual(steps.body[0], ['1', 'total', '<--', 'shared + fee', 'uses shared from Upstream']);
+  assert.deepEqual(steps.body[1], ['2', 'rate', '<--', 'table:Table 9 (K)', 'table unresolved — verify']);
+  assert.equal(sectionRows(values, 'Inputs'), null);
+  assert.equal(sectionRows(values, 'Dependencies'), null);
   // The cross-routine value resolves; only the unknown table is flagged.
   assert.ok(!job.issues.some((i) => /"shared"/.test(i.message)));
   assert.ok(job.issues.some((i) => /Table 9/.test(i.message) && /flagged as unresolved/.test(i.message)));
@@ -525,15 +530,14 @@ test('excel: each routine sheet carries only its own details and unresolved item
   const second = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Second'), strings);
   assert.deepEqual(first[0], ['First']);
   assert.deepEqual(second[0], ['Second']);
-  const firstDeps = sectionRows(first, 'Dependencies');
-  assert.deepEqual(firstDeps.body.map((row) => row[0]), ['Missing Asset']);
+  assert.deepEqual(sectionRows(first, 'Steps').body, [['1', 'a', '<--', 'b + 1', '']]);
+  assert.equal(sectionRows(first, 'Dependencies'), null);
   assert.equal(sectionRows(second, 'Dependencies'), null);
   const firstUnresolved = sectionRows(first, 'Unresolved items');
   assert.ok(firstUnresolved !== null && firstUnresolved.body.length >= 1);
   assert.ok(firstUnresolved.body.some((row) => row[2].includes('Missing Asset')));
   assert.equal(sectionRows(second, 'Unresolved items'), null);
-  assert.ok(sectionRows(second, 'Steps') !== null);
-  assert.equal(sectionRows(first, 'Steps'), null);
+  assert.deepEqual(sectionRows(second, 'Steps').body, [['1', 'Do something', '', '', '']]);
 });
 
 test('excel: routine sheet names are safe, unique, and avoid table sheets', () => {
@@ -598,19 +602,19 @@ test('excel: cover indexes tables and routines with hyperlinks to detail sheets'
   // Existing cover details are preserved.
   assert.deepEqual(values[0], ['Field', 'Value']);
   assert.ok(values.some((row) => row[0] === 'Document' && row[1] === 'g.pdf'));
-  const tablesBlock = blockRows(values, 'Included Rate Tables');
+  const tablesBlock = blockRows(values, 'Included Rating Tables');
   assert.deepEqual(tablesBlock, [['T1', 'First Table'], ['T2', 'Second Table']]);
-  const routinesBlock = blockRows(values, 'Included Rate Routines');
+  const routinesBlock = blockRows(values, 'Included Rating Routines');
   assert.deepEqual(routinesBlock, [['R1', 'First Routine'], ['R2', 'Second Routine']]);
   // Each name links to its detail worksheet.
   const tableSheets = tableSheetNames(job.tables);
   const routineSheets = routineSheetNames(job.routines, tableSheets);
   const links = new Map(hyperlinksIn(coverXml).map((l) => [l.ref, l.location]));
-  const tablesLabel = values.findIndex((row) => row.length === 1 && row[0] === 'Included Rate Tables');
+  const tablesLabel = values.findIndex((row) => row.length === 1 && row[0] === 'Included Rating Tables');
   tableSheets.forEach((sheet, i) => {
     assert.equal(links.get(cellRef(tablesLabel + 1 + i, 1)), expectedLocation(sheet));
   });
-  const routinesLabel = values.findIndex((row) => row.length === 1 && row[0] === 'Included Rate Routines');
+  const routinesLabel = values.findIndex((row) => row.length === 1 && row[0] === 'Included Rating Routines');
   routineSheets.forEach((sheet, i) => {
     assert.equal(links.get(cellRef(routinesLabel + 1 + i, 1)), expectedLocation(sheet));
   });
@@ -671,18 +675,23 @@ test('excel: routine titles, section headings, and column headers are styled, da
   };
 
   // Step-based routine: every present section is styled; data stays normal.
-  const calcValues = assertRoutineFormatting('Calc', ['Steps', 'Final calculation', 'Conditions', 'Dependencies', 'Source evidence']);
-  assert.deepEqual(sectionRows(calcValues, 'Steps').header, ['Step #', 'Instruction', 'Op', 'Operand', 'Line Comment']);
+  const calcValues = assertRoutineFormatting('Calc', ['Steps', 'Conditions', 'Source evidence']);
+  assert.deepEqual(sectionRows(calcValues, 'Steps').header, ['Step #', 'Instruction', 'Operation', 'Operand', 'Comment']);
   assert.deepEqual(sectionRows(calcValues, 'Steps').body.map((row) => row[1]), ['Step 1: Do first thing', 'Step 2: Do second thing']);
-  // No empty sections are added for visual consistency.
+  // No separate inventory sections and no empty sections for visual consistency.
   assert.equal(sectionRows(calcValues, 'Inputs'), null);
+  assert.equal(sectionRows(calcValues, 'Dependencies'), null);
+  assert.equal(sectionRows(calcValues, 'Final calculation'), null);
   assert.equal(sectionRows(calcValues, 'Unresolved items'), null);
 
-  // Formula-only routine: same title/heading/header styling, no Steps section.
-  const plainValues = assertRoutineFormatting('Plain', ['Inputs', 'Final calculation', 'Dependencies', 'Source evidence']);
-  assert.deepEqual(sectionRows(plainValues, 'Inputs').header, ['Input', 'Source', 'Lookup keys']);
-  assert.deepEqual(sectionRows(plainValues, 'Final calculation').header, ['Calculation', 'Output']);
-  assert.equal(sectionRows(plainValues, 'Steps'), null);
+  // Formula-only routine: the expression renders as one assignment step with
+  // the same title/heading/header styling.
+  const plainValues = assertRoutineFormatting('Plain', ['Steps', 'Source evidence']);
+  assert.deepEqual(sectionRows(plainValues, 'Steps').header, ['Step #', 'Instruction', 'Operation', 'Operand', 'Comment']);
+  assert.deepEqual(sectionRows(plainValues, 'Steps').body, [['1', 'a', '<--', 'b * 2', '']]);
+  assert.equal(sectionRows(plainValues, 'Inputs'), null);
+  assert.equal(sectionRows(plainValues, 'Dependencies'), null);
+  assert.equal(sectionRows(plainValues, 'Final calculation'), null);
 });
 
 test('excel: summaries link each name to its detail sheet', () => {
@@ -712,7 +721,7 @@ test('excel: summaries link each name to its detail sheet', () => {
   assert.equal(routineValues[2][1], 'Second Routine');
 });
 
-test('excel: input sources map variables to tables and routines without guessing', () => {
+test('excel: rating routine steps trace variables without separate inventories', () => {
   const job = normalizeJob(
     createJob({
       document: createDocument({ filename: 'g.pdf', pageCount: 3 }),
@@ -755,43 +764,27 @@ test('excel: input sources map variables to tables and routines without guessing
     return sheetRowsAsValues(sheetXmlByName(zip, workbook, routineSheets[idx]), strings);
   };
 
-  // B1: each input maps to its source table; tables alone are not enough.
+  // B1: one assignment step carries the stated formula; the tables it
+  // names stay out of any separate inventory.
   const b1 = byName('B1 - Base premium formula');
-  const b1inputs = sectionRows(b1, 'Inputs');
-  assert.deepEqual(b1inputs.header, ['Input', 'Source', 'Lookup keys']);
-  assert.deepEqual(b1inputs.body, [
-    ['base_rate', 'Table 1 - Base Rate by Driver Class', ''],
-    ['territory_factor', 'Table 2 - Territory Factor', ''],
-  ]);
-  const b1deps = sectionRows(b1, 'Dependencies');
-  assert.deepEqual(b1deps.header, ['Target', 'Type', 'Explicit/Inferred', 'Variable / Keys']);
-  assert.deepEqual(b1deps.body, [
-    ['Table 1 - Base Rate by Driver Class', 'table', 'explicit', 'base_rate'],
-    ['Table 2 - Territory Factor', 'table', 'explicit', 'territory_factor'],
-  ]);
+  assert.deepEqual(sectionRows(b1, 'Steps').body, [['1', 'base_premium', '<--', 'base_rate * territory_factor', '']]);
+  assert.equal(sectionRows(b1, 'Inputs'), null);
+  assert.equal(sectionRows(b1, 'Dependencies'), null);
+  assert.equal(sectionRows(b1, 'Final calculation'), null);
 
-  // F1: routine input traces to its producing routine; undefined input is
-  // marked unresolved rather than guessed.
+  // F1: lookups assign table values to variables and the routine input
+  // stays traced to its producing routine; nothing is guessed.
   const f1 = byName('F1 - Final premium calculation');
-  const f1inputs = sectionRows(f1, 'Inputs');
-  assert.deepEqual(f1inputs.body, [
-    ['base_premium', 'B1 - Base premium formula', ''],
-    ['policy_fee', 'unresolved — verify', ''],
-  ]);
-  // Dependencies stay consistent with Steps: explicit routine links plus the
-  // tables retrieved by the lookup steps, each with its variable and keys.
-  const f1deps = sectionRows(f1, 'Dependencies');
-  assert.deepEqual(f1deps.body, [
-    ['B1 - Base premium formula', 'routine', 'explicit', 'base_premium'],
-    ['T1 - Territory eligibility condition', 'routine', 'explicit', ''],
-    ['Table 1 - Base Rate by Driver Class', 'table', 'inferred', 'base_rate (keys: driver class)'],
-    ['Table 2 - Territory Factor', 'table', 'inferred', 'territory_factor (keys: territory)'],
-  ]);
   const f1steps = sectionRows(f1, 'Steps');
-  assert.deepEqual(f1steps.body[0][4], 'lookup Table 1 - Base Rate by Driver Class → base_rate');
+  assert.deepEqual(f1steps.body[0], ['1', 'base_rate', '<--', 'table:Table 1 - Base Rate by Driver Class (driver class)', '']);
+  assert.deepEqual(f1steps.body[1], ['2', 'territory_factor', '<--', 'table:Table 2 - Territory Factor (territory)', '']);
   assert.deepEqual(f1steps.body[2][4], 'uses base_premium from B1 - Base premium formula');
+  assert.equal(sectionRows(f1, 'Inputs'), null);
+  assert.equal(sectionRows(f1, 'Dependencies'), null);
+  assert.equal(sectionRows(f1, 'Final calculation'), null);
 
-  // T1 has no inputs, so no mapping section is shown.
+  // T1 is a condition routine, so it keeps the legacy layout: no inputs
+  // means no mapping section is shown.
   const t1 = byName('T1 - Territory eligibility condition');
   assert.equal(sectionRows(t1, 'Inputs'), null);
 });
@@ -818,18 +811,17 @@ test('excel: steps show how table values feed later calculations', () => {
   const strings = zip.get('xl/sharedStrings.xml');
   const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Calc'), strings);
   const steps = sectionRows(values, 'Steps');
-  assert.deepEqual(steps.header, ['Step #', 'Instruction', 'Op', 'Operand', 'Line Comment']);
-  assert.deepEqual(steps.body[0], ['1', 'Look up x', 'lookup', 'my_key', 'lookup Lookup Table → x']);
-  assert.deepEqual(steps.body[1], ['2', 'Compute y', 'expression', 'y = x * 2', 'uses x from step 1 (Lookup Table)']);
-  // The inferred table link matches the lookup step; the external factor
-  // without evidence is flagged rather than assigned a guessed source.
-  const deps = sectionRows(values, 'Dependencies');
-  assert.deepEqual(deps.body, [['Lookup Table', 'table', 'inferred', 'x (keys: my_key)']]);
-  const inputs = sectionRows(values, 'Inputs');
-  assert.deepEqual(inputs.body, [['factor', 'unresolved — verify', '']]);
+  assert.deepEqual(steps.header, ['Step #', 'Instruction', 'Operation', 'Operand', 'Comment']);
+  assert.deepEqual(steps.body[0], ['1', 'x', '<--', 'table:Lookup Table (my_key)', '']);
+  assert.deepEqual(steps.body[1], ['2', 'y', '<--', 'x * 2', 'uses x from step 1 (Lookup Table)']);
+  // No separate inventories: the steps carry the table link and the
+  // external factor stays a plain operand without a guessed source.
+  assert.equal(sectionRows(values, 'Dependencies'), null);
+  assert.equal(sectionRows(values, 'Inputs'), null);
+  assert.equal(sectionRows(values, 'Final calculation'), null);
 });
 
-test('excel: dependencies identify the producing routine and output variable', () => {
+test('excel: steps trace the producing routine and flag unresolved tables', () => {
   const job = normalizeJob(
     createJob({
       document: createDocument({ filename: 'g.pdf', pageCount: 2 }),
@@ -853,33 +845,29 @@ test('excel: dependencies identify the producing routine and output variable', (
   const strings = zip.get('xl/sharedStrings.xml');
   const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Downstream'), strings);
   const steps = sectionRows(values, 'Steps');
-  assert.deepEqual(steps.body[0][4], 'uses shared from Upstream');
-  assert.deepEqual(steps.body[1][4], 'lookup "Table 9" → rate; table unresolved — verify');
-  // Dependencies mirror the same links: the producing routine with its
-  // output variable, plus the attempted table lookup with keys.
-  const deps = sectionRows(values, 'Dependencies');
-  assert.deepEqual(deps.header, ['Target', 'Type', 'Explicit/Inferred', 'Variable / Keys']);
-  assert.deepEqual(deps.body, [
-    ['Upstream', 'routine', 'inferred', 'shared'],
-    ['Table 9', '', 'inferred', 'rate (keys: K)'],
-  ]);
-  const inputs = sectionRows(values, 'Inputs');
-  assert.deepEqual(inputs.body, [['fee', 'unresolved — verify', '']]);
-  // A primary input with no evidence of any source stays a parameter.
+  assert.deepEqual(steps.body[0], ['1', 'total', '<--', 'shared + fee', 'uses shared from Upstream']);
+  assert.deepEqual(steps.body[1], ['2', 'rate', '<--', 'table:Table 9 (K)', 'table unresolved — verify']);
+  // No separate inventories: the producing routine stays traced in the
+  // step comment and the unknown table is flagged in place.
+  assert.equal(sectionRows(values, 'Dependencies'), null);
+  assert.equal(sectionRows(values, 'Inputs'), null);
+  assert.equal(sectionRows(values, 'Final calculation'), null);
+  // The upstream formula renders as one assignment step.
   const up = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Upstream'), strings);
-  assert.deepEqual(sectionRows(up, 'Inputs').body, [['base', 'input parameter', '']]);
+  assert.deepEqual(sectionRows(up, 'Steps').body, [['1', 'shared', '<--', 'base + 1', '']]);
+  assert.equal(sectionRows(up, 'Inputs'), null);
 });
 
-test('excel: routine sheet follows rating execution flow (Collision_PC_RR)', () => {
-  // Models the Collision_PC_RR rate routine from the reference ratebook:
-  // lookup steps first, intermediate assignments and a chained multiply,
-  // then the terminal assignment plus rounding. Reference ops map to model
-  // vocabulary ('<--' to lookup/assignment, 'R' to rounding); the chained
-  // multiply keeps the source '*' op verbatim, and the rounding operand '1'
-  // is carried through without interpreting its precision meaning.
+test('excel: routine sheet follows stepwise rating routine steps (Collision coverage)', () => {
+  // Models a stepwise collision coverage rating routine: lookups assign table
+  // values to variables, intermediate assignments copy values through, a
+  // chained multiply keeps the source '*' operation verbatim, and rounding renders
+  // as 'R' with its operand carried through verbatim. Lookup keys render as
+  // spaced labels ('Coverage Name'), never as object paths ('Coverage.Name').
+  // No separate inventory sections.
   const job = normalizeJob(
     createJob({
-      document: createDocument({ filename: 'ratebook.pdf', pageCount: 1 }),
+      document: createDocument({ filename: 'guideline.pdf', pageCount: 1 }),
       tables: [
         {
           name: 'Collision Driver Vehicle Factor', sourcePages: [1], evidenceText: 'factor schedule ($)',
@@ -891,7 +879,7 @@ test('excel: routine sheet follows rating execution flow (Collision_PC_RR)', () 
         },
       ],
       routines: [{
-        name: 'Collision_PC_RR', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'Collision coverage rating steps 1-8.',
+        name: 'Collision coverage rating', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'Collision coverage rating steps 1-8.',
         inputs: ['AssignedDriver.DriverAge', 'Coverage.Deductible', 'Vehicle.VehicleAge', 'Coverage.Name'],
         outputs: ['TermAmount'],
         steps: [
@@ -912,186 +900,155 @@ test('excel: routine sheet follows rating execution flow (Collision_PC_RR)', () 
   const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
   const workbook = zip.get('xl/workbook.xml');
   const strings = zip.get('xl/sharedStrings.xml');
-  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Collision_PC_RR'), strings);
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Collision coverage rating'), strings);
 
-  // Flow order: Inputs, then lookups/intermediate steps, then final
-  // calculation; traceability sections follow, not lead.
+  // Layout: ordered steps communicate the complete routine, then source
+  // evidence. No separate Inputs, Final calculation, or Dependencies.
   const labelIndex = (label) => values.findIndex((row) => row.length === 1 && row[0] === label);
-  const inputsAt = labelIndex('Inputs');
   const stepsAt = labelIndex('Steps');
-  const finalAt = labelIndex('Final calculation');
-  assert.ok(inputsAt >= 0 && stepsAt > inputsAt && finalAt > stepsAt, 'expected Inputs, Steps, Final calculation in order');
-  assert.ok(labelIndex('Dependencies') > finalAt);
-  assert.ok(labelIndex('Source evidence') > finalAt);
-  assert.equal(labelIndex('Input sources'), -1);
+  assert.ok(stepsAt >= 0, 'expected a Steps section');
+  assert.equal(labelIndex('Inputs'), -1);
+  assert.equal(labelIndex('Final calculation'), -1);
+  assert.equal(labelIndex('Dependencies'), -1);
+  assert.ok(labelIndex('Source evidence') > stepsAt);
   assert.ok(!values.some((row) => row[0] === 'Expression'), 'formula must not lead the sheet');
 
-  // Inputs: required variables with source or origin where supported.
-  const inputs = sectionRows(values, 'Inputs');
-  assert.deepEqual(inputs.header, ['Input', 'Source', 'Lookup keys']);
-  assert.deepEqual(inputs.body, [
-    ['AssignedDriver.DriverAge', 'input parameter', ''],
-    ['Coverage.Deductible', 'input parameter', ''],
-    ['Vehicle.VehicleAge', 'input parameter', ''],
-    ['Coverage.Name', 'input parameter', ''],
-  ]);
-
-  // Steps: lookups with keys and returned variables, then intermediate
-  // calculations in execution order, each traced to its source.
+  // Steps match the reference routine row for row: assignments read as
+  // `variable <-- operand`, the chained multiply keeps '*', rounding is
+  // 'R', and each intermediate value stays traced to its source step.
   const steps = sectionRows(values, 'Steps');
-  assert.deepEqual(steps.header, ['Step #', 'Instruction', 'Op', 'Operand', 'Line Comment']);
+  assert.deepEqual(steps.header, ['Step #', 'Instruction', 'Operation', 'Operand', 'Comment']);
   assert.deepEqual(steps.body.map((row) => row[0]), ['1', '2', '3', '4', '5', '6', '7', '8']);
-  assert.deepEqual(steps.body[0], ['1', 'CollisionDriverVehicleFactor', 'lookup', 'AssignedDriver.DriverAge; Coverage.Deductible; Vehicle.VehicleAge', 'lookup Collision Driver Vehicle Factor → CollisionDriverVehicleFactor']);
-  assert.deepEqual(steps.body[1], ['2', 'BaseRateFactor', 'lookup', 'Coverage.Name', 'lookup Base Rate → BaseRateFactor']);
+  assert.deepEqual(steps.body[0], ['1', 'CollisionDriverVehicleFactor', '<--', 'table:Collision Driver Vehicle Factor (AssignedDriver DriverAge, Coverage Deductible, Vehicle VehicleAge)', '']);
+  assert.deepEqual(steps.body[1], ['2', 'BaseRateFactor', '<--', 'table:Base Rate (Coverage Name)', '']);
+  assert.deepEqual(steps.body[2], ['3', 'Basis', '<--', '1', '']);
+  assert.deepEqual(steps.body[3], ['4', 'BaseRate', '<--', 'BaseRateFactor', 'uses BaseRateFactor from step 2 (Base Rate)']);
+  assert.deepEqual(steps.body[4], ['5', 'AdjustedRate', '<--', 'BaseRate', 'uses BaseRate from step 4']);
   assert.deepEqual(steps.body[5], ['6', '', '*', 'CollisionDriverVehicleFactor', 'uses CollisionDriverVehicleFactor from step 1 (Collision Driver Vehicle Factor)']);
-  assert.deepEqual(steps.body[6], ['7', 'TermAmount', 'assignment', 'TermAmount = AdjustedRate', 'uses AdjustedRate from step 5']);
-  assert.deepEqual(steps.body[7], ['8', '', 'rounding', '1', 'uses TermAmount from step 7']);
-
-  // Final calculation: the terminal computation restated verbatim with its
-  // output. No single expression was stated, so the last non-rounding step
-  // is shown; the trailing rounding stays separate in Steps above.
-  const final = sectionRows(values, 'Final calculation');
-  assert.deepEqual(final.header, ['Calculation', 'Output']);
-  assert.deepEqual(final.body, [['TermAmount = AdjustedRate', 'TermAmount']]);
-
-  // Dependencies stay consistent with the lookup steps.
-  const deps = sectionRows(values, 'Dependencies');
-  assert.deepEqual(deps.body, [
-    ['Collision Driver Vehicle Factor', 'table', 'explicit', 'CollisionDriverVehicleFactor (keys: AssignedDriver.DriverAge; Coverage.Deductible; Vehicle.VehicleAge)'],
-    ['Base Rate', 'table', 'explicit', 'BaseRateFactor (keys: Coverage.Name)'],
-  ]);
+  assert.deepEqual(steps.body[6], ['7', 'TermAmount', '<--', 'AdjustedRate', 'uses AdjustedRate from step 5']);
+  assert.deepEqual(steps.body[7], ['8', '', 'R', '1', 'uses TermAmount from step 7']);
+  assert.equal(sectionRows(values, 'Unresolved items'), null);
+  assert.ok(blockRows(values, 'Source evidence') !== null);
 });
 
-test('excel: CALC-001 multiplication and half-up rounding stay separate operations', () => {
-  // Faithful fixture from underwriteiq_sample_commercial_auto_guidelines (1).pdf p.2:
-  // Step 4 calculates with ×, Step 5 rounds half-up. No expression_text was
-  // extracted, so the workbook must not promote the rounding step to Final.
+test('excel: generic staged calc keeps multiplication and rounding as separate steps', () => {
+  // Generic three-lookup routine: Step 4 calculates with ×, Step 5 rounds
+  // half-up in place. No expression_text was extracted; the ordered steps
+  // alone communicate the routine, with no separate inventory sections.
   const steps = [
-    'Step 1: Look up base_rate using vehicle_class in the Base rate table.',
-    'Step 2: Look up territory_factor using territory in the Territory factor table.',
-    'Step 3: Look up driver_factor using years_licensed in the Driver experience factor table.',
-    'Step 4: Calculate indicated_premium = base_rate × territory_factor × driver_factor.',
-    'Step 5: Round indicated_premium to the nearest whole currency unit using standard half-up rounding.',
+    'Step 1: Look up alpha_rate using customer_tier in the Alpha rating table.',
+    'Step 2: Look up beta_factor using region_code in the Beta factor table.',
+    'Step 3: Look up gamma_factor using account_age in the Gamma factor table.',
+    'Step 4: Calculate quoted_total = alpha_rate × beta_factor × gamma_factor.',
+    'Step 5: Round quoted_total to the nearest whole currency unit using standard half-up rounding.',
   ];
-  const evidence = 'Routine ID: CALC-001 — Annual Base Premium. Inputs: vehicle_class, territory, years_licensed. Step 4: Calculate indicated_premium = base_rate × territory_factor × driver_factor. Step 5: Round indicated_premium to the nearest whole currency unit using standard half-up rounding.';
+  const evidence = 'Routine GEN-001 — Sample staged calculation. Inputs: customer_tier, region_code, account_age. Step 4: Calculate quoted_total = alpha_rate × beta_factor × gamma_factor. Step 5: Round quoted_total to the nearest whole currency unit using standard half-up rounding.';
   const job = normalizeJob(
     createJob({
-      document: createDocument({ filename: 'underwriteiq_sample_commercial_auto_guidelines (1).pdf', pageCount: 2 }),
+      document: createDocument({ filename: 'sample-staged-guidelines.pdf', pageCount: 2 }),
       tables: [
-        { name: 'Base rate table', sourcePages: [1], evidenceText: 'Base rate table', headers: ['Vehicle class', 'Base rate (annual)'], rows: [['V1', '1200']] },
-        { name: 'Territory factor table', sourcePages: [1], evidenceText: 'Territory factor table', headers: ['Territory', 'Factor'], rows: [['T1', '0.85']] },
-        { name: 'Driver experience factor table', sourcePages: [1], evidenceText: 'Driver experience factor table', headers: ['Years licensed', 'Factor'], rows: [['Less than 2', '1.40']] },
+        { name: 'Alpha rating table', sourcePages: [1], evidenceText: 'Alpha rating table', headers: ['Customer tier', 'Alpha rate'], rows: [['V1', '1200']] },
+        { name: 'Beta factor table', sourcePages: [1], evidenceText: 'Beta factor table', headers: ['Region code', 'Factor'], rows: [['T1', '0.85']] },
+        { name: 'Gamma factor table', sourcePages: [1], evidenceText: 'Gamma factor table', headers: ['Account age', 'Factor'], rows: [['Less than 2', '1.40']] },
       ],
       routines: [{
-        name: 'CALC-001 — Annual Base Premium',
+        name: 'GEN-001 — Sample Staged Calc',
         kind: 'calculation_steps',
         sourcePages: [2],
         evidenceText: evidence,
         expressionText: '',
         steps,
-        dependsOn: ['Base rate table', 'Territory factor table', 'Driver experience factor table'],
-        inputs: ['vehicle_class', 'territory', 'years_licensed'],
-        outputs: ['indicated_premium'],
+        dependsOn: ['Alpha rating table', 'Beta factor table', 'Gamma factor table'],
+        inputs: ['customer_tier', 'region_code', 'account_age'],
+        outputs: ['quoted_total'],
       }],
     })
   );
   job.issues = validateJob(job);
+  assert.equal(job.issues.filter((i) => i.severity === 'error').length, 0);
 
   // Steps 1-3 map each lookup key to its result variable and source table.
   const det = job.routines[0].steps_detailed;
   assert.equal(det.length, 5);
   assert.deepEqual(det.map((d) => d.operation), ['lookup', 'lookup', 'lookup', 'expression', 'rounding']);
-  assert.deepEqual(det[0].inputs, ['vehicle_class']);
-  assert.equal(det[0].output, 'base_rate');
-  assert.deepEqual(det[0].depends_on, ['Base rate table']);
-  assert.deepEqual(det[1].inputs, ['territory']);
-  assert.equal(det[1].output, 'territory_factor');
-  assert.deepEqual(det[1].depends_on, ['Territory factor table']);
-  assert.deepEqual(det[2].inputs, ['years_licensed']);
-  assert.equal(det[2].output, 'driver_factor');
-  assert.deepEqual(det[2].depends_on, ['Driver experience factor table']);
+  assert.deepEqual(det[0].inputs, ['customer_tier']);
+  assert.equal(det[0].output, 'alpha_rate');
+  assert.deepEqual(det[0].depends_on, ['Alpha rating table']);
+  assert.deepEqual(det[1].inputs, ['region_code']);
+  assert.equal(det[1].output, 'beta_factor');
+  assert.deepEqual(det[1].depends_on, ['Beta factor table']);
+  assert.deepEqual(det[2].inputs, ['account_age']);
+  assert.equal(det[2].output, 'gamma_factor');
+  assert.deepEqual(det[2].depends_on, ['Gamma factor table']);
 
   // Step 4 is a structured multiplication expression preserving the source ×.
   assert.equal(det[3].operation, 'expression');
-  assert.equal(det[3].expression, 'indicated_premium = base_rate × territory_factor × driver_factor');
-  assert.equal(det[3].output, 'indicated_premium');
-  assert.deepEqual(det[3].inputs, ['base_rate', 'territory_factor', 'driver_factor']);
+  assert.equal(det[3].expression, 'quoted_total = alpha_rate × beta_factor × gamma_factor');
+  assert.equal(det[3].output, 'quoted_total');
+  assert.deepEqual(det[3].inputs, ['alpha_rate', 'beta_factor', 'gamma_factor']);
   assert.equal(det[4].operation, 'rounding');
-  assert.equal(det[4].output, 'indicated_premium');
+  assert.equal(det[4].output, 'quoted_total');
 
   const zip = readZip(buildWorkbookXlsx(job, { source: 'live' }));
   const workbook = zip.get('xl/workbook.xml');
   const strings = zip.get('xl/sharedStrings.xml');
-  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'CALC-001 — Annual Base Premium'), strings);
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'GEN-001 — Sample Staged Calc'), strings);
 
-  // Inputs lists only the true external inputs, each a lookup key parameter.
-  const inputs = sectionRows(values, 'Inputs');
-  assert.deepEqual(inputs.body, [
-    ['vehicle_class', 'input parameter', ''],
-    ['territory', 'input parameter', ''],
-    ['years_licensed', 'input parameter', ''],
-  ]);
+  assert.equal(sectionRows(values, 'Inputs'), null);
+  assert.equal(sectionRows(values, 'Dependencies'), null);
+  assert.equal(sectionRows(values, 'Final calculation'), null);
 
-  // Steps keep both operations separately in source order.
+  // Steps keep both operations separately in source order: lookups assign
+  // table values, the multiplication keeps its ×, rounding keeps its text.
   const stepsSection = sectionRows(values, 'Steps');
-  assert.deepEqual(stepsSection.body.map((row) => row[2]), ['lookup', 'lookup', 'lookup', 'expression', 'rounding']);
-  assert.deepEqual(stepsSection.body[0], ['1', steps[0], 'lookup', 'vehicle_class', 'lookup Base rate table → base_rate']);
-  assert.deepEqual(stepsSection.body[1], ['2', steps[1], 'lookup', 'territory', 'lookup Territory factor table → territory_factor']);
-  assert.deepEqual(stepsSection.body[2], ['3', steps[2], 'lookup', 'years_licensed', 'lookup Driver experience factor table → driver_factor']);
-  assert.equal(stepsSection.body[3][3], 'indicated_premium = base_rate × territory_factor × driver_factor');
-  assert.equal(stepsSection.body[3][4], 'uses base_rate from step 1 (Base rate table); uses territory_factor from step 2 (Territory factor table); uses driver_factor from step 3 (Driver experience factor table)');
-  assert.equal(stepsSection.body[4][3], 'indicated_premium');
-
-  // Final calculation is the multiplication, not the rounding step.
-  const final = sectionRows(values, 'Final calculation');
-  assert.deepEqual(final.body, [['indicated_premium = base_rate × territory_factor × driver_factor', 'indicated_premium']]);
-
-  // Dependencies carry each retrieved variable with its lookup keys.
-  const deps = sectionRows(values, 'Dependencies');
-  assert.deepEqual(deps.body, [
-    ['Base rate table', 'table', 'explicit', 'base_rate (keys: vehicle_class)'],
-    ['Territory factor table', 'table', 'explicit', 'territory_factor (keys: territory)'],
-    ['Driver experience factor table', 'table', 'explicit', 'driver_factor (keys: years_licensed)'],
-  ]);
+  assert.deepEqual(stepsSection.body.map((row) => row[2]), ['<--', '<--', '<--', '<--', 'R']);
+  assert.deepEqual(stepsSection.body[0], ['1', 'alpha_rate', '<--', 'table:Alpha rating table (customer_tier)', '']);
+  assert.deepEqual(stepsSection.body[1], ['2', 'beta_factor', '<--', 'table:Beta factor table (region_code)', '']);
+  assert.deepEqual(stepsSection.body[2], ['3', 'gamma_factor', '<--', 'table:Gamma factor table (account_age)', '']);
+  assert.deepEqual(stepsSection.body[3], ['4', 'quoted_total', '<--', 'alpha_rate × beta_factor × gamma_factor', 'uses alpha_rate from step 1 (Alpha rating table); uses beta_factor from step 2 (Beta factor table); uses gamma_factor from step 3 (Gamma factor table)']);
+  assert.deepEqual(stepsSection.body[4], ['5', steps[4], 'R', 'quoted_total', '']);
 
   // Source evidence is preserved verbatim.
   const evidenceRows = blockRows(values, 'Source evidence');
   assert.ok(evidenceRows.some((row) => row[0] === 'Source pages' && row[1] === '2'));
-  assert.ok(evidenceRows.some((row) => row[0] === 'Evidence' && row[1].includes('CALC-001')));
+  assert.ok(evidenceRows.some((row) => row[0] === 'Evidence' && row[1].includes('GEN-001')));
 });
 
-test('excel: PROP multi-stage lookups keep raw/adjusted/annual separate and resolve tables', () => {
+test('excel: generic multi-stage calc keeps IF/ELSE and rounding stages in step order', () => {
+  // Generic four-lookup routine: Step 5 divides and multiplies, Step 6 is an
+  // IF/ELSE minimum, Step 7 rounds into a new variable. Short table aliases
+  // resolve to the extracted tables; the ordered steps carry every stage.
   const steps = [
-    'Step 1: Find the base rate for occupancy_class in Table A.',
-    'Step 2: Retrieve construction_factor from Table B using construction_code.',
-    'Step 3: Look up protection_factor using protection_class in Table C.',
-    'Step 4: Select the territory factor for territory from Table D.',
-    'Step 5: Calculate raw_premium = (insured_value / 1000) × base_rate × construction_factor × protection_factor × territory_factor.',
-    'Step 6: Apply a minimum annual premium of 350 currency units. If raw_premium is below 350, set adjusted_premium to 350; otherwise adjusted_premium equals raw_premium.',
-    'Step 7: Round adjusted_premium to the nearest whole currency unit using half-up rounding. Store the result as annual_premium.',
+    'Step 1: Find the base value for billing_group in Index A.',
+    'Step 2: Retrieve plan_factor from Index B using plan_code.',
+    'Step 3: Look up tier_factor using tier_level in Index C.',
+    'Step 4: Select the zone factor for zone_code from Index D.',
+    'Step 5: Calculate gross_amount = (contract_value / 1000) × base_value × plan_factor × tier_factor × zone_factor.',
+    'Step 6: Apply a minimum charge of 200 currency units. If gross_amount is below 200, set net_amount to 200; otherwise net_amount equals gross_amount.',
+    'Step 7: Round net_amount to the nearest whole currency unit using half-up rounding. Store the result as billed_amount.',
   ];
-  const intermediate = 'raw_premium = (insured_value / 1000) × base_rate × construction_factor × protection_factor × territory_factor';
-  const evidence = 'Routine ID: PROP-CALC-02 — Annual Property Premium. Inputs: occupancy_class, construction_code, protection_class, territory, insured_value. Step 5: Calculate raw_premium. Step 6: minimum premium conditional. Step 7: rounding to annual_premium.';
+  const intermediate = 'gross_amount = (contract_value / 1000) × base_value × plan_factor × tier_factor × zone_factor';
+  const evidence = 'Routine GEN-002 - Sample multi-stage calculation. Inputs: billing_group, plan_code, tier_level, zone_code, contract_value. Step 5: Calculate gross_amount. Step 6: minimum charge conditional. Step 7: rounding to billed_amount.';
   const job = normalizeJob(
     createJob({
-      document: createDocument({ filename: 'property-guidelines.pdf', pageCount: 3 }),
+      document: createDocument({ filename: 'sample-multi-stage-guidelines.pdf', pageCount: 3 }),
       tables: [
-        { name: 'Table A - Base property rate', sourcePages: [1], evidenceText: 'Table A schedule (annual rate per 1,000)', headers: ['Occupancy class', 'Base rate'], rows: [['O1', '1.20']] },
-        { name: 'Table B - Construction factor', sourcePages: [1], evidenceText: 'Table B schedule (annual factor per class)', headers: ['Construction code', 'Factor'], rows: [['C1', '0.80']] },
-        { name: 'Table C - Protection factor', sourcePages: [1], evidenceText: 'Table C schedule (annual factor per class)', headers: ['Protection class', 'Factor'], rows: [['P1', '0.90']] },
-        { name: 'Table D - Territory surcharge', sourcePages: [2], evidenceText: 'Table D schedule (annual surcharge per territory)', headers: ['Territory', 'Factor'], rows: [['Urban', '1.20']] },
+        { name: 'Index A - Base value', sourcePages: [1], evidenceText: 'Index A schedule (annual rate per 1,000)', headers: ['Billing group', 'Base value'], rows: [['O1', '1.20']] },
+        { name: 'Index B - Plan factor', sourcePages: [1], evidenceText: 'Index B schedule (annual factor per class)', headers: ['Plan code', 'Factor'], rows: [['C1', '0.80']] },
+        { name: 'Index C - Tier factor', sourcePages: [1], evidenceText: 'Index C schedule (annual factor per class)', headers: ['Tier level', 'Factor'], rows: [['P1', '0.90']] },
+        { name: 'Index D - Zone factor', sourcePages: [2], evidenceText: 'Index D schedule (annual factor per zone)', headers: ['Zone code', 'Factor'], rows: [['Urban', '1.20']] },
       ],
       routines: [{
-        name: 'PROP-CALC-02 - Annual Property Premium',
+        name: 'GEN-002 - Sample Multi-Stage Calc',
         kind: 'calculation_steps',
         sourcePages: [3],
         evidenceText: evidence,
         expressionText: intermediate,
         steps,
-        conditions: ['If raw_premium is below 350, set adjusted_premium to 350; otherwise adjusted_premium equals raw_premium.'],
-        dependsOn: ['Table A', 'Table B', 'Table C', 'Table D'],
-        inputs: ['occupancy_class', 'construction_code', 'protection_class', 'territory', 'insured_value'],
-        outputs: ['annual_premium'],
+        conditions: ['If gross_amount is below 200, set net_amount to 200; otherwise net_amount equals gross_amount.'],
+        dependsOn: ['Index A', 'Index B', 'Index C', 'Index D'],
+        inputs: ['billing_group', 'plan_code', 'tier_level', 'zone_code', 'contract_value'],
+        outputs: ['billed_amount'],
       }],
     })
   );
@@ -1101,19 +1058,19 @@ test('excel: PROP multi-stage lookups keep raw/adjusted/annual separate and reso
 
   const det = job.routines[0].steps_detailed;
   assert.deepEqual(det.map((d) => d.operation), ['lookup', 'lookup', 'lookup', 'lookup', 'expression', 'condition', 'rounding']);
-  assert.deepEqual(det.map((d) => d.output), ['base_rate', 'construction_factor', 'protection_factor', 'territory_factor', 'raw_premium', 'adjusted_premium', 'annual_premium']);
-  assert.deepEqual(det[0].inputs, ['occupancy_class']);
-  assert.deepEqual(det[0].depends_on, ['Table A']);
-  assert.deepEqual(det[1].inputs, ['construction_code']);
-  assert.deepEqual(det[4].inputs, ['insured_value', 'base_rate', 'construction_factor', 'protection_factor', 'territory_factor']);
-  assert.deepEqual(det[5].inputs, ['raw_premium']);
-  assert.deepEqual(det[6].inputs, ['adjusted_premium']);
+  assert.deepEqual(det.map((d) => d.output), ['base_value', 'plan_factor', 'tier_factor', 'zone_factor', 'gross_amount', 'net_amount', 'billed_amount']);
+  assert.deepEqual(det[0].inputs, ['billing_group']);
+  assert.deepEqual(det[0].depends_on, ['Index A']);
+  assert.deepEqual(det[1].inputs, ['plan_code']);
+  assert.deepEqual(det[4].inputs, ['contract_value', 'base_value', 'plan_factor', 'tier_factor', 'zone_factor']);
+  assert.deepEqual(det[5].inputs, ['gross_amount']);
+  assert.deepEqual(det[6].inputs, ['net_amount']);
 
   const cond = job.routines[0].conditions_detailed;
   assert.equal(cond.length, 1);
-  assert.equal(cond[0].condition, 'raw_premium is below 350');
-  assert.equal(cond[0].true_branch, 'set adjusted_premium to 350');
-  assert.equal(cond[0].false_branch, 'adjusted_premium equals raw_premium.');
+  assert.equal(cond[0].condition, 'gross_amount is below 200');
+  assert.equal(cond[0].true_branch, 'set net_amount to 200');
+  assert.equal(cond[0].false_branch, 'net_amount equals gross_amount.');
 
   const zip = readZip(buildWorkbookXlsx(job, { source: 'live' }));
   const workbook = zip.get('xl/workbook.xml');
@@ -1121,52 +1078,34 @@ test('excel: PROP multi-stage lookups keep raw/adjusted/annual separate and reso
   const routineSheet = routineSheetNames(job.routines, tableSheetNames(job.tables))[0];
   const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, routineSheet), strings);
 
-  const inputs = sectionRows(values, 'Inputs');
-  assert.deepEqual(inputs.body, [
-    ['occupancy_class', 'input parameter', ''],
-    ['construction_code', 'input parameter', ''],
-    ['protection_class', 'input parameter', ''],
-    ['territory', 'input parameter', ''],
-    ['insured_value', 'unresolved — verify', ''],
-  ]);
+  assert.equal(sectionRows(values, 'Inputs'), null);
+  assert.equal(sectionRows(values, 'Dependencies'), null);
+  assert.equal(sectionRows(values, 'Final calculation'), null);
 
   const stepsSection = sectionRows(values, 'Steps');
-  assert.deepEqual(stepsSection.body.map((row) => row[2]), ['lookup', 'lookup', 'lookup', 'lookup', 'expression', 'condition', 'rounding']);
-  assert.deepEqual(stepsSection.body[0], ['1', steps[0], 'lookup', 'occupancy_class', 'lookup Table A - Base property rate → base_rate']);
-  assert.deepEqual(stepsSection.body[1], ['2', steps[1], 'lookup', 'construction_code', 'lookup Table B - Construction factor → construction_factor']);
-  assert.deepEqual(stepsSection.body[3], ['4', steps[3], 'lookup', 'territory', 'lookup Table D - Territory surcharge → territory_factor']);
-  assert.equal(stepsSection.body[4][3], intermediate);
-  assert.match(stepsSection.body[4][4], /uses base_rate from step 1/);
-  assert.match(stepsSection.body[4][4], /uses construction_factor from step 2/);
-  assert.match(stepsSection.body[5][4], /uses raw_premium from step 5/);
-  assert.match(stepsSection.body[6][4], /uses adjusted_premium from step 6/);
-
-  // Final is the terminal annual stage, not the intermediate raw formula.
-  const final = sectionRows(values, 'Final calculation');
-  assert.equal(final.body.length, 1);
-  assert.equal(final.body[0][1], 'annual_premium');
-  assert.notEqual(final.body[0][0], intermediate);
-  assert.match(final.body[0][0], /annual_premium|Round adjusted_premium/);
-
-  const deps = sectionRows(values, 'Dependencies');
-  assert.deepEqual(deps.body, [
-    ['Table A', 'table', 'explicit', 'base_rate (keys: occupancy_class)'],
-    ['Table B', 'table', 'explicit', 'construction_factor (keys: construction_code)'],
-    ['Table C', 'table', 'explicit', 'protection_factor (keys: protection_class)'],
-    ['Table D', 'table', 'explicit', 'territory_factor (keys: territory)'],
-  ]);
+  assert.deepEqual(stepsSection.body.map((row) => row[2]), ['<--', '<--', '<--', '<--', '<--', 'IF', 'R']);
+  assert.deepEqual(stepsSection.body[0], ['1', 'base_value', '<--', 'table:Index A - Base value (billing_group)', '']);
+  assert.deepEqual(stepsSection.body[1], ['2', 'plan_factor', '<--', 'table:Index B - Plan factor (plan_code)', '']);
+  assert.deepEqual(stepsSection.body[3], ['4', 'zone_factor', '<--', 'table:Index D - Zone factor (zone_code)', '']);
+  assert.deepEqual(stepsSection.body[4].slice(0, 4), ['5', 'gross_amount', '<--', '(contract_value / 1000) × base_value × plan_factor × tier_factor × zone_factor']);
+  assert.match(stepsSection.body[4][4], /uses base_value from step 1/);
+  assert.match(stepsSection.body[4][4], /uses plan_factor from step 2/);
+  assert.deepEqual(stepsSection.body[5].slice(0, 4), ['6', steps[5], 'IF', 'net_amount']);
+  assert.match(stepsSection.body[5][4], /uses gross_amount from step 5/);
+  assert.deepEqual(stepsSection.body[6].slice(0, 4), ['7', steps[6], 'R', 'net_amount']);
+  assert.match(stepsSection.body[6][4], /uses net_amount from step 6/);
 
   const condSection = sectionRows(values, 'Conditions');
-  assert.equal(condSection.body[0][1], 'If raw_premium is below 350, set adjusted_premium to 350; otherwise adjusted_premium equals raw_premium.');
-  assert.equal(condSection.body[0][2], 'set adjusted_premium to 350');
-  assert.equal(condSection.body[0][3], 'adjusted_premium equals raw_premium.');
+  assert.equal(condSection.body[0][1], 'If gross_amount is below 200, set net_amount to 200; otherwise net_amount equals gross_amount.');
+  assert.equal(condSection.body[0][2], 'set net_amount to 200');
+  assert.equal(condSection.body[0][3], 'net_amount equals gross_amount.');
 
   const evidenceRows = blockRows(values, 'Source evidence');
   assert.ok(evidenceRows.some((row) => row[0] === 'Source pages' && row[1] === '3'));
-  assert.ok(evidenceRows.some((row) => row[0] === 'Evidence' && row[1].includes('PROP-CALC-02')));
+  assert.ok(evidenceRows.some((row) => row[0] === 'Evidence' && row[1].includes('GEN-002')));
 });
 
-test('excel: parenthetical title text never sources an input and stages stay distinct', () => {
+test('excel: generic widget calc keeps gross/net/billed stages distinct in step order', () => {
   const steps = [
     '1 Find the widget rate for widget_class in Schedule Q.',
     '2 Retrieve gadget_factor from Schedule R using gadget_code.',
@@ -1211,42 +1150,26 @@ test('excel: parenthetical title text never sources an input and stages stay dis
   const strings = zip.get('xl/sharedStrings.xml');
   const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Widget premium calc'), strings);
 
-  // The parenthetical qualifier mentions account_value, but the schedule only
-  // provides widget_rate: the external input is never sourced from that table.
-  const inputs = sectionRows(values, 'Inputs');
-  assert.deepEqual(inputs.body, [
-    ['widget_class', 'input parameter', ''],
-    ['gadget_code', 'input parameter', ''],
-    ['account_value', 'unresolved — verify', ''],
-  ]);
+  // No separate inventories: the steps carry every stage in source order.
+  assert.equal(sectionRows(values, 'Inputs'), null);
+  assert.equal(sectionRows(values, 'Dependencies'), null);
+  assert.equal(sectionRows(values, 'Final calculation'), null);
 
   const stepsSection = sectionRows(values, 'Steps');
   assert.deepEqual(stepsSection.body.map((row) => row[0]), ['1', '2', '3', '4', '5']);
-  assert.deepEqual(stepsSection.body.map((row) => row[2]), ['lookup', 'lookup', 'expression', 'condition', 'rounding']);
-  assert.equal(stepsSection.body[0][3], 'widget_class');
-  assert.equal(stepsSection.body[0][4], 'lookup Schedule Q - Widget rate (annual rate per 1,000 of account_value) → widget_rate');
-  assert.equal(stepsSection.body[1][4], 'lookup Schedule R - Gadget factor → gadget_factor');
-  assert.equal(stepsSection.body[2][3], intermediate);
+  assert.deepEqual(stepsSection.body.map((row) => row[2]), ['<--', '<--', '<--', 'IF', 'R']);
+  assert.deepEqual(stepsSection.body[0], ['1', 'widget_rate', '<--', 'table:Schedule Q - Widget rate (annual rate per 1,000 of account_value) (widget_class)', '']);
+  assert.deepEqual(stepsSection.body[1], ['2', 'gadget_factor', '<--', 'table:Schedule R - Gadget factor (gadget_code)', '']);
+  assert.deepEqual(stepsSection.body[2].slice(0, 4), ['3', 'gross_total', '<--', '(account_value / 1000) × widget_rate × gadget_factor']);
   assert.match(stepsSection.body[2][4], /uses widget_rate from step 1/);
   assert.match(stepsSection.body[2][4], /uses gadget_factor from step 2/);
+  assert.deepEqual(stepsSection.body[3].slice(0, 4), ['4', steps[3], 'IF', 'net_total']);
   assert.match(stepsSection.body[3][4], /uses gross_total from step 3/);
+  assert.deepEqual(stepsSection.body[4].slice(0, 4), ['5', steps[4], 'R', 'net_total']);
   assert.match(stepsSection.body[4][4], /uses net_total from step 4/);
-
-  // Final is the terminal billed stage, not the intermediate gross formula.
-  const final = sectionRows(values, 'Final calculation');
-  assert.equal(final.body.length, 1);
-  assert.equal(final.body[0][1], 'billed_total');
-  assert.notEqual(final.body[0][0], intermediate);
-  assert.match(final.body[0][0], /billed_total|Round net_total/);
-
-  const deps = sectionRows(values, 'Dependencies');
-  assert.deepEqual(deps.body, [
-    ['Schedule Q', 'table', 'explicit', 'widget_rate (keys: widget_class)'],
-    ['Schedule R', 'table', 'explicit', 'gadget_factor (keys: gadget_code)'],
-  ]);
 });
 
-test('excel: intermediate expression keeps its own output when no later stage is evidenced', () => {
+test('excel: formula-only routine renders its expression as one assignment step', () => {
   const expr = 'gross_total = alpha_value + beta_value';
   const job = normalizeJob(
     createJob({
@@ -1267,8 +1190,11 @@ test('excel: intermediate expression keeps its own output when no later stage is
   const workbook = zip.get('xl/workbook.xml');
   const strings = zip.get('xl/sharedStrings.xml');
   const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Staged totals'), strings);
-  const final = sectionRows(values, 'Final calculation');
-  assert.deepEqual(final.body, [[expr, 'gross_total']]);
+  const stepsSection = sectionRows(values, 'Steps');
+  assert.deepEqual(stepsSection.body, [['1', 'gross_total', '<--', 'alpha_value + beta_value', '']]);
+  assert.equal(sectionRows(values, 'Final calculation'), null);
+  assert.equal(sectionRows(values, 'Inputs'), null);
+  assert.equal(sectionRows(values, 'Dependencies'), null);
 });
 
 test('excel: rule actions render in the true branch while condition text stays verbatim', () => {
@@ -1323,7 +1249,7 @@ test('excel: bare step numbers preserve gaps in the step column', () => {
   assert.deepEqual(stepsSection.body.map((row) => row[0]), ['1', '3']);
 });
 
-test('excel: intermediate expression is not promoted to final when steps show later stages', () => {
+test('excel: staged calc keeps interim and conditional stages in step order', () => {
   const interim = 'interim_total = alpha_value + beta_value';
   const job = normalizeJob(
     createJob({
@@ -1360,14 +1286,64 @@ test('excel: intermediate expression is not promoted to final when steps show la
   const workbook = zip.get('xl/workbook.xml');
   const strings = zip.get('xl/sharedStrings.xml');
   const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Generic Staged Calc'), strings);
-  const final = sectionRows(values, 'Final calculation');
-  assert.equal(final.body.length, 1);
-  assert.equal(final.body[0][1], 'final_total');
-  assert.notEqual(final.body[0][0], interim);
-  assert.match(final.body[0][0], /final_total/);
-  const deps = sectionRows(values, 'Dependencies');
-  assert.deepEqual(deps.body, [
-    ['Lookup One', 'table', 'explicit', 'alpha_value (keys: alpha_key)'],
-    ['Lookup Two', 'table', 'explicit', 'beta_value (keys: beta_key)'],
+  const stepsSection = sectionRows(values, 'Steps');
+  assert.deepEqual(stepsSection.body.map((row) => row[2]), ['<--', '<--', '<--', 'IF']);
+  assert.deepEqual(stepsSection.body[0], ['1', 'alpha_value', '<--', 'table:Lookup One (alpha_key)', '']);
+  assert.deepEqual(stepsSection.body[1], ['2', 'beta_value', '<--', 'table:Lookup Two (beta_key)', '']);
+  assert.deepEqual(stepsSection.body[2], ['3', 'interim_total', '<--', 'alpha_value + beta_value', 'uses alpha_value from step 1 (Lookup One); uses beta_value from step 2 (Lookup Two)']);
+  assert.deepEqual(stepsSection.body[3].slice(0, 4), ['4', 'If interim_total is below 100, set final_total to 100; otherwise final_total equals interim_total.', 'IF', 'final_total']);
+  assert.equal(stepsSection.body[3][4], 'uses interim_total from step 3');
+  assert.equal(sectionRows(values, 'Final calculation'), null);
+  assert.equal(sectionRows(values, 'Dependencies'), null);
+  assert.equal(sectionRows(values, 'Inputs'), null);
+});
+
+test('excel: condition routines keep the legacy sheet layout with all sections', () => {
+  // Underwriting rules are out of scope for the stepwise
+  // simplification: a condition routine keeps Inputs, Steps, Final
+  // calculation, Conditions, Dependencies, and Source evidence, including
+  // the rule that a parenthetical title qualifier never sources an input.
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'generic.pdf', pageCount: 2 }),
+      tables: [
+        { name: 'Schedule Q - Widget rate (annual rate per 1,000 of account_value)', sourcePages: [1], evidenceText: 'Schedule Q (annual rate per 1,000)', headers: ['Widget class', 'Widget rate'], rows: [['W1', '1.10']] },
+      ],
+      routines: [{
+        name: 'Widget review rules',
+        kind: 'condition',
+        sourcePages: [2],
+        evidenceText: 'Widget review rules with a lookup step and a stated formula.',
+        expressionText: 'review_score = widget_rate + account_value',
+        steps: ['Look up widget_rate using widget_class in Schedule Q.'],
+        conditions: ['RULE-7 Widget count exceeds 10 units. Refer'],
+        dependsOn: ['Schedule Q'],
+        inputs: ['widget_class', 'account_value'],
+        outputs: ['review_score'],
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'live' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Widget review rules'), strings);
+  const inputs = sectionRows(values, 'Inputs');
+  assert.deepEqual(inputs.header, ['Input', 'Source', 'Lookup keys']);
+  assert.deepEqual(inputs.body, [
+    ['widget_class', 'input parameter', ''],
+    ['account_value', 'unresolved — verify', ''],
   ]);
+  const steps = sectionRows(values, 'Steps');
+  assert.deepEqual(steps.header, ['Step #', 'Instruction', 'Operation', 'Operand', 'Comment']);
+  assert.deepEqual(steps.body, [['1', 'Look up widget_rate using widget_class in Schedule Q.', 'lookup', 'widget_class', 'lookup Schedule Q - Widget rate (annual rate per 1,000 of account_value) → widget_rate']]);
+  const final = sectionRows(values, 'Final calculation');
+  assert.deepEqual(final.body, [['review_score = widget_rate + account_value', 'review_score']]);
+  const conds = sectionRows(values, 'Conditions');
+  assert.equal(conds.body.length, 1);
+  assert.equal(conds.body[0][1], 'RULE-7 Widget count exceeds 10 units. Refer');
+  assert.equal(conds.body[0][2], 'Refer');
+  const deps = sectionRows(values, 'Dependencies');
+  assert.deepEqual(deps.body, [['Schedule Q', 'table', 'explicit', 'widget_rate (keys: widget_class)']]);
+  assert.ok(blockRows(values, 'Source evidence') !== null);
 });

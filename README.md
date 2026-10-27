@@ -2,7 +2,7 @@
 
 An AI-powered tool that transforms P&C insurance underwriting guideline PDFs into structured, traceable, Excel-ready requirements for rating and configuration workflows, using Meta AI models.
 
-Demo scope: upload **one** guideline PDF, extract **rating tables** and **rating routines** (formulas, conditions, calculation steps, dependencies) with source-page references and evidence text, review them, and export a traceable **Excel workbook** with validation issues. No Gosu generation or Guidewire implementation.
+Demo scope: upload **one** guideline PDF, extract **rating tables** and **rating routines** (formulas, conditions, calculation steps, dependencies) with source-page references and evidence text, review them, and export a traceable **Excel workbook** with validation issues. No rating-engine code generation or platform-specific implementation.
 
 Zero runtime dependencies — Node.js 20+ only.
 

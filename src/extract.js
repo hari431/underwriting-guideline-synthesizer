@@ -43,6 +43,8 @@ export function buildExtractionPrompt(pages) {
     ' steps [ordered operations in source order: verbatim step texts preserving',
     ' original numbering, or {sequence, instruction, operation, expression, operand,',
     ' inputs, output} when the source explicitly states the operation and operand],',
+    ' with lookup keys using the source column labels verbatim (for example',
+    ' "Coverage Name"), never as object paths (never "Coverage.Name"),',
     ' depends_on [referenced table/routine/variable names], inputs?, outputs?,',
     ' purpose?, applicability?, execution_context?, notes?',
     'Rules: every table and routine MUST include 1-based source_pages and verbatim evidence_text.',
