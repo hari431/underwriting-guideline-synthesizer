@@ -211,15 +211,19 @@ test('excel: sample routine sheets populate fields supported by the source', asy
   const routineSheets = routineSheetNames(job.routines, tableSheetNames(job.tables));
   const byIndex = (i) => sheetRowsAsValues(sheetXmlByName(zip, workbook, routineSheets[i]), strings);
 
-  // B1: the stated formula renders as one assignment step; no separate
-  // Inputs, Final calculation, or Dependencies sections.
+  // B1: the stated formula expands to one row per operation with explicit
+  // brackets; no separate Inputs, Final calculation, or Dependencies sections.
   const b1 = byIndex(0);
   assert.deepEqual(b1[0], ['B1 - Base premium formula']);
   assert.ok(!b1.some((row) => row.length === 2 && (row[0] === 'Inputs' || row[0] === 'Outputs' || row[0] === 'Expression')));
   assert.equal(sectionRows(b1, 'Inputs'), null);
   assert.equal(sectionRows(b1, 'Dependencies'), null);
   assert.equal(sectionRows(b1, 'Final calculation'), null);
-  assert.deepEqual(sectionRows(b1, 'Steps').body, [['1', 'base_premium', '<--', 'base_rate * territory_factor', '']]);
+  assert.deepEqual(sectionRows(b1, 'Steps').header, ['Step #', 'Instruction', 'Op', '(', 'Operand', ')', 'Line Comment']);
+  assert.deepEqual(sectionRows(b1, 'Steps').body, [
+    ['1', 'base_premium', '<--', '', 'base_rate', '', 'Start base_premium from base_rate (source step 1)'],
+    ['2', '', '*', '', 'territory_factor', '', 'Apply * territory_factor to continue base_premium from prior step (source step 1)'],
+  ]);
 
   // T1: true/false branches and referral code populated from explicit text.
   const t1 = byIndex(1);
@@ -233,24 +237,27 @@ test('excel: sample routine sheets populate fields supported by the source', asy
   assert.equal(sectionRows(t1, 'Final calculation'), null); // no formula or steps: nothing to close the flow
 
   // F1: stepwise rating steps — lookups assign table values to variables,
-  // arithmetic keeps its symbols, rounding keeps its source text, and the
-  // cross-routine input stays traced. No separate inventory sections.
+  // arithmetic expands to one row per operation, rounding assigns its output
+  // with the source wording, and the cross-routine input stays traced. No
+  // separate inventories.
   const f1 = byIndex(2);
   const f1steps = sectionRows(f1, 'Steps');
-  assert.deepEqual(f1steps.header, ['Step #', 'Instruction', 'Operation', 'Operand', 'Comment']);
-  assert.deepEqual(f1steps.body.map((row) => row[0]), ['1', '2', '3', '4']);
-  assert.deepEqual(f1steps.body.map((row) => row[2]), ['<--', '<--', '<--', 'R']);
-  assert.deepEqual(f1steps.body[0], ['1', 'base_rate', '<--', 'table:Table 1 - Base Rate by Driver Class (driver class)', '']);
-  assert.deepEqual(f1steps.body[1], ['2', 'territory_factor', '<--', 'table:Table 2 - Territory Factor (territory)', '']);
-  assert.deepEqual(f1steps.body[2], ['3', 'final_premium', '<--', 'base_premium + policy_fee', 'uses base_premium from B1 - Base premium formula']);
-  assert.deepEqual(f1steps.body[3], ['4', 'Round final_premium to the nearest dollar.', 'R', 'final_premium', '']);
+  assert.deepEqual(f1steps.header, ['Step #', 'Instruction', 'Op', '(', 'Operand', ')', 'Line Comment']);
+  assert.deepEqual(f1steps.body.map((row) => row[0]), ['1', '2', '3', '4', '5']);
+  assert.deepEqual(f1steps.body.map((row) => row[2]), ['<--', '<--', '<--', '+', 'R']);
+  assert.deepEqual(f1steps.body[0], ['1', 'base_rate', '<--', '', 'table:Table 1 - Base Rate by Driver Class (driver class)', '', 'Lookup base_rate from Table 1 - Base Rate by Driver Class']);
+  assert.deepEqual(f1steps.body[1], ['2', 'territory_factor', '<--', '', 'table:Table 2 - Territory Factor (territory)', '', 'Lookup territory_factor from Table 2 - Territory Factor']);
+  assert.deepEqual(f1steps.body[2], ['3', 'final_premium', '<--', '', 'base_premium', '', 'uses base_premium from B1 - Base premium formula']);
+  assert.deepEqual(f1steps.body[3], ['4', '', '+', '', 'policy_fee', '', 'Apply + policy_fee to continue final_premium from prior step (source step 3)']);
+  assert.deepEqual(f1steps.body[4], ['5', 'final_premium', 'R', '', 'to the nearest dollar', '', 'Round final_premium (source step 4)']);
+  assert.ok(f1steps.body.every((row) => row.length === 7 && row[6] !== ''));
   assert.equal(sectionRows(f1, 'Inputs'), null);
   assert.equal(sectionRows(f1, 'Dependencies'), null);
   assert.equal(sectionRows(f1, 'Final calculation'), null);
 
   // G1: unfamiliar wording kept verbatim with nothing invented, flagged instead.
   const g1 = byIndex(3);
-  assert.deepEqual(sectionRows(g1, 'Steps').body, [['1', 'APPLY legacy_matrix_v2 surcharge curve', '', '', '']]);
+  assert.deepEqual(sectionRows(g1, 'Steps').body, [['1', 'APPLY legacy_matrix_v2 surcharge curve', '', '', '', '', 'Source instruction (source step 1)']]);
   assert.equal(sectionRows(g1, 'Final calculation'), null);
   const g1issues = sectionRows(g1, 'Unresolved items');
   assert.ok(g1issues !== null && g1issues.body.length >= 1);
@@ -332,12 +339,12 @@ test('excel: rating routine sheet keeps steps and conditions as separate rows', 
   const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Calc'), strings);
   assert.deepEqual(values[0], ['Calc']); // routine name in A1
   const steps = sectionRows(values, 'Steps');
-  assert.deepEqual(steps.header, ['Step #', 'Instruction', 'Operation', 'Operand', 'Comment']);
+  assert.deepEqual(steps.header, ['Step #', 'Instruction', 'Op', '(', 'Operand', ')', 'Line Comment']);
   assert.deepEqual(steps.body, [
-    ['1', 'Step 1: first', '', '', ''],
-    ['3', 'Step 3: third', '', '', ''], // original numbering gaps preserved
+    ['1', 'Step 1: first', '', '', '', '', 'Source instruction (source step 1)'],
+    ['3', 'Step 3: third', '', '', '', '', 'Source instruction (source step 3)'], // gaps preserved without expansion
   ]);
-  assert.ok(steps.body.every((row) => row.length === 5));
+  assert.ok(steps.body.every((row) => row.length === 7));
   const conditions = sectionRows(values, 'Conditions');
   assert.equal(conditions.body.length, 2);
   assert.equal(conditions.body[0][1], 'IF x THEN y');
@@ -439,12 +446,12 @@ test('excel: rating routine sheet renders structured steps in stepwise form', ()
   assert.ok(values.some((row) => row[0] === 'Applicability' && row[1] === 'Each item'));
   assert.ok(values.some((row) => row[0] === 'Execution context' && row[1] === 'per item'));
   const steps = sectionRows(values, 'Steps');
-  assert.deepEqual(steps.header, ['Step #', 'Instruction', 'Operation', 'Operand', 'Comment']);
-  assert.deepEqual(steps.body.map((row) => row[0]), ['1', '2', '4']); // gaps preserved
+  assert.deepEqual(steps.header, ['Step #', 'Instruction', 'Op', '(', 'Operand', ')', 'Line Comment']);
+  assert.deepEqual(steps.body.map((row) => row[0]), ['1', '2', '4']); // gaps preserved without expansion
   assert.deepEqual(steps.body.map((row) => row[2]), ['<--', '<--', 'R']);
-  assert.deepEqual(steps.body[0], ['1', 'x', '<--', '0', '']);
-  assert.deepEqual(steps.body[1], ['2', 'f', '<--', 'key_a, key_b', '']);
-  assert.deepEqual(steps.body[2], ['4', 'Round result', 'R', 'round to whole', '']);
+  assert.deepEqual(steps.body[0], ['1', 'x', '<--', '', '0', '', 'Assign 0 to x (source step 1)']);
+  assert.deepEqual(steps.body[1], ['2', 'f', '<--', '', 'key_a, key_b', '', 'Lookup f (source step 2)']);
+  assert.deepEqual(steps.body[2], ['4', 'r', 'R', '', 'round to whole', '', 'Round r (source step 4)']);
   assert.equal(sectionRows(values, 'Inputs'), null);
   assert.equal(sectionRows(values, 'Dependencies'), null);
   assert.equal(sectionRows(values, 'Final calculation'), null);
@@ -474,8 +481,11 @@ test('excel: step comments trace routine outputs and flag unresolved tables', ()
   const strings = zip.get('xl/sharedStrings.xml');
   const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Downstream'), strings);
   const steps = sectionRows(values, 'Steps');
-  assert.deepEqual(steps.body[0], ['1', 'total', '<--', 'shared + fee', 'uses shared from Upstream']);
-  assert.deepEqual(steps.body[1], ['2', 'rate', '<--', 'table:Table 9 (K)', 'table unresolved — verify']);
+  assert.deepEqual(steps.header, ['Step #', 'Instruction', 'Op', '(', 'Operand', ')', 'Line Comment']);
+  assert.deepEqual(steps.body.map((row) => row[0]), ['1', '2', '3']);
+  assert.deepEqual(steps.body[0], ['1', 'total', '<--', '', 'shared', '', 'uses shared from Upstream']);
+  assert.deepEqual(steps.body[1], ['2', '', '+', '', 'fee', '', 'Apply + fee to continue total from prior step (source step 1)']);
+  assert.deepEqual(steps.body[2], ['3', 'rate', '<--', '', 'table:Table 9 (K)', '', 'table unresolved — verify']);
   assert.equal(sectionRows(values, 'Inputs'), null);
   assert.equal(sectionRows(values, 'Dependencies'), null);
   // The cross-routine value resolves; only the unknown table is flagged.
@@ -530,14 +540,17 @@ test('excel: each routine sheet carries only its own details and unresolved item
   const second = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Second'), strings);
   assert.deepEqual(first[0], ['First']);
   assert.deepEqual(second[0], ['Second']);
-  assert.deepEqual(sectionRows(first, 'Steps').body, [['1', 'a', '<--', 'b + 1', '']]);
+  assert.deepEqual(sectionRows(first, 'Steps').body, [
+    ['1', 'a', '<--', '', 'b', '', 'Start a from b (source step 1)'],
+    ['2', '', '+', '', '1', '', 'Apply + 1 to continue a from prior step (source step 1)'],
+  ]);
   assert.equal(sectionRows(first, 'Dependencies'), null);
   assert.equal(sectionRows(second, 'Dependencies'), null);
   const firstUnresolved = sectionRows(first, 'Unresolved items');
   assert.ok(firstUnresolved !== null && firstUnresolved.body.length >= 1);
   assert.ok(firstUnresolved.body.some((row) => row[2].includes('Missing Asset')));
   assert.equal(sectionRows(second, 'Unresolved items'), null);
-  assert.deepEqual(sectionRows(second, 'Steps').body, [['1', 'Do something', '', '', '']]);
+  assert.deepEqual(sectionRows(second, 'Steps').body, [['1', 'Do something', '', '', '', '', 'Source instruction (source step 1)']]);
 });
 
 test('excel: routine sheet names are safe, unique, and avoid table sheets', () => {
@@ -676,7 +689,7 @@ test('excel: routine titles, section headings, and column headers are styled, da
 
   // Step-based routine: every present section is styled; data stays normal.
   const calcValues = assertRoutineFormatting('Calc', ['Steps', 'Conditions', 'Source evidence']);
-  assert.deepEqual(sectionRows(calcValues, 'Steps').header, ['Step #', 'Instruction', 'Operation', 'Operand', 'Comment']);
+  assert.deepEqual(sectionRows(calcValues, 'Steps').header, ['Step #', 'Instruction', 'Op', '(', 'Operand', ')', 'Line Comment']);
   assert.deepEqual(sectionRows(calcValues, 'Steps').body.map((row) => row[1]), ['Step 1: Do first thing', 'Step 2: Do second thing']);
   // No separate inventory sections and no empty sections for visual consistency.
   assert.equal(sectionRows(calcValues, 'Inputs'), null);
@@ -684,11 +697,14 @@ test('excel: routine titles, section headings, and column headers are styled, da
   assert.equal(sectionRows(calcValues, 'Final calculation'), null);
   assert.equal(sectionRows(calcValues, 'Unresolved items'), null);
 
-  // Formula-only routine: the expression renders as one assignment step with
-  // the same title/heading/header styling.
+  // Formula-only routine: the expression expands to one row per operation
+  // with the same title/heading/header styling.
   const plainValues = assertRoutineFormatting('Plain', ['Steps', 'Source evidence']);
-  assert.deepEqual(sectionRows(plainValues, 'Steps').header, ['Step #', 'Instruction', 'Operation', 'Operand', 'Comment']);
-  assert.deepEqual(sectionRows(plainValues, 'Steps').body, [['1', 'a', '<--', 'b * 2', '']]);
+  assert.deepEqual(sectionRows(plainValues, 'Steps').header, ['Step #', 'Instruction', 'Op', '(', 'Operand', ')', 'Line Comment']);
+  assert.deepEqual(sectionRows(plainValues, 'Steps').body, [
+    ['1', 'a', '<--', '', 'b', '', 'Start a from b (source step 1)'],
+    ['2', '', '*', '', '2', '', 'Apply * 2 to continue a from prior step (source step 1)'],
+  ]);
   assert.equal(sectionRows(plainValues, 'Inputs'), null);
   assert.equal(sectionRows(plainValues, 'Dependencies'), null);
   assert.equal(sectionRows(plainValues, 'Final calculation'), null);
@@ -764,10 +780,13 @@ test('excel: rating routine steps trace variables without separate inventories',
     return sheetRowsAsValues(sheetXmlByName(zip, workbook, routineSheets[idx]), strings);
   };
 
-  // B1: one assignment step carries the stated formula; the tables it
+  // B1: ordered operation rows carry the stated formula; the tables it
   // names stay out of any separate inventory.
   const b1 = byName('B1 - Base premium formula');
-  assert.deepEqual(sectionRows(b1, 'Steps').body, [['1', 'base_premium', '<--', 'base_rate * territory_factor', '']]);
+  assert.deepEqual(sectionRows(b1, 'Steps').body, [
+    ['1', 'base_premium', '<--', '', 'base_rate', '', 'Start base_premium from base_rate (source step 1)'],
+    ['2', '', '*', '', 'territory_factor', '', 'Apply * territory_factor to continue base_premium from prior step (source step 1)'],
+  ]);
   assert.equal(sectionRows(b1, 'Inputs'), null);
   assert.equal(sectionRows(b1, 'Dependencies'), null);
   assert.equal(sectionRows(b1, 'Final calculation'), null);
@@ -776,9 +795,9 @@ test('excel: rating routine steps trace variables without separate inventories',
   // stays traced to its producing routine; nothing is guessed.
   const f1 = byName('F1 - Final premium calculation');
   const f1steps = sectionRows(f1, 'Steps');
-  assert.deepEqual(f1steps.body[0], ['1', 'base_rate', '<--', 'table:Table 1 - Base Rate by Driver Class (driver class)', '']);
-  assert.deepEqual(f1steps.body[1], ['2', 'territory_factor', '<--', 'table:Table 2 - Territory Factor (territory)', '']);
-  assert.deepEqual(f1steps.body[2][4], 'uses base_premium from B1 - Base premium formula');
+  assert.deepEqual(f1steps.body[0], ['1', 'base_rate', '<--', '', 'table:Table 1 - Base Rate by Driver Class (driver class)', '', 'Lookup base_rate from Table 1 - Base Rate by Driver Class']);
+  assert.deepEqual(f1steps.body[1], ['2', 'territory_factor', '<--', '', 'table:Table 2 - Territory Factor (territory)', '', 'Lookup territory_factor from Table 2 - Territory Factor']);
+  assert.deepEqual(f1steps.body[2][6], 'uses base_premium from B1 - Base premium formula');
   assert.equal(sectionRows(f1, 'Inputs'), null);
   assert.equal(sectionRows(f1, 'Dependencies'), null);
   assert.equal(sectionRows(f1, 'Final calculation'), null);
@@ -811,9 +830,10 @@ test('excel: steps show how table values feed later calculations', () => {
   const strings = zip.get('xl/sharedStrings.xml');
   const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Calc'), strings);
   const steps = sectionRows(values, 'Steps');
-  assert.deepEqual(steps.header, ['Step #', 'Instruction', 'Operation', 'Operand', 'Comment']);
-  assert.deepEqual(steps.body[0], ['1', 'x', '<--', 'table:Lookup Table (my_key)', '']);
-  assert.deepEqual(steps.body[1], ['2', 'y', '<--', 'x * 2', 'uses x from step 1 (Lookup Table)']);
+  assert.deepEqual(steps.header, ['Step #', 'Instruction', 'Op', '(', 'Operand', ')', 'Line Comment']);
+  assert.deepEqual(steps.body[0], ['1', 'x', '<--', '', 'table:Lookup Table (my_key)', '', 'Lookup x from Lookup Table']);
+  assert.deepEqual(steps.body[1], ['2', 'y', '<--', '', 'x', '', 'uses x from step 1 (Lookup Table)']);
+  assert.deepEqual(steps.body[2], ['3', '', '*', '', '2', '', 'Apply * 2 to continue y from prior step (source step 2)']);
   // No separate inventories: the steps carry the table link and the
   // external factor stays a plain operand without a guessed source.
   assert.equal(sectionRows(values, 'Dependencies'), null);
@@ -845,16 +865,20 @@ test('excel: steps trace the producing routine and flag unresolved tables', () =
   const strings = zip.get('xl/sharedStrings.xml');
   const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Downstream'), strings);
   const steps = sectionRows(values, 'Steps');
-  assert.deepEqual(steps.body[0], ['1', 'total', '<--', 'shared + fee', 'uses shared from Upstream']);
-  assert.deepEqual(steps.body[1], ['2', 'rate', '<--', 'table:Table 9 (K)', 'table unresolved — verify']);
+  assert.deepEqual(steps.body[0], ['1', 'total', '<--', '', 'shared', '', 'uses shared from Upstream']);
+  assert.deepEqual(steps.body[1], ['2', '', '+', '', 'fee', '', 'Apply + fee to continue total from prior step (source step 1)']);
+  assert.deepEqual(steps.body[2], ['3', 'rate', '<--', '', 'table:Table 9 (K)', '', 'table unresolved — verify']);
   // No separate inventories: the producing routine stays traced in the
   // step comment and the unknown table is flagged in place.
   assert.equal(sectionRows(values, 'Dependencies'), null);
   assert.equal(sectionRows(values, 'Inputs'), null);
   assert.equal(sectionRows(values, 'Final calculation'), null);
-  // The upstream formula renders as one assignment step.
+  // The upstream formula expands to one row per operation.
   const up = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Upstream'), strings);
-  assert.deepEqual(sectionRows(up, 'Steps').body, [['1', 'shared', '<--', 'base + 1', '']]);
+  assert.deepEqual(sectionRows(up, 'Steps').body, [
+    ['1', 'shared', '<--', '', 'base', '', 'Start shared from base (source step 1)'],
+    ['2', '', '+', '', '1', '', 'Apply + 1 to continue shared from prior step (source step 1)'],
+  ]);
   assert.equal(sectionRows(up, 'Inputs'), null);
 });
 
@@ -862,7 +886,8 @@ test('excel: routine sheet follows stepwise rating routine steps (Collision cove
   // Models a stepwise collision coverage rating routine: lookups assign table
   // values to variables, intermediate assignments copy values through, a
   // chained multiply keeps the source '*' operation verbatim, and rounding renders
-  // as 'R' with its operand carried through verbatim. Lookup keys render as
+  // as 'R' assigning its output with the operand carried through verbatim.
+  // Lookup keys render as
   // spaced labels ('Coverage Name'), never as object paths ('Coverage.Name').
   // No separate inventory sections.
   const job = normalizeJob(
@@ -916,17 +941,18 @@ test('excel: routine sheet follows stepwise rating routine steps (Collision cove
   // Steps match the reference routine row for row: assignments read as
   // `variable <-- operand`, the chained multiply keeps '*', rounding is
   // 'R', and each intermediate value stays traced to its source step.
+  // Bracket columns stay explicit (empty here); every row keeps a comment.
   const steps = sectionRows(values, 'Steps');
-  assert.deepEqual(steps.header, ['Step #', 'Instruction', 'Operation', 'Operand', 'Comment']);
+  assert.deepEqual(steps.header, ['Step #', 'Instruction', 'Op', '(', 'Operand', ')', 'Line Comment']);
   assert.deepEqual(steps.body.map((row) => row[0]), ['1', '2', '3', '4', '5', '6', '7', '8']);
-  assert.deepEqual(steps.body[0], ['1', 'CollisionDriverVehicleFactor', '<--', 'table:Collision Driver Vehicle Factor (AssignedDriver DriverAge, Coverage Deductible, Vehicle VehicleAge)', '']);
-  assert.deepEqual(steps.body[1], ['2', 'BaseRateFactor', '<--', 'table:Base Rate (Coverage Name)', '']);
-  assert.deepEqual(steps.body[2], ['3', 'Basis', '<--', '1', '']);
-  assert.deepEqual(steps.body[3], ['4', 'BaseRate', '<--', 'BaseRateFactor', 'uses BaseRateFactor from step 2 (Base Rate)']);
-  assert.deepEqual(steps.body[4], ['5', 'AdjustedRate', '<--', 'BaseRate', 'uses BaseRate from step 4']);
-  assert.deepEqual(steps.body[5], ['6', '', '*', 'CollisionDriverVehicleFactor', 'uses CollisionDriverVehicleFactor from step 1 (Collision Driver Vehicle Factor)']);
-  assert.deepEqual(steps.body[6], ['7', 'TermAmount', '<--', 'AdjustedRate', 'uses AdjustedRate from step 5']);
-  assert.deepEqual(steps.body[7], ['8', '', 'R', '1', 'uses TermAmount from step 7']);
+  assert.deepEqual(steps.body[0], ['1', 'CollisionDriverVehicleFactor', '<--', '', 'table:Collision Driver Vehicle Factor (AssignedDriver DriverAge, Coverage Deductible, Vehicle VehicleAge)', '', 'Lookup CollisionDriverVehicleFactor from Collision Driver Vehicle Factor']);
+  assert.deepEqual(steps.body[1], ['2', 'BaseRateFactor', '<--', '', 'table:Base Rate (Coverage Name)', '', 'Lookup BaseRateFactor from Base Rate']);
+  assert.deepEqual(steps.body[2], ['3', 'Basis', '<--', '', '1', '', 'Assign 1 to Basis (source step 3)']);
+  assert.deepEqual(steps.body[3], ['4', 'BaseRate', '<--', '', 'BaseRateFactor', '', 'uses BaseRateFactor from step 2 (Base Rate)']);
+  assert.deepEqual(steps.body[4], ['5', 'AdjustedRate', '<--', '', 'BaseRate', '', 'uses BaseRate from step 4']);
+  assert.deepEqual(steps.body[5], ['6', '', '*', '', 'CollisionDriverVehicleFactor', '', 'uses CollisionDriverVehicleFactor from step 1 (Collision Driver Vehicle Factor)']);
+  assert.deepEqual(steps.body[6], ['7', 'TermAmount', '<--', '', 'AdjustedRate', '', 'uses AdjustedRate from step 5']);
+  assert.deepEqual(steps.body[7], ['8', 'TermAmount', 'R', '', '1', '', 'uses TermAmount from step 7']);
   assert.equal(sectionRows(values, 'Unresolved items'), null);
   assert.ok(blockRows(values, 'Source evidence') !== null);
 });
@@ -998,15 +1024,22 @@ test('excel: generic staged calc keeps multiplication and rounding as separate s
   assert.equal(sectionRows(values, 'Dependencies'), null);
   assert.equal(sectionRows(values, 'Final calculation'), null);
 
-  // Steps keep both operations separately in source order: lookups assign
-  // table values, the multiplication keeps its ×, rounding keeps its text.
+  // Steps expand the chained multiplication to one row per operation in
+  // source order: lookups assign table values, each × is its own row with
+  // explicit brackets, rounding assigns its output with the source wording,
+  // and every row keeps a comment.
   const stepsSection = sectionRows(values, 'Steps');
-  assert.deepEqual(stepsSection.body.map((row) => row[2]), ['<--', '<--', '<--', '<--', 'R']);
-  assert.deepEqual(stepsSection.body[0], ['1', 'alpha_rate', '<--', 'table:Alpha rating table (customer_tier)', '']);
-  assert.deepEqual(stepsSection.body[1], ['2', 'beta_factor', '<--', 'table:Beta factor table (region_code)', '']);
-  assert.deepEqual(stepsSection.body[2], ['3', 'gamma_factor', '<--', 'table:Gamma factor table (account_age)', '']);
-  assert.deepEqual(stepsSection.body[3], ['4', 'quoted_total', '<--', 'alpha_rate × beta_factor × gamma_factor', 'uses alpha_rate from step 1 (Alpha rating table); uses beta_factor from step 2 (Beta factor table); uses gamma_factor from step 3 (Gamma factor table)']);
-  assert.deepEqual(stepsSection.body[4], ['5', steps[4], 'R', 'quoted_total', '']);
+  assert.deepEqual(stepsSection.header, ['Step #', 'Instruction', 'Op', '(', 'Operand', ')', 'Line Comment']);
+  assert.deepEqual(stepsSection.body.map((row) => row[0]), ['1', '2', '3', '4', '5', '6', '7']);
+  assert.deepEqual(stepsSection.body.map((row) => row[2]), ['<--', '<--', '<--', '<--', '×', '×', 'R']);
+  assert.deepEqual(stepsSection.body[0], ['1', 'alpha_rate', '<--', '', 'table:Alpha rating table (customer_tier)', '', 'Lookup alpha_rate from Alpha rating table']);
+  assert.deepEqual(stepsSection.body[1], ['2', 'beta_factor', '<--', '', 'table:Beta factor table (region_code)', '', 'Lookup beta_factor from Beta factor table']);
+  assert.deepEqual(stepsSection.body[2], ['3', 'gamma_factor', '<--', '', 'table:Gamma factor table (account_age)', '', 'Lookup gamma_factor from Gamma factor table']);
+  assert.deepEqual(stepsSection.body[3], ['4', 'quoted_total', '<--', '', 'alpha_rate', '', 'uses alpha_rate from step 1 (Alpha rating table)']);
+  assert.deepEqual(stepsSection.body[4], ['5', '', '×', '', 'beta_factor', '', 'uses beta_factor from step 2 (Beta factor table)']);
+  assert.deepEqual(stepsSection.body[5], ['6', '', '×', '', 'gamma_factor', '', 'uses gamma_factor from step 3 (Gamma factor table)']);
+  assert.deepEqual(stepsSection.body[6], ['7', 'quoted_total', 'R', '', 'to the nearest whole currency unit using standard half-up rounding', '', 'Round quoted_total (source step 5)']);
+  assert.ok(stepsSection.body.every((row) => row.length === 7 && row[6] !== ''));
 
   // Source evidence is preserved verbatim.
   const evidenceRows = blockRows(values, 'Source evidence');
@@ -1083,17 +1116,32 @@ test('excel: generic multi-stage calc keeps IF/ELSE and rounding stages in step 
   assert.equal(sectionRows(values, 'Final calculation'), null);
 
   const stepsSection = sectionRows(values, 'Steps');
-  assert.deepEqual(stepsSection.body.map((row) => row[2]), ['<--', '<--', '<--', '<--', '<--', 'IF', 'R']);
-  assert.deepEqual(stepsSection.body[0], ['1', 'base_value', '<--', 'table:Index A - Base value (billing_group)', '']);
-  assert.deepEqual(stepsSection.body[1], ['2', 'plan_factor', '<--', 'table:Index B - Plan factor (plan_code)', '']);
-  assert.deepEqual(stepsSection.body[3], ['4', 'zone_factor', '<--', 'table:Index D - Zone factor (zone_code)', '']);
-  assert.deepEqual(stepsSection.body[4].slice(0, 4), ['5', 'gross_amount', '<--', '(contract_value / 1000) × base_value × plan_factor × tier_factor × zone_factor']);
-  assert.match(stepsSection.body[4][4], /uses base_value from step 1/);
-  assert.match(stepsSection.body[4][4], /uses plan_factor from step 2/);
-  assert.deepEqual(stepsSection.body[5].slice(0, 4), ['6', steps[5], 'IF', 'net_amount']);
-  assert.match(stepsSection.body[5][4], /uses gross_amount from step 5/);
-  assert.deepEqual(stepsSection.body[6].slice(0, 4), ['7', steps[6], 'R', 'net_amount']);
-  assert.match(stepsSection.body[6][4], /uses net_amount from step 6/);
+  assert.deepEqual(stepsSection.header, ['Step #', 'Instruction', 'Op', '(', 'Operand', ')', 'Line Comment']);
+  assert.deepEqual(stepsSection.body.map((row) => row[0]), ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15', '16']);
+  assert.deepEqual(stepsSection.body.map((row) => row[2]), ['<--', '<--', '<--', '<--', '<--', '/', '×', '×', '×', '×', '', '<--', '', '<--', '', 'R']);
+  assert.deepEqual(stepsSection.body[0], ['1', 'base_value', '<--', '', 'table:Index A - Base value (billing_group)', '', 'Lookup base_value from Index A - Base value']);
+  assert.deepEqual(stepsSection.body[1], ['2', 'plan_factor', '<--', '', 'table:Index B - Plan factor (plan_code)', '', 'Lookup plan_factor from Index B - Plan factor']);
+  assert.deepEqual(stepsSection.body[3], ['4', 'zone_factor', '<--', '', 'table:Index D - Zone factor (zone_code)', '', 'Lookup zone_factor from Index D - Zone factor']);
+  // Parenthesized division opens, divides, and closes before the chain of
+  // multiplications; each operation keeps its source symbol and order.
+  assert.deepEqual(stepsSection.body[4], ['5', 'gross_amount', '<--', '(', 'contract_value', '', 'Start gross_amount from contract_value (source step 5)']);
+  assert.deepEqual(stepsSection.body[5], ['6', '', '/', '', '1000', ')', 'Apply / 1000 to continue gross_amount from prior step (source step 5)']);
+  assert.deepEqual(stepsSection.body[6], ['7', '', '×', '', 'base_value', '', 'uses base_value from step 1 (Index A - Base value)']);
+  assert.deepEqual(stepsSection.body[7], ['8', '', '×', '', 'plan_factor', '', 'uses plan_factor from step 2 (Index B - Plan factor)']);
+  assert.match(stepsSection.body[8][6], /uses tier_factor from step 3/);
+  assert.match(stepsSection.body[9][6], /uses zone_factor from step 4/);
+  // The minimum-charge conditional expands to IF/ELSE/ENDIF rows with one
+  // assignment row per branch; dependency comments use the new numbers.
+  assert.deepEqual(stepsSection.body[10].slice(0, 6), ['11', 'IF', '', '', 'gross_amount is below 200', '']);
+  assert.match(stepsSection.body[10][6], /uses gross_amount from step 10/);
+  assert.deepEqual(stepsSection.body[11], ['12', 'net_amount', '<--', '', '200', '', 'Set net_amount to 200 (true branch, source step 6)']);
+  assert.deepEqual(stepsSection.body[12].slice(0, 6), ['13', 'ELSE', '', '', '', '']);
+  assert.deepEqual(stepsSection.body[13].slice(0, 6), ['14', 'net_amount', '<--', '', 'gross_amount', '']);
+  assert.match(stepsSection.body[13][6], /uses gross_amount from step 10/);
+  assert.deepEqual(stepsSection.body[14].slice(0, 6), ['15', 'ENDIF', '', '', '', '']);
+  assert.deepEqual(stepsSection.body[15].slice(0, 6), ['16', 'billed_amount', 'R', '', 'net_amount to the nearest whole currency unit using half-up rounding', '']);
+  assert.match(stepsSection.body[15][6], /uses net_amount from step 14/);
+  assert.ok(stepsSection.body.every((row) => row.length === 7 && row[6] !== ''));
 
   const condSection = sectionRows(values, 'Conditions');
   assert.equal(condSection.body[0][1], 'If gross_amount is below 200, set net_amount to 200; otherwise net_amount equals gross_amount.');
@@ -1156,20 +1204,78 @@ test('excel: generic widget calc keeps gross/net/billed stages distinct in step 
   assert.equal(sectionRows(values, 'Final calculation'), null);
 
   const stepsSection = sectionRows(values, 'Steps');
-  assert.deepEqual(stepsSection.body.map((row) => row[0]), ['1', '2', '3', '4', '5']);
-  assert.deepEqual(stepsSection.body.map((row) => row[2]), ['<--', '<--', '<--', 'IF', 'R']);
-  assert.deepEqual(stepsSection.body[0], ['1', 'widget_rate', '<--', 'table:Schedule Q - Widget rate (annual rate per 1,000 of account_value) (widget_class)', '']);
-  assert.deepEqual(stepsSection.body[1], ['2', 'gadget_factor', '<--', 'table:Schedule R - Gadget factor (gadget_code)', '']);
-  assert.deepEqual(stepsSection.body[2].slice(0, 4), ['3', 'gross_total', '<--', '(account_value / 1000) × widget_rate × gadget_factor']);
-  assert.match(stepsSection.body[2][4], /uses widget_rate from step 1/);
-  assert.match(stepsSection.body[2][4], /uses gadget_factor from step 2/);
-  assert.deepEqual(stepsSection.body[3].slice(0, 4), ['4', steps[3], 'IF', 'net_total']);
-  assert.match(stepsSection.body[3][4], /uses gross_total from step 3/);
-  assert.deepEqual(stepsSection.body[4].slice(0, 4), ['5', steps[4], 'R', 'net_total']);
-  assert.match(stepsSection.body[4][4], /uses net_total from step 4/);
+  assert.deepEqual(stepsSection.header, ['Step #', 'Instruction', 'Op', '(', 'Operand', ')', 'Line Comment']);
+  assert.deepEqual(stepsSection.body.map((row) => row[0]), ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12']);
+  assert.deepEqual(stepsSection.body.map((row) => row[2]), ['<--', '<--', '<--', '/', '×', '×', '', '<--', '', '<--', '', 'R']);
+  assert.deepEqual(stepsSection.body[0], ['1', 'widget_rate', '<--', '', 'table:Schedule Q - Widget rate (annual rate per 1,000 of account_value) (widget_class)', '', 'Lookup widget_rate from Schedule Q - Widget rate (annual rate per 1,000 of account_value)']);
+  assert.deepEqual(stepsSection.body[1], ['2', 'gadget_factor', '<--', '', 'table:Schedule R - Gadget factor (gadget_code)', '', 'Lookup gadget_factor from Schedule R - Gadget factor']);
+  assert.deepEqual(stepsSection.body[2], ['3', 'gross_total', '<--', '(', 'account_value', '', 'Start gross_total from account_value (source step 3)']);
+  assert.deepEqual(stepsSection.body[3], ['4', '', '/', '', '1000', ')', 'Apply / 1000 to continue gross_total from prior step (source step 3)']);
+  assert.match(stepsSection.body[4][6], /uses widget_rate from step 1/);
+  assert.match(stepsSection.body[5][6], /uses gadget_factor from step 2/);
+  assert.deepEqual(stepsSection.body[6].slice(0, 6), ['7', 'IF', '', '', 'gross_total is below 100', '']);
+  assert.match(stepsSection.body[6][6], /uses gross_total from step 6/);
+  assert.deepEqual(stepsSection.body[7], ['8', 'net_total', '<--', '', '100', '', 'Set net_total to 100 (true branch, source step 4)']);
+  assert.deepEqual(stepsSection.body[8].slice(0, 6), ['9', 'ELSE', '', '', '', '']);
+  assert.match(stepsSection.body[9][6], /uses gross_total from step 6/);
+  assert.deepEqual(stepsSection.body[10].slice(0, 6), ['11', 'ENDIF', '', '', '', '']);
+  assert.deepEqual(stepsSection.body[11].slice(0, 6), ['12', 'billed_total', 'R', '', 'net_total to the nearest whole unit', '']);
+  assert.match(stepsSection.body[11][6], /uses net_total from step 10/);
+  assert.ok(stepsSection.body.every((row) => row.length === 7 && row[6] !== ''));
 });
 
-test('excel: formula-only routine renders its expression as one assignment step', () => {
+test('excel: conditional chain renders IF/ELSEIF/ELSE/ENDIF under Instruction', () => {
+  // Generic branched routine: the conditional step carries an else-if stage.
+  // Keywords render under Instruction with an empty Op; conditions stay in
+  // Operand and each branch keeps the `output <-- value` assignment form.
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'generic.pdf', pageCount: 1 }),
+      tables: [
+        { name: 'Lookup One', sourcePages: [1], evidenceText: 'Lookup One (annual values per key)', headers: ['Key', 'Value'], rows: [['a', '1']] },
+      ],
+      routines: [{
+        name: 'Generic Branched Calc',
+        kind: 'calculation_steps',
+        sourcePages: [1],
+        evidenceText: 'Generic branched calculation with an else-if stage.',
+        steps: [
+          'Fetch alpha_total using alpha_key from Lookup One.',
+          'If alpha_total is below 100, set band_total to 100; else if alpha_total is above 500, set band_total to 500; otherwise band_total equals alpha_total.',
+        ],
+        dependsOn: ['Lookup One'],
+        inputs: ['alpha_key'],
+        outputs: ['band_total'],
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  assert.equal(job.issues.filter((i) => i.severity === 'error').length, 0);
+  const det = job.routines[0].steps_detailed;
+  assert.deepEqual(det.map((d) => d.operation), ['lookup', 'condition']);
+  assert.equal(det[1].output, 'band_total');
+
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'live' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Generic Branched Calc'), strings);
+  const stepsSection = sectionRows(values, 'Steps');
+  assert.deepEqual(stepsSection.header, ['Step #', 'Instruction', 'Op', '(', 'Operand', ')', 'Line Comment']);
+  assert.deepEqual(stepsSection.body.map((row) => row[0]), ['1', '2', '3', '4', '5', '6', '7', '8']);
+  assert.deepEqual(stepsSection.body.map((row) => row[1]), ['alpha_total', 'IF', 'band_total', 'ELSEIF', 'band_total', 'ELSE', 'band_total', 'ENDIF']);
+  assert.deepEqual(stepsSection.body.map((row) => row[2]), ['<--', '', '<--', '', '<--', '', '<--', '']);
+  assert.deepEqual(stepsSection.body[1].slice(0, 6), ['2', 'IF', '', '', 'alpha_total is below 100', '']);
+  assert.deepEqual(stepsSection.body[2], ['3', 'band_total', '<--', '', '100', '', 'Set band_total to 100 (true branch, source step 2)']);
+  assert.deepEqual(stepsSection.body[3].slice(0, 6), ['4', 'ELSEIF', '', '', 'alpha_total is above 500', '']);
+  assert.deepEqual(stepsSection.body[4], ['5', 'band_total', '<--', '', '500', '', 'Set band_total to 500 (else-if branch, source step 2)']);
+  assert.deepEqual(stepsSection.body[5].slice(0, 6), ['6', 'ELSE', '', '', '', '']);
+  assert.deepEqual(stepsSection.body[6].slice(0, 6), ['7', 'band_total', '<--', '', 'alpha_total', '']);
+  assert.match(stepsSection.body[6][6], /uses alpha_total from step 1/);
+  assert.deepEqual(stepsSection.body[7].slice(0, 6), ['8', 'ENDIF', '', '', '', '']);
+  assert.ok(stepsSection.body.every((row) => row.length === 7 && row[6] !== ''));
+});
+
+test('excel: formula-only routine expands its expression into ordered operation steps', () => {
   const expr = 'gross_total = alpha_value + beta_value';
   const job = normalizeJob(
     createJob({
@@ -1191,7 +1297,11 @@ test('excel: formula-only routine renders its expression as one assignment step'
   const strings = zip.get('xl/sharedStrings.xml');
   const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Staged totals'), strings);
   const stepsSection = sectionRows(values, 'Steps');
-  assert.deepEqual(stepsSection.body, [['1', 'gross_total', '<--', 'alpha_value + beta_value', '']]);
+  assert.deepEqual(stepsSection.header, ['Step #', 'Instruction', 'Op', '(', 'Operand', ')', 'Line Comment']);
+  assert.deepEqual(stepsSection.body, [
+    ['1', 'gross_total', '<--', '', 'alpha_value', '', 'Start gross_total from alpha_value (source step 1)'],
+    ['2', '', '+', '', 'beta_value', '', 'Apply + beta_value to continue gross_total from prior step (source step 1)'],
+  ]);
   assert.equal(sectionRows(values, 'Final calculation'), null);
   assert.equal(sectionRows(values, 'Inputs'), null);
   assert.equal(sectionRows(values, 'Dependencies'), null);
@@ -1246,7 +1356,12 @@ test('excel: bare step numbers preserve gaps in the step column', () => {
   const strings = zip.get('xl/sharedStrings.xml');
   const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Gapped steps'), strings);
   const stepsSection = sectionRows(values, 'Steps');
+  assert.deepEqual(stepsSection.header, ['Step #', 'Instruction', 'Op', '(', 'Operand', ')', 'Line Comment']);
   assert.deepEqual(stepsSection.body.map((row) => row[0]), ['1', '3']);
+  assert.deepEqual(stepsSection.body, [
+    ['1', '1 First action here.', '', '', '', '', 'Source instruction (source step 1)'],
+    ['3', '3 Third action here.', '', '', '', '', 'Source instruction (source step 3)'],
+  ]);
 });
 
 test('excel: staged calc keeps interim and conditional stages in step order', () => {
@@ -1287,15 +1402,71 @@ test('excel: staged calc keeps interim and conditional stages in step order', ()
   const strings = zip.get('xl/sharedStrings.xml');
   const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Generic Staged Calc'), strings);
   const stepsSection = sectionRows(values, 'Steps');
-  assert.deepEqual(stepsSection.body.map((row) => row[2]), ['<--', '<--', '<--', 'IF']);
-  assert.deepEqual(stepsSection.body[0], ['1', 'alpha_value', '<--', 'table:Lookup One (alpha_key)', '']);
-  assert.deepEqual(stepsSection.body[1], ['2', 'beta_value', '<--', 'table:Lookup Two (beta_key)', '']);
-  assert.deepEqual(stepsSection.body[2], ['3', 'interim_total', '<--', 'alpha_value + beta_value', 'uses alpha_value from step 1 (Lookup One); uses beta_value from step 2 (Lookup Two)']);
-  assert.deepEqual(stepsSection.body[3].slice(0, 4), ['4', 'If interim_total is below 100, set final_total to 100; otherwise final_total equals interim_total.', 'IF', 'final_total']);
-  assert.equal(stepsSection.body[3][4], 'uses interim_total from step 3');
+  assert.deepEqual(stepsSection.header, ['Step #', 'Instruction', 'Op', '(', 'Operand', ')', 'Line Comment']);
+  assert.deepEqual(stepsSection.body.map((row) => row[0]), ['1', '2', '3', '4', '5', '6', '7', '8', '9']);
+  assert.deepEqual(stepsSection.body.map((row) => row[2]), ['<--', '<--', '<--', '+', '', '<--', '', '<--', '']);
+  assert.deepEqual(stepsSection.body[0], ['1', 'alpha_value', '<--', '', 'table:Lookup One (alpha_key)', '', 'Lookup alpha_value from Lookup One']);
+  assert.deepEqual(stepsSection.body[1], ['2', 'beta_value', '<--', '', 'table:Lookup Two (beta_key)', '', 'Lookup beta_value from Lookup Two']);
+  assert.deepEqual(stepsSection.body[2], ['3', 'interim_total', '<--', '', 'alpha_value', '', 'uses alpha_value from step 1 (Lookup One)']);
+  assert.deepEqual(stepsSection.body[3], ['4', '', '+', '', 'beta_value', '', 'uses beta_value from step 2 (Lookup Two)']);
+  assert.deepEqual(stepsSection.body[4].slice(0, 6), ['5', 'IF', '', '', 'interim_total is below 100', '']);
+  assert.equal(stepsSection.body[4][6], 'uses interim_total from step 4');
+  assert.deepEqual(stepsSection.body[5], ['6', 'final_total', '<--', '', '100', '', 'Set final_total to 100 (true branch, source step 4)']);
+  assert.deepEqual(stepsSection.body[6].slice(0, 6), ['7', 'ELSE', '', '', '', '']);
+  assert.match(stepsSection.body[7][6], /uses interim_total from step 4/);
+  assert.deepEqual(stepsSection.body[8].slice(0, 6), ['9', 'ENDIF', '', '', '', '']);
+  assert.ok(stepsSection.body.every((row) => row.length === 7 && row[6] !== ''));
   assert.equal(sectionRows(values, 'Final calculation'), null);
   assert.equal(sectionRows(values, 'Dependencies'), null);
   assert.equal(sectionRows(values, 'Inputs'), null);
+});
+
+test('excel: arithmetic expansion preserves parentheses and operator precedence', () => {
+  // Generic precedence pair: without parens the source order is kept so
+  // standard precedence still applies; with parens the bracket columns make
+  // the grouping explicit. Both expand to one row per operation with
+  // sequential numbers and a comment on every row.
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'generic.pdf', pageCount: 1 }),
+      routines: [
+        {
+          name: 'Precedence plain', kind: 'formula', sourcePages: [1], evidenceText: 'Plain precedence.',
+          expressionText: 'out_total = alpha_value + beta_value * gamma_value',
+        },
+        {
+          name: 'Precedence grouped', kind: 'formula', sourcePages: [1], evidenceText: 'Grouped precedence.',
+          expressionText: 'out_total = (alpha_value + beta_value) * gamma_value',
+        },
+      ],
+    })
+  );
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'live' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const plain = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Precedence plain'), strings);
+  const grouped = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Precedence grouped'), strings);
+
+  const plainSteps = sectionRows(plain, 'Steps');
+  assert.deepEqual(plainSteps.header, ['Step #', 'Instruction', 'Op', '(', 'Operand', ')', 'Line Comment']);
+  assert.deepEqual(plainSteps.body.map((row) => row[0]), ['1', '2', '3']);
+  assert.deepEqual(plainSteps.body.map((row) => row[2]), ['<--', '+', '*']);
+  assert.deepEqual(plainSteps.body.map((row) => row[3]), ['', '', '']);
+  assert.deepEqual(plainSteps.body.map((row) => row[5]), ['', '', '']);
+  assert.deepEqual(plainSteps.body[0], ['1', 'out_total', '<--', '', 'alpha_value', '', 'Start out_total from alpha_value (source step 1)']);
+  assert.match(plainSteps.body[1][6], /beta_value/);
+  assert.match(plainSteps.body[2][6], /gamma_value/);
+
+  const groupedSteps = sectionRows(grouped, 'Steps');
+  assert.deepEqual(groupedSteps.body.map((row) => row[0]), ['1', '2', '3']);
+  assert.deepEqual(groupedSteps.body.map((row) => row[2]), ['<--', '+', '*']);
+  assert.deepEqual(groupedSteps.body[0], ['1', 'out_total', '<--', '(', 'alpha_value', '', 'Start out_total from alpha_value (source step 1)']);
+  assert.deepEqual(groupedSteps.body[1].slice(0, 6), ['2', '', '+', '', 'beta_value', ')']);
+  assert.deepEqual(groupedSteps.body[2].slice(0, 6), ['3', '', '*', '', 'gamma_value', '']);
+  for (const section of [plainSteps, groupedSteps]) {
+    assert.ok(section.body.every((row) => row.length === 7 && row[6] !== ''));
+  }
 });
 
 test('excel: condition routines keep the legacy sheet layout with all sections', () => {

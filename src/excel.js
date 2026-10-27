@@ -3,10 +3,13 @@
 // per rating table, one sheet per routine, Issues.
 // Rating-table sheets hold only the title, headers, and factor rows.
 // Rating-routine sheets hold the name, identity details, and ordered rating
-// steps (Step, Instruction, Operation, Operand, Comment), followed by
-// conditions, unresolved items, and source evidence. Condition routines and
-// routines without steps or an expression keep the legacy layout (inputs,
-// final calculation, dependencies) so underwriting rules stay out of scope.
+// steps (Step #, Instruction, Op, (, Operand, ), Line Comment), followed by
+// conditions, unresolved items, and source evidence. Multi-operator
+// expressions expand into one ordered row per operation with explicit
+// bracket columns; precedence and parentheses are preserved. Condition
+// routines and routines without steps or an expression keep the legacy
+// layout (inputs, final calculation, dependencies) so underwriting rules
+// stay out of scope.
 // Cover and the summaries link each asset name to its detail worksheet.
 // Fixed ZIP timestamps keep builds byte-deterministic.
 import { deflateRawSync } from 'node:zlib';
@@ -732,12 +735,18 @@ function selectFinalCalculation(routine, stepEntries, finalExpression) {
   return { calculation, output };
 }
 
+// Rating-routine Steps use explicit bracket columns; the legacy layout keeps
+// the five-column form for condition routines. Both are accepted when
+// locating the header row for formatting.
+const RATING_STEPS_HEADER = ['Step #', 'Instruction', 'Op', '(', 'Operand', ')', 'Line Comment'];
+const LEGACY_STEPS_HEADER = ['Step #', 'Instruction', 'Operation', 'Operand', 'Comment'];
+
 // Section headings on routine sheets and their column headers (null when the
 // section carries detail rows instead of a table). Used only to locate rows
 // for formatting; routineSheetRows remains the single source of sheet content.
 const ROUTINE_SECTION_HEADERS = new Map([
   ['Inputs', ['Input', 'Source', 'Lookup keys']],
-  ['Steps', ['Step #', 'Instruction', 'Operation', 'Operand', 'Comment']],
+  ['Steps', RATING_STEPS_HEADER],
   ['Final calculation', ['Calculation', 'Output']],
   ['Conditions', ['#', 'Condition', 'True branch', 'False branch', 'Referral code']],
   ['Dependencies', ['Target', 'Type', 'Explicit/Inferred', 'Variable / Keys']],
@@ -892,10 +901,44 @@ function fallbackOperand(det) {
   return (det?.inputs ?? []).map((k) => String(k ?? '').trim()).filter(Boolean).join(', ');
 }
 
+// Single variable-like token (optionally dotted): the only operand shapes
+// treated as a rounding source. Anything else is source wording or precision
+// detail and is preserved verbatim in the operand.
+function isVariableLike(value) {
+  return /^[A-Za-z_]\w*(?:\.\w+)*$/.test(String(value ?? '').trim());
+}
+
+// Rounding detail after the target ('to the nearest whole unit ...'): the
+// step label, 'Round <target>' lead, trailing store-as clause, and
+// sentence-final punctuation are stripped. Generic wording, never variable
+// or routine names. Returns '' when no detail is evidenced.
+function extractRoundingDetail(text) {
+  let body = String(text ?? '').trim();
+  if (!body) return '';
+  body = body.replace(/^\s*step\s+\d+\s*[:.)\-]?\s*/i, '').replace(/^\s*\(?\d{1,3}\)?[\s:.)\-]+\s*/, '');
+  const m = /^\s*round\s+[A-Za-z_]\w*\s+([\s\S]+?)\s*$/i.exec(body);
+  if (!m || !m[1].trim()) return '';
+  let rest = m[1].trim();
+  rest = rest.split(/\s*\.\s*store\b/i)[0].split(/\s*;\s*store\b/i)[0].split(/\s*,\s*store\s+the\s+result\s+as\b/i)[0].trim();
+  rest = rest.replace(/[.;]+\s*$/, '').trim();
+  if (!rest || /^store\b/i.test(rest)) return '';
+  return rest;
+}
+
+// Conditional step operations handled generically in rating-routine Steps:
+// the model 'condition' operation plus explicit conditional keywords, so a
+// structured 'IF'/'ELSEIF'/'ELSE' step renders the same as parsed wording.
+const CONDITION_OPERATION_WORDS = new Set(['condition', 'conditional', 'if', 'elseif', 'else']);
+
+function isConditionOperation(op) {
+  return CONDITION_OPERATION_WORDS.has(String(op ?? '').trim().toLowerCase());
+}
+
 // One stepwise rating-routine entry { instruction, operation, operand, output, det }.
 // Pure assignments (lookups, `output = rhs`) read as `output <-- operand`;
-// rounding, conditions, explicit symbolic operations (such as '*'), and anything
-// unparsed keep the verbatim source text so no detail is lost or invented.
+// rounding reads as `output R source wording`; conditions expand with their
+// keywords under Instruction. Explicit symbolic operations (such as '*') and
+// anything unparsed keep the verbatim source text so no detail is lost.
 function renderRatingStep(text, det, tables) {
   const instruction = String(text ?? '');
   if (det && isLookupOperation(det.operation)) {
@@ -911,13 +954,37 @@ function renderRatingStep(text, det, tables) {
     return { instruction, operation: '', operand: fallbackOperand(det), output: String(det.output ?? ''), det };
   }
   if (det && word === 'rounding') {
-    const operand = [det.operand, det.output].map((v) => String(v ?? '').trim()).find(Boolean) ?? '';
-    return { instruction, operation: 'R', operand, output: String(det.output ?? det.operand ?? ''), det };
+    // Final assignment form: the evidenced output variable leads under
+    // Instruction with the rounding operation preserved, and the operand
+    // carries the rounded source plus its source wording. Same-variable
+    // rounding keeps only the wording so the variable is not repeated.
+    const target = String(det.output ?? '').trim();
+    const operandRaw = String(det.operand ?? '').trim();
+    const source = isVariableLike(operandRaw)
+      ? operandRaw
+      : (det.inputs ?? []).map((v) => String(v ?? '').trim()).find((v) => isVariableLike(v)) ?? '';
+    const detail = extractRoundingDetail(instruction);
+    const resolvedTarget = target || source;
+    if (!resolvedTarget) {
+      return { instruction, operation: 'R', operand: operandRaw || fallbackOperand(det), output: target, det };
+    }
+    const sameVariable = Boolean(target && source)
+      && normalizeVariableKey(target) === normalizeVariableKey(source);
+    let operand;
+    if (target && source && !sameVariable) {
+      operand = detail && !detail.toLowerCase().startsWith(source.toLowerCase())
+        ? `${source} ${detail}`
+        : (detail || source);
+      if (operandRaw && !isVariableLike(operandRaw) && operandRaw !== detail && !operand.includes(operandRaw)) {
+        operand = `${operand} (${operandRaw})`;
+      }
+    } else {
+      operand = detail || operandRaw || source;
+    }
+    return { instruction: resolvedTarget, operation: 'R', operand, output: target || source, det };
   }
-  if (det && word === 'condition') {
-    const clause = String(det.expression ?? '');
-    const operation = /^\s*(else|otherwise)\b/i.test(clause || instruction) ? 'ELSE' : 'IF';
-    return { instruction, operation, operand: String(det.output ?? ''), output: String(det.output ?? ''), det };
+  if (det && isConditionOperation(det.operation)) {
+    return { instruction, operation: '', operand: String(det.output ?? ''), output: String(det.output ?? ''), det };
   }
   if (det && det.operation !== undefined && det.operation !== null && String(det.operation) !== '') {
     return { instruction, operation: String(det.operation), operand: fallbackOperand(det), output: String(det.output ?? ''), det };
@@ -945,6 +1012,480 @@ function synthesizedExpressionEntry(r) {
     };
   }
   return { seq: '1', instruction: raw, operation: '', operand: '', output: '', det: null };
+}
+
+// ---------- Rating-step expansion (generic) ----------
+
+// Tokenize an arithmetic right-hand side into operands, operators, and
+// parentheses. Identifiers may carry dots (source keys); numbers keep their
+// exact text. Returns null on any unfamiliar character so the caller keeps
+// the verbatim single row instead of inventing an interpretation.
+function tokenizeArithmetic(rhs) {
+  const tokens = [];
+  const text = String(rhs ?? '');
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (/\s/.test(ch)) {
+      i += 1;
+      continue;
+    }
+    if (ch === '(') {
+      tokens.push({ type: 'lparen', value: '(' });
+      i += 1;
+      continue;
+    }
+    if (ch === ')') {
+      tokens.push({ type: 'rparen', value: ')' });
+      i += 1;
+      continue;
+    }
+    if (ch === '+' || ch === '-' || ch === '*' || ch === '/' || ch === '%' || ch === '×' || ch === '÷') {
+      tokens.push({ type: 'op', value: ch });
+      i += 1;
+      continue;
+    }
+    const idMatch = /[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*/.exec(text.slice(i));
+    if (idMatch && idMatch.index === 0) {
+      tokens.push({ type: 'operand', value: idMatch[0] });
+      i += idMatch[0].length;
+      continue;
+    }
+    const numMatch = /\d+(?:\.\d+)?/.exec(text.slice(i));
+    if (numMatch && numMatch.index === 0) {
+      tokens.push({ type: 'operand', value: numMatch[0] });
+      i += numMatch[0].length;
+      continue;
+    }
+    return null;
+  }
+  return tokens;
+}
+
+function isIdentifierOperand(value) {
+  return /^[+-]?[A-Za-z_][A-Za-z0-9_.]*$/.test(String(value ?? '').trim());
+}
+
+// Expand `output = rhs` into one ordered row per operation, preserving the
+// source order, operator lexemes, and parentheses. The first row assigns the
+// opening operand; each following row carries its operator with the next
+// operand. Bracket markers attach to the operand rows they surround, so
+// reassembling the rows reproduces the original expression and its meaning.
+// Returns null when the right-hand side is not plain arithmetic.
+function expandArithmetic(output, rhs) {
+  const tokens = tokenizeArithmetic(rhs);
+  if (!tokens || tokens.length === 0) return null;
+  const rows = [];
+  let pendingOpen = '';
+  let pendingOp = null;
+  let pendingUnary = '';
+  let expectOperand = true;
+  for (const token of tokens) {
+    if (token.type === 'lparen') {
+      if (!expectOperand) return null;
+      pendingOpen += '(';
+    } else if (token.type === 'rparen') {
+      if (expectOperand || rows.length === 0) return null;
+      rows[rows.length - 1].close += ')';
+      expectOperand = false;
+    } else if (token.type === 'op') {
+      if (expectOperand) {
+        if ((token.value === '+' || token.value === '-') && !pendingUnary) {
+          pendingUnary = token.value;
+        } else {
+          return null;
+        }
+      } else {
+        pendingOp = token.value;
+        expectOperand = true;
+        pendingUnary = '';
+      }
+    } else {
+      if (!expectOperand) return null;
+      const operand = `${pendingUnary}${token.value}`;
+      let op;
+      if (rows.length === 0) {
+        if (pendingOp) return null;
+        op = '<--';
+      } else {
+        if (!pendingOp) return null;
+        op = pendingOp;
+        pendingOp = null;
+      }
+      rows.push({
+        instruction: rows.length === 0 ? String(output ?? '') : '',
+        op,
+        open: pendingOpen,
+        operand,
+        close: '',
+      });
+      pendingOpen = '';
+      pendingUnary = '';
+      expectOperand = false;
+    }
+  }
+  if (expectOperand || pendingOp || pendingOpen) return null;
+  const opens = rows.reduce((n, row) => n + row.open.length, 0);
+  const closes = rows.reduce((n, row) => n + row.close.length, 0);
+  if (opens !== closes) return null;
+  return rows;
+}
+
+// Identifiers in free text, excluding only generic conditional connectives.
+// Extra prose words resolve to no traceability and fall back to a purpose
+// comment, so no meaning is invented.
+function simpleIdentifiers(text) {
+  const out = [];
+  const seen = new Set();
+  for (const m of String(text ?? '').matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)) {
+    const low = m[0].toLowerCase();
+    if (['and', 'or', 'not', 'if', 'then', 'else', 'when', 'where', 'otherwise'].includes(low)) continue;
+    if (seen.has(low)) continue;
+    seen.add(low);
+    out.push(m[0]);
+  }
+  return out;
+}
+
+// Split conditional tail text (everything after the opening condition) into
+// its first branch, zero or more ELSEIF stages, and an optional final ELSE
+// branch. The first ELSE/OTHERWISE marker takes the remainder verbatim.
+// Returns null when an ELSEIF segment carries no confident condition/branch
+// split, so the caller keeps the single verbatim row instead of inventing
+// structure.
+function splitConditionTail(rest) {
+  const text = String(rest ?? '').trim();
+  if (!text) return null;
+  const delim = /(?:[;.,]\s*)?\b(else\s+if|elseif|elif|otherwise\s+if|otherwise\s+when|else|otherwise)\b\s*,?\s*/gi;
+  const segs = [];
+  const kinds = [];
+  let last = 0;
+  let m;
+  while ((m = delim.exec(text)) !== null) {
+    segs.push(text.slice(last, m.index).trim());
+    const word = m[1].toLowerCase().replace(/\s+/g, ' ');
+    const kind = word === 'else' || word === 'otherwise' ? 'else' : 'elseif';
+    kinds.push(kind);
+    last = m.index + m[0].length;
+    if (kind === 'else') break;
+  }
+  segs.push(text.slice(last).trim());
+  const [first, ...tailSegs] = segs;
+  const stages = [];
+  let elseBranch = '';
+  for (let i = 0; i < tailSegs.length; i += 1) {
+    if (kinds[i] === 'else') {
+      elseBranch = tailSegs[i];
+    } else {
+      const inner = /^\s*(.+?)(?:\s+then\s+|\s*,\s*)([\s\S]+?)\s*$/i.exec(tailSegs[i]);
+      if (!inner || !inner[1].trim() || !inner[2].trim()) return null;
+      stages.push({ keyword: 'ELSEIF', condition: inner[1].trim(), branch: inner[2].trim() });
+    }
+  }
+  return { first, stages, elseBranch };
+}
+
+// Generic conditional-chain parsing for display only (mirrors the model
+// shapes without changing extraction). Splits an IF/WHEN clause into ordered
+// stages plus an optional final ELSE branch:
+//   { stages: [{ keyword: 'IF'|'ELSEIF', condition, branch }], elseBranch }
+// Handles 'then' or comma separators, any number of ELSEIF/ELSE IF stages,
+// and ELSE/OTHERWISE closers. A leading ELSE IF (a structured continuation
+// step) and a lone ELSE/OTHERWISE are also accepted. Returns null when no
+// confident branch structure is evidenced.
+function parseRatingConditionChain(text) {
+  const full = String(text ?? '').trim();
+  if (!full) return null;
+  const leadingElseIf = /^\s*(?:else\s+if|elseif|elif|otherwise\s+if)\s+(.+?)(?:\s+then\s+|\s*,\s*)([\s\S]+?)\s*$/i.exec(full);
+  if (leadingElseIf && leadingElseIf[1].trim() && leadingElseIf[2].trim()) {
+    const tail = splitConditionTail(leadingElseIf[2].trim());
+    if (!tail) return null;
+    return {
+      stages: [{ keyword: 'ELSEIF', condition: leadingElseIf[1].trim(), branch: tail.first }, ...tail.stages],
+      elseBranch: tail.elseBranch,
+    };
+  }
+  const ifThen = /^\s*(?:if|when)\s+(.+?)\s+then\s+([\s\S]+?)\s*$/i.exec(full);
+  const ifComma = ifThen ? null : /^\s*(?:if|when)\s+(.+?)\s*,\s*([\s\S]+?)\s*$/i.exec(full);
+  const head = ifThen ?? ifComma;
+  if (head && head[1].trim() && head[2].trim()) {
+    const tail = splitConditionTail(head[2].trim());
+    if (!tail) return null;
+    return {
+      stages: [{ keyword: 'IF', condition: head[1].trim(), branch: tail.first }, ...tail.stages],
+      elseBranch: tail.elseBranch,
+    };
+  }
+  const elseOnly = /^\s*(?:else|otherwise)\s*,?\s*(.+?)\s*$/i.exec(full);
+  if (elseOnly && elseOnly[1].trim()) return { stages: [], elseBranch: elseOnly[1].trim() };
+  return null;
+}
+
+function extractRatingConditionClause(text) {
+  const body = String(text ?? '');
+  if (/^\s*(?:if|when|else|otherwise)\b/i.test(body)) return body.trim();
+  const m = /\b(?:if|when)\b/i.exec(body);
+  return m ? body.slice(m.index).trim() : null;
+}
+
+// Assigned value of one conditional branch (`set X to Y`, `X is set to Y`,
+// `X = Y`, `X equals Y`); anything else stays verbatim.
+function extractBranchValue(branch) {
+  const text = String(branch ?? '').trim().replace(/\.\s*$/, '').trim();
+  if (!text) return '';
+  let m = /\bset\s+[A-Za-z_]\w*\s+to\s+([A-Za-z_]\w*|\d+(?:\.\d+)?)/i.exec(text);
+  if (m) return m[1];
+  m = /\b[A-Za-z_]\w*\s+is\s+set\s+to\s+([A-Za-z_]\w*|\d+(?:\.\d+)?)/i.exec(text);
+  if (m) return m[1];
+  m = /\b[A-Za-z_]\w*\s*=\s*([^;]+)/.exec(text);
+  if (m && m[1].trim()) return m[1].trim().replace(/\.\s*$/, '').trim();
+  m = /\b[A-Za-z_]\w*\s+equals?\s+([A-Za-z_]\w*|\d+(?:\.\d+)?)/i.exec(text);
+  if (m) return m[1];
+  return text;
+}
+
+// Expand one conditional step into IF/ELSEIF/ELSE/ENDIF rows with a separate
+// assignment row per stated branch. Conditional keywords render under the
+// Instruction column; conditions stay in Operand and branch assignments keep
+// the `output <-- value` form. Returns null when no confident branch
+// structure is evidenced, leaving the single verbatim row in place.
+function expandConditionEntry(entry) {
+  const det = entry?.det ?? null;
+  const output = String(entry?.output ?? det?.output ?? '');
+  const clause = String(det?.expression ?? '').trim()
+    || extractRatingConditionClause(entry?.instruction ?? '')
+    || '';
+  const parsed = clause ? parseRatingConditionChain(clause.replace(/[.;]+$/, '').trim() || clause) : null;
+  if (!parsed) return null;
+  const stages = (parsed.stages ?? []).filter((s) => String(s?.branch ?? '').trim());
+  const elseBranch = String(parsed.elseBranch ?? '').trim();
+  if (stages.length === 0 && !elseBranch) return null;
+  const rows = [];
+  const pushBranchRow = (branch, kind) => {
+    const value = extractBranchValue(branch);
+    rows.push({
+      instruction: output,
+      op: output ? '<--' : '',
+      open: '',
+      operand: value,
+      close: '',
+      output,
+      kind,
+      commentInputs: simpleIdentifiers(value),
+    });
+  };
+  for (const stage of stages) {
+    rows.push({
+      instruction: stage.keyword,
+      op: '',
+      open: '',
+      operand: String(stage.condition ?? '').trim(),
+      close: '',
+      output: '',
+      kind: stage.keyword === 'ELSEIF' ? 'elseif' : 'if',
+      commentInputs: simpleIdentifiers(stage.condition),
+    });
+    pushBranchRow(stage.branch, stage.keyword === 'ELSEIF' ? 'branch-elseif' : 'branch-true');
+  }
+  if (elseBranch) {
+    rows.push({
+      instruction: 'ELSE',
+      op: '',
+      open: '',
+      operand: '',
+      close: '',
+      output: '',
+      kind: 'else',
+      commentInputs: [],
+    });
+    pushBranchRow(elseBranch, 'branch-false');
+  }
+  rows.push({
+    instruction: 'ENDIF',
+    op: '',
+    open: '',
+    operand: '',
+    close: '',
+    output: '',
+    kind: 'endif',
+    commentInputs: [],
+  });
+  return rows;
+}
+
+// Expand one base rating entry into one or more seven-column row specs.
+// Lookups, rounding, single-operand assignments, explicit symbolic rows, and
+// anything unparsed stay single; arithmetic with operators and confident
+// conditionals expand. Never invents values: unparseable text keeps its
+// verbatim single row.
+function expandOneRatingEntry(entry) {
+  const det = entry?.det ?? null;
+  const word = String(det?.operation ?? '').toLowerCase();
+  if (det && isLookupOperation(det.operation)) {
+    return [{
+      instruction: entry.instruction,
+      op: entry.operation,
+      open: '',
+      operand: entry.operand,
+      close: '',
+      output: entry.output,
+      kind: 'lookup',
+      commentInputs: det.inputs ?? [],
+      det,
+    }];
+  }
+  if (det && (word === 'expression' || word === 'assignment') && entry.operation === '<--') {
+    const split = splitAssignment(det);
+    const output = split?.output || String(entry.output ?? entry.instruction ?? '');
+    const rhs = split?.rhs ?? String(entry.operand ?? '');
+    if (output && rhs.trim()) {
+      const expanded = expandArithmetic(output, rhs);
+      if (expanded && expanded.length > 1) {
+        return expanded.map((row, idx) => ({
+          ...row,
+          output,
+          kind: idx === 0 ? 'arithmetic-first' : 'arithmetic-cont',
+          commentInputs: isIdentifierOperand(row.operand) ? [row.operand.replace(/^[+-]/, '')] : [],
+          rhs,
+        }));
+      }
+      if (expanded && expanded.length === 1) {
+        return [{
+          ...expanded[0],
+          output,
+          kind: expanded[0].open || expanded[0].close ? 'arithmetic-first' : 'assignment',
+          commentInputs: isIdentifierOperand(expanded[0].operand) ? [expanded[0].operand.replace(/^[+-]/, '')] : [],
+          rhs,
+        }];
+      }
+    }
+    return [{
+      instruction: entry.instruction,
+      op: entry.operation,
+      open: '',
+      operand: entry.operand,
+      close: '',
+      output: entry.output,
+      kind: 'assignment',
+      commentInputs: det.inputs ?? [],
+      det,
+    }];
+  }
+  if (entry.operation === '<--' && entry.output && String(entry.operand ?? '').trim()
+    && (!det || !String(det.operation ?? '').trim())) {
+    const expanded = expandArithmetic(entry.output, entry.operand);
+    if (expanded && expanded.length > 1) {
+      return expanded.map((row, idx) => ({
+        ...row,
+        output: entry.output,
+        kind: idx === 0 ? 'arithmetic-first' : 'arithmetic-cont',
+        commentInputs: isIdentifierOperand(row.operand) ? [row.operand.replace(/^[+-]/, '')] : [],
+        rhs: entry.operand,
+      }));
+    }
+    if (expanded && expanded.length === 1) {
+      return [{
+        ...expanded[0],
+        output: entry.output,
+        kind: expanded[0].open || expanded[0].close ? 'arithmetic-first' : 'assignment',
+        commentInputs: isIdentifierOperand(expanded[0].operand) ? [expanded[0].operand.replace(/^[+-]/, '')] : [],
+        rhs: entry.operand,
+      }];
+    }
+  }
+  if (det && isConditionOperation(det.operation)) {
+    const expanded = expandConditionEntry(entry);
+    if (expanded) return expanded.map((row) => ({ ...row, det }));
+  }
+  if (det && word === 'rounding') {
+    return [{
+      instruction: entry.instruction,
+      op: entry.operation,
+      open: '',
+      operand: entry.operand,
+      close: '',
+      output: entry.output,
+      kind: 'rounding',
+      commentInputs: det.inputs ?? [],
+      det,
+    }];
+  }
+  if (entry.operation) {
+    return [{
+      instruction: entry.instruction,
+      op: entry.operation,
+      open: '',
+      operand: entry.operand,
+      close: '',
+      output: entry.output,
+      kind: 'explicit-op',
+      commentInputs: det?.inputs ?? [],
+      det,
+    }];
+  }
+  return [{
+    instruction: entry.instruction,
+    op: '',
+    open: '',
+    operand: entry.operand,
+    close: '',
+    output: entry.output,
+    kind: 'unparsed',
+    commentInputs: [],
+    det,
+  }];
+}
+
+// Fallback line comment when no dependency is traceable. Every generated
+// row keeps a purpose comment; arithmetic rows always name their variable
+// or prior step.
+function fallbackRatingComment(spec, tables) {
+  const orig = spec.origSeq !== '' && spec.origSeq !== null && spec.origSeq !== undefined ? `source step ${spec.origSeq}` : 'source step';
+  const output = String(spec.output ?? '').trim();
+  const operand = String(spec.operand ?? '').trim();
+  switch (spec.kind) {
+    case 'lookup': {
+      if (!output) return `Table lookup (${orig})`;
+      const det = spec.det ?? null;
+      const mention = (det?.depends_on ?? []).map((d) => String(d ?? '').trim()).find(Boolean) ?? '';
+      const resolved = mention ? resolveTableReference(tables, mention) : null;
+      const table = resolved ? String(resolved.name ?? resolved.id ?? '') : mention;
+      return table ? `Lookup ${output} from ${table}` : `Lookup ${output} (${orig})`;
+    }
+    case 'arithmetic-first':
+      if (isIdentifierOperand(operand)) return `Start ${output} from ${operand.replace(/^[+-]/, '')} (${orig})`;
+      return `Start ${output} from ${operand || 'source expression'} (${orig})`;
+    case 'arithmetic-cont':
+      if (isIdentifierOperand(operand)) return `Apply ${spec.op} ${operand.replace(/^[+-]/, '')} to continue ${output} from prior step (${orig})`;
+      return `Apply ${spec.op} ${operand} to continue ${output} from prior step (${orig})`;
+    case 'assignment':
+      if (output && operand) return `Assign ${operand} to ${output} (${orig})`;
+      if (output) return `Assign ${output} (${orig})`;
+      return `Assignment (${orig})`;
+    case 'if':
+      return operand ? `IF ${operand} (${orig})` : `Conditional check (${orig})`;
+    case 'elseif':
+      return operand ? `ELSEIF ${operand} (${orig})` : `Else-if branch (${orig})`;
+    case 'else':
+      return `Else branch (${orig})`;
+    case 'endif':
+      return `End of conditional (${orig})`;
+    case 'branch-true':
+      return output && operand ? `Set ${output} to ${operand} (true branch, ${orig})` : `True branch (${orig})`;
+    case 'branch-elseif':
+      return output && operand ? `Set ${output} to ${operand} (else-if branch, ${orig})` : `Else-if branch (${orig})`;
+    case 'branch-false':
+      return output && operand ? `Set ${output} to ${operand} (false branch, ${orig})` : `False branch (${orig})`;
+    case 'rounding': {
+      const target = output || operand;
+      return target ? `Round ${target} (${orig})` : `Rounding (${orig})`;
+    }
+    case 'explicit-op':
+      if (operand) return `Apply ${spec.op} ${operand} (${orig})`;
+      return `Operation ${spec.op} (${orig})`;
+    default:
+      return `Source instruction (${orig})`;
+  }
 }
 
 function buildRatingStepEntries(r, tables) {
@@ -976,6 +1517,12 @@ function buildRatingStepEntries(r, tables) {
 // Inputs, Final calculation, or Dependencies sections: the steps carry the
 // assignments, lookups, arithmetic, rounding, and IF/ELSE logic in source
 // order, and the validator flags genuine ambiguity in Unresolved items.
+// Arithmetic expands to one row per operation with explicit brackets;
+// conditionals expand to IF/ELSEIF/ELSE/ENDIF rows (keywords under
+// Instruction) with a row per branch assignment.
+// Expanded sheets renumber sequentially and retarget dependency comments;
+// unexpanded sheets keep their original numbering. Evidence still reflects
+// the source steps.
 function ratingRoutineSheetRows(r, routineIssues, ctx = {}) {
   const rows = [];
   pushRoutineHeader(rows, r);
@@ -984,12 +1531,35 @@ function ratingRoutineSheetRows(r, routineIssues, ctx = {}) {
   const stepEntries = buildRatingStepEntries(r, tables);
   if (stepEntries.length > 0) {
     rows.push(['Steps']);
-    rows.push(['Step #', 'Instruction', 'Operation', 'Operand', 'Comment']);
+    rows.push([...RATING_STEPS_HEADER]);
+    const expanded = [];
+    for (const e of stepEntries) {
+      for (const spec of expandOneRatingEntry(e)) {
+        expanded.push({ ...spec, origSeq: e.seq ?? '' });
+      }
+    }
+    const didExpand = expanded.length !== stepEntries.length;
+    expanded.forEach((spec, idx) => {
+      spec.newSeq = didExpand ? String(idx + 1) : String(spec.origSeq ?? idx + 1);
+    });
     const tableTerms = tableReferenceTerms(tables);
     const priorOutputs = new Map();
-    for (const e of stepEntries) {
-      rows.push([e.seq, e.instruction, e.operation, e.operand, stepComment(e, r, routines, tables, tableTerms, priorOutputs, { lookupPrefix: false })]);
-      if (e.output) priorOutputs.set(normalizeVariableKey(e.output), { seq: e.seq ?? '', table: priorTableForStep(e.det, tables) });
+    for (const spec of expanded) {
+      const traceDet = (spec.kind === 'lookup' || spec.kind === 'rounding')
+        ? (spec.det ?? { inputs: spec.commentInputs ?? [] })
+        : { inputs: spec.commentInputs ?? [], output: spec.output };
+      const traced = stepComment(
+        { det: traceDet, output: spec.output },
+        r, routines, tables, tableTerms, priorOutputs, { lookupPrefix: false }
+      );
+      const comment = traced || fallbackRatingComment(spec, tables);
+      rows.push([spec.newSeq, spec.instruction, spec.op, spec.open, spec.operand, spec.close, comment]);
+      if (spec.output) {
+        priorOutputs.set(
+          normalizeVariableKey(spec.output),
+          { seq: spec.newSeq ?? '', table: priorTableForStep(spec.det ?? null, tables) }
+        );
+      }
     }
   }
   const condEntries = buildCondEntries(r);
@@ -1360,7 +1930,8 @@ function jobRows(job, source) {
       const expected = ROUTINE_SECTION_HEADERS.get(label);
       if (expected && rowIdx + 1 < sheetRows.length) {
         const next = sheetRows[rowIdx + 1];
-        if (next.length === expected.length && next.every((v, i) => v === expected[i])) {
+        const matches = (exp) => next.length === exp.length && next.every((v, i) => v === exp[i]);
+        if (matches(expected) || (label === 'Steps' && matches(LEGACY_STEPS_HEADER))) {
           headerRows.push(rowIdx + 1);
         }
       }
