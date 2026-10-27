@@ -363,8 +363,9 @@ class PdfReader {
       pos = skipWs(this.buf, pos);
       if (this.buf.subarray(pos, pos + 7).toString('latin1') === 'trailer') {
         const t = parseValue(this.buf, pos + 7);
+        // Capture /Prev before merging: mergeTrailer never stores /Prev.
+        const prev = t.value && t.value.type === 'dict' ? t.value.dict.get('Prev') : undefined;
         this.mergeTrailer(t.value);
-        const prev = this.trailer.get('Prev');
         return prev && prev.type === 'num' ? prev.num : -1;
       }
       const head = /^(\d+)\s+(\d+)/.exec(this.buf.subarray(pos, pos + 32).toString('latin1'));
@@ -380,7 +381,7 @@ class PdfReader {
         if (!entry) throw new Error('Malformed xref entry');
         pos += entry[0].length;
         if (entry[3] === 'n') {
-          this.offsets.set(keyOf(first + i, Number(entry[2])), Number(entry[1]));
+          this.recordOffset(first + i, Number(entry[2]), Number(entry[1]));
         }
       }
     }
@@ -420,8 +421,8 @@ class PdfReader {
         const type = w1 === 0 ? 1 : readInt(w1);
         const field2 = readInt(w2);
         const field3 = readInt(w3);
-        if (type === 1) this.offsets.set(keyOf(first + i, field3), field2);
-        else if (type === 2) this.compressed.set(keyOf(first + i, 0), { stm: field2, idx: field3 });
+        if (type === 1) this.recordOffset(first + i, field3, field2);
+        else if (type === 2) this.recordCompressed(first + i, field2, field3);
       }
     }
     const prev = dict.get('Prev');
@@ -434,6 +435,22 @@ class PdfReader {
       if (k === 'Prev') continue;
       if (!this.trailer.has(k)) this.trailer.set(k, v);
     }
+  }
+
+  // The xref chain is walked newest-first, so the first record seen for an
+  // object is its newest revision and older sections must not overwrite it.
+  // Both maps are checked: an object may move between plain and compressed
+  // storage across incremental updates.
+  recordOffset(num, gen, offset) {
+    const k = keyOf(num, gen);
+    if (this.offsets.has(k) || this.compressed.has(k)) return;
+    this.offsets.set(k, offset);
+  }
+
+  recordCompressed(num, stm, idx) {
+    const k = keyOf(num, 0);
+    if (this.compressed.has(k) || this.offsets.has(k)) return;
+    this.compressed.set(k, { stm, idx });
   }
 
   fallbackScan() {

@@ -8,7 +8,7 @@
 // Cover and the summaries link each asset name to its detail worksheet.
 // Fixed ZIP timestamps keep builds byte-deterministic.
 import { deflateRawSync } from 'node:zlib';
-import { resolveTableReference, tableReferenceTerms } from './models.js';
+import { normalizeVariableKey, resolveTableReference, tableReferenceTerms } from './models.js';
 
 // ---------- CRC32 + minimal ZIP writer ----------
 
@@ -309,8 +309,13 @@ function continuationText(cont) {
 }
 
 function parseStepSequence(text, fallbackIndex) {
-  const m = /^\s*(?:step\s*)?(\d+)\s*[:.\)\-]/i.exec(String(text ?? ''));
+  const t = String(text ?? '');
+  const m = /^\s*(?:step\s*)?(\d+)\s*[:.\)\-]/i.exec(t);
   if (m) return m[1];
+  // Bare numbering ('1 Find ...', '(1) Find ...') counts only before a
+  // letter, so quantities and decimals never become step numbers.
+  const bare = /^\s*(?:step\s*)?(?:\((\d{1,3})\)\s*|(\d{1,2})\s+)(?=[A-Za-z])/i.exec(t);
+  if (bare) return bare[1] ?? bare[2];
   return String(fallbackIndex + 1);
 }
 
@@ -320,16 +325,18 @@ function isLookupOperation(op) {
 }
 
 // Routines (other than the current one) listing a variable among outputs.
+// Comparison is spacing/punctuation-insensitive so "base rate" matches
+// "base_rate".
 function producingRoutines(routines, routineId, variable) {
-  const key = String(variable ?? '').trim().toLowerCase();
+  const key = normalizeVariableKey(variable);
   if (!key) return [];
   return (Array.isArray(routines) ? routines : []).filter((s) =>
     String(s?.id ?? '') !== String(routineId ?? '')
-    && (s?.outputs ?? []).some((o) => String(o ?? '').trim().toLowerCase() === key));
+    && (s?.outputs ?? []).some((o) => normalizeVariableKey(o) === key));
 }
 
 function normalizeMatch(s) {
-  return String(s ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  return normalizeVariableKey(s);
 }
 
 // Normalized lookup-key terms across all routines: inputs of lookup steps.
@@ -367,6 +374,18 @@ function candidateTablesForRoutine(routine, tables) {
   return out;
 }
 
+// Table subject for input mapping: the title minus its leading asset label
+// ('Table A - ...', 'Schedule Q - ...') and parenthetical qualifiers, so a
+// variable named only in a qualifier ('... per 1,000 of insured value')
+// never sources that input. Generic document labels, never table names.
+function tableSubjectKey(name) {
+  const s = String(name ?? '')
+    .replace(/\([^()]*\)/g, ' ')
+    .replace(/\[[^\[\]]*\]/g, ' ');
+  const withoutLabel = s.replace(/^\s*(?:table|schedule|appendix|exhibit)\s+\S+\s*[-—–:.]\s*/i, '');
+  return normalizeMatch(withoutLabel);
+}
+
 function findRoutinesByTarget(routines, target) {
   const key = String(target ?? '').trim().toLowerCase();
   if (!key) return [];
@@ -392,9 +411,9 @@ function resolveInputSources(routine, routines, tables) {
   for (const rawInput of inputs) {
     const trimmed = String(rawInput ?? '').trim();
     if (!trimmed) continue;
-    const lower = trimmed.toLowerCase();
+    const inputKey = normalizeVariableKey(trimmed);
     const own = (routine?.steps_detailed ?? []).find((d) =>
-      d && isLookupOperation(d.operation) && String(d.output ?? '').trim().toLowerCase() === lower);
+      d && isLookupOperation(d.operation) && normalizeVariableKey(d.output) === inputKey);
     if (own) {
       const mentions = (own.depends_on ?? []).map((d) => String(d ?? '').trim()).filter(Boolean);
       const resolved = [];
@@ -433,14 +452,18 @@ function resolveInputSources(routine, routines, tables) {
       continue;
     }
     if (norm.length >= 3 && candidates.length > 0) {
+      // A table sources an input only when the input equals a column label
+      // or the table's subject (the title minus its asset label and
+      // qualifiers). Substring matches inside long descriptive titles are
+      // not evidence: they misattribute external inputs to the wrong table.
       const matches = candidates.filter((t) => {
-        const nameNorm = normalizeMatch(t?.name ?? '');
-        if (nameNorm && nameNorm.includes(norm)) return true;
         const headers = [
           ...(t?.headers ?? []),
           ...(t?.columns ?? []).map((c) => c?.label ?? c?.original_label),
         ];
-        return headers.some((h) => normalizeMatch(h) === norm);
+        if (headers.some((h) => normalizeMatch(h) === norm)) return true;
+        const subject = tableSubjectKey(t?.name ?? '');
+        return Boolean(subject) && subject === norm;
       });
       if (matches.length === 1) {
         out.push({ input: trimmed, source: String(matches[0].name ?? matches[0].id ?? ''), keys: '' });
@@ -463,8 +486,8 @@ function resolveInputSources(routine, routines, tables) {
 // Line Comment for one step: the lookup's table and result plus how each
 // input was produced — an earlier step in this routine or another routine's
 // output. Returns '' when nothing is traceable; unknown references stay
-// silent here because the validator flags them. priorOutputs maps
-// lowercased output -> { seq, table } for earlier steps in order.
+// silent here because the validator flags them. priorOutputs maps normalized
+// output -> { seq, table } for earlier steps in order.
 function stepLineComment(step, routine, routines, tables, tableTerms, priorOutputs) {
   const det = step.det ?? null;
   const output = step.output || '';
@@ -493,13 +516,17 @@ function stepLineComment(step, routine, routines, tables, tableTerms, priorOutpu
   }
   const routineTerms = new Set(
     [...(routine.inputs ?? []), ...(routine.outputs ?? [])]
-      .map((s) => String(s ?? '').trim().toLowerCase())
+      .map((s) => normalizeVariableKey(s))
       .filter(Boolean)
+  );
+  const normalizedTableTerms = new Set(
+    [...(tableTerms ?? [])].map((s) => normalizeVariableKey(s)).filter(Boolean)
   );
   for (const raw of det?.inputs ?? []) {
     const variable = String(raw ?? '').trim();
     if (!variable) continue;
-    const prior = priorOutputs instanceof Map ? priorOutputs.get(variable.toLowerCase()) : null;
+    const varKey = normalizeVariableKey(variable);
+    const prior = priorOutputs instanceof Map ? priorOutputs.get(varKey) : null;
     if (prior) {
       const tableBit = prior.table ? ` (${prior.table})` : '';
       if (prior.seq !== '' && prior.seq !== null && prior.seq !== undefined) {
@@ -514,7 +541,7 @@ function stepLineComment(step, routine, routines, tables, tableTerms, priorOutpu
       parts.push(`uses ${variable} from ${producers[0].name ?? producers[0].id ?? ''}`);
     } else if (producers.length > 1) {
       parts.push(`uses ${variable} from multiple routines (${producers.map((s) => String(s?.name ?? s?.id ?? '')).join('; ')}) — verify`);
-    } else if (routineTerms.has(variable.toLowerCase()) || tableTerms.has(variable.toLowerCase())) {
+    } else if (routineTerms.has(varKey) || normalizedTableTerms.has(varKey)) {
       continue;
     }
   }
@@ -563,27 +590,28 @@ function collectStepDerived(stepEntries, routine, routines, tables) {
       if (resolved.length > 0) {
         for (const t of resolved) {
           const entry = ensure(String(t.name ?? t.id ?? ''), 'table');
-          if (varFmt && output && !entry.vars.has(output.toLowerCase())) entry.vars.set(output.toLowerCase(), varFmt);
+          if (varFmt && output && !entry.vars.has(normalizeVariableKey(output))) entry.vars.set(normalizeVariableKey(output), varFmt);
           else if (varFmt && !output && !entry.vars.has(varFmt.toLowerCase())) entry.vars.set(varFmt.toLowerCase(), varFmt);
         }
       } else if (mentions.length > 0) {
         const entry = ensure(mentions[0], '');
         if (varFmt) {
-          const vk = (output || varFmt).toLowerCase();
+          const vk = normalizeVariableKey(output || varFmt) || String(output || varFmt).toLowerCase();
           if (!entry.vars.has(vk)) entry.vars.set(vk, varFmt);
         }
       }
     }
     for (const raw of det?.inputs ?? []) {
       const variable = String(raw ?? '').trim();
-      if (!variable || prior.has(variable.toLowerCase())) continue;
+      if (!variable || prior.has(normalizeVariableKey(variable))) continue;
       for (const p of producingRoutines(routines, routine?.id, variable)) {
         const entry = ensure(String(p.name ?? p.id ?? ''), 'routine');
-        if (!entry.vars.has(variable.toLowerCase())) entry.vars.set(variable.toLowerCase(), variable);
+        const vk = normalizeVariableKey(variable);
+        if (!entry.vars.has(vk)) entry.vars.set(vk, variable);
       }
     }
     if (e?.output) {
-      prior.set(String(e.output).toLowerCase(), { seq: e.seq ?? '', table: priorTableForStep(det, tables) });
+      prior.set(normalizeVariableKey(e.output), { seq: e.seq ?? '', table: priorTableForStep(det, tables) });
     }
   }
   return map;
@@ -592,6 +620,111 @@ function collectStepDerived(stepEntries, routine, routines, tables) {
 function stepOperandCell(step) {
   if (isLookupOperation(step.det?.operation)) return step.keys || '';
   return step.expression || step.operand || step.keys || '';
+}
+
+function parseFinalExpressionOutput(expressionText) {
+  const t = String(expressionText ?? '').trim();
+  if (!t || /^(if|else|when|otherwise)\b/i.test(t)) return '';
+  const commaIdx = t.search(/,\s*(where|with)\b/i);
+  const main = commaIdx < 0 ? t : t.slice(0, commaIdx);
+  const m = /^\s*(?:calculate\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+?)\s*$/.exec(main);
+  if (!m || !m[2].trim()) return '';
+  return m[1];
+}
+
+function isSameVariableRounding(entry) {
+  if (String(entry?.operation ?? '').toLowerCase() !== 'rounding') return false;
+  const output = String(entry?.output ?? '');
+  if (!output.trim()) return true;
+  const outKey = normalizeVariableKey(output);
+  if (!outKey) return true;
+  const operandKey = normalizeVariableKey(entry?.operand ?? '');
+  if (operandKey && operandKey === outKey) return true;
+  const inputs = entry?.det?.inputs ?? [];
+  if (Array.isArray(inputs) && inputs.length > 0) {
+    const inputKeys = inputs.map((v) => normalizeVariableKey(v)).filter(Boolean);
+    if (inputKeys.length > 0 && inputKeys.every((k) => k === outKey)) return true;
+  }
+  return false;
+}
+
+function stepCalculationText(entry) {
+  return entry?.expression || entry?.instruction || entry?.operand || entry?.keys || '';
+}
+
+// Terminal step producing a routine output, skipping same-variable rounding
+// post-processing. Returns null when no step output matches routine outputs.
+function terminalOutputStep(stepEntries, routineOutputs) {
+  const outputKeys = new Set(
+    (routineOutputs ?? []).map((o) => normalizeVariableKey(o)).filter(Boolean)
+  );
+  if (outputKeys.size === 0) return null;
+  for (let i = (stepEntries ?? []).length - 1; i >= 0; i -= 1) {
+    const entry = stepEntries[i];
+    const key = normalizeVariableKey(entry?.output ?? '');
+    if (!key || !outputKeys.has(key)) continue;
+    if (isSameVariableRounding(entry)) continue;
+    return entry;
+  }
+  return null;
+}
+
+function lastNonRoundingStep(stepEntries) {
+  return [...(stepEntries ?? [])].reverse()
+    .find((e) => String(e?.operation ?? '').toLowerCase() !== 'rounding')
+    ?? (stepEntries ?? [])[(stepEntries ?? []).length - 1]
+    ?? null;
+}
+
+// Choose the Final calculation entry {calculation, output} or null when
+// nothing is available. Prefers the routine expression when it matches the
+// terminal stage; uses the terminal output step when the expression is an
+// intermediate stage so raw/adjusted/final outputs stay separate.
+function selectFinalCalculation(routine, stepEntries, finalExpression) {
+  const expr = String(finalExpression ?? '');
+  const hasExpr = Boolean(expr.trim());
+  const outputs = routine?.outputs ?? [];
+  const terminal = terminalOutputStep(stepEntries, outputs);
+  if (hasExpr && (stepEntries ?? []).length > 0 && terminal) {
+    const exprOutput = parseFinalExpressionOutput(expr);
+    if (!exprOutput) {
+      return { calculation: expr, output: listJoin(outputs) };
+    }
+    const exprKey = normalizeVariableKey(exprOutput);
+    const terminalKey = normalizeVariableKey(terminal.output ?? '');
+    const terminalCalc = stepCalculationText(terminal);
+    if (exprKey && exprKey === terminalKey && expr.trim() === String(terminalCalc ?? '').trim()) {
+      return { calculation: expr, output: listJoin(outputs) };
+    }
+    const outputKeys = new Set(outputs.map((o) => normalizeVariableKey(o)).filter(Boolean));
+    if (terminalKey && outputKeys.has(terminalKey) && exprKey !== terminalKey) {
+      return { calculation: terminalCalc, output: String(terminal.output ?? '') };
+    }
+    if (exprKey && outputKeys.has(exprKey) && terminalKey && outputKeys.has(terminalKey) && exprKey === terminalKey) {
+      return { calculation: expr, output: listJoin(outputs) };
+    }
+    if (exprKey && !outputKeys.has(exprKey) && terminalKey && outputKeys.has(terminalKey)) {
+      return { calculation: terminalCalc, output: String(terminal.output ?? '') };
+    }
+    return { calculation: expr, output: listJoin(outputs) };
+  }
+  if (hasExpr) {
+    // No terminal stage evidenced: pair the formula with its own assignment
+    // target rather than mapping an intermediate formula to the final output.
+    return { calculation: expr, output: parseFinalExpressionOutput(expr) || listJoin(outputs) };
+  }
+  if ((stepEntries ?? []).length === 0) return null;
+  if (terminal) {
+    const calculation = stepCalculationText(terminal);
+    const output = String(terminal.output ?? '');
+    if (calculation || output) return { calculation, output };
+  }
+  const last = lastNonRoundingStep(stepEntries);
+  if (!last) return null;
+  const calculation = stepCalculationText(last);
+  const output = String(last?.output ?? '');
+  if (!calculation && !output) return null;
+  return { calculation, output };
 }
 
 // Section headings on routine sheets and their column headers (null when the
@@ -681,27 +814,22 @@ function routineSheetRows(r, routineIssues, ctx = {}) {
     const priorOutputs = new Map();
     for (const e of stepEntries) {
       rows.push([e.seq, e.instruction, e.operation, stepOperandCell(e), stepLineComment(e, r, routines, tables, tableTerms, priorOutputs)]);
-      if (e.output) priorOutputs.set(e.output.toLowerCase(), { seq: e.seq ?? '', table: priorTableForStep(e.det, tables) });
+      if (e.output) priorOutputs.set(normalizeVariableKey(e.output), { seq: e.seq ?? '', table: priorTableForStep(e.det, tables) });
     }
   }
 
-  // Final calculation closes the execution flow: the routine's stated
-  // formula when one was extracted, else the terminal step restated verbatim
-  // with its output. Nothing is composed or reinterpreted here.
+  // Final calculation closes the execution flow without mapping an
+  // intermediate formula to the final output: the routine's stated formula
+  // when it matches the terminal stage, else the terminal step producing a
+  // routine output. Same-variable rounding is post-processing and stays
+  // separate in Steps; rounding that produces a new variable is a genuine
+  // stage and may close the flow. Nothing is composed or reinterpreted.
   const finalExpression = String(r.expression_text ?? '');
-  if (finalExpression.trim()) {
+  const finalEntry = selectFinalCalculation(r, stepEntries, finalExpression);
+  if (finalEntry) {
     rows.push(['Final calculation']);
     rows.push(['Calculation', 'Output']);
-    rows.push([finalExpression, listJoin(r.outputs)]);
-  } else if (stepEntries.length > 0) {
-    const last = stepEntries[stepEntries.length - 1];
-    const calculation = last.expression || last.instruction || last.operand || last.keys;
-    const output = last.output || '';
-    if (calculation || output) {
-      rows.push(['Final calculation']);
-      rows.push(['Calculation', 'Output']);
-      rows.push([calculation, output]);
-    }
+    rows.push([finalEntry.calculation, finalEntry.output]);
   }
 
   const conds = r.conditions ?? [];
@@ -775,7 +903,8 @@ function routineSheetRows(r, routineIssues, ctx = {}) {
       for (const s of inputSources) {
         if (String(s.source ?? '').toLowerCase() === tableName) {
           const fmt = s.keys ? `${s.input} (keys: ${s.keys})` : s.input;
-          if (!vars.has(s.input.toLowerCase())) vars.set(s.input.toLowerCase(), fmt);
+          const vk = normalizeVariableKey(s.input);
+          if (!vars.has(vk)) vars.set(vk, fmt);
         }
       }
       for (const derived of stepDerived.values()) {
@@ -793,13 +922,14 @@ function routineSheetRows(r, routineIssues, ctx = {}) {
       const outputTerms = new Set();
       for (const m of matched) {
         for (const o of m?.outputs ?? []) {
-          const t = String(o ?? '').trim().toLowerCase();
+          const t = normalizeVariableKey(o);
           if (t) outputTerms.add(t);
         }
       }
       for (const raw of r.inputs ?? []) {
         const v = String(raw ?? '').trim();
-        if (v && outputTerms.has(v.toLowerCase()) && !vars.has(v.toLowerCase())) vars.set(v.toLowerCase(), v);
+        const vk = normalizeVariableKey(v);
+        if (v && vk && outputTerms.has(vk) && !vars.has(vk)) vars.set(vk, v);
       }
       for (const derived of stepDerived.values()) {
         if (derived.type !== 'routine') continue;

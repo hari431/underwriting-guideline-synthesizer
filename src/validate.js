@@ -1,9 +1,9 @@
 // Deterministic validation for extracted jobs. Pure functions, no model calls.
 // Policy: structural/traceability breaks are errors; anything interpretive —
 // including unfamiliar formula syntax — is a warning flagged for review.
-import { createValidationIssue, resolveTableReference, tableReferenceTerms } from './models.js';
+import { ROUTINE_KINDS, createValidationIssue, normalizeVariableKey, resolveTableReference, tableReferenceTerms } from './models.js';
 
-export const ROUTINE_KINDS = ['formula', 'condition', 'calculation_steps'];
+export { ROUTINE_KINDS };
 
 const CONDITIONAL_KEYWORDS = /\b(if|then|else|case|when|and|or|not|in)\b/i;
 const FORMULA_OPERATORS = /=|[+\-*/%()<>?]/;
@@ -122,7 +122,8 @@ export function validateJob(job) {
       }
     }
     for (const dep of routine.depends_on ?? []) {
-      if (String(dep ?? '').trim() && !knownNames.has(String(dep ?? '').trim().toLowerCase())) {
+      const target = String(dep ?? '').trim();
+      if (target && !knownNames.has(target.toLowerCase()) && !resolveTableReference(tables, target)) {
         warn('routine', routine.id, `Routine "${routine.name || routine.id}" depends on "${dep}", which matches no extracted table or routine.`, routine.source_pages);
       }
     }
@@ -352,7 +353,7 @@ function checkConditionFallback(routine, warn) {
   const hasStructuredFallback = detailed.some((d) => String(d?.false_branch ?? '').trim() || String(d?.referral_code ?? '').trim());
   if (hasStructuredFallback) return;
   const joined = conds.join('\n');
-  if (/\b(else|otherwise|fallback|refer|exception|default)\b/i.test(joined)) return;
+  if (/\b(else|otherwise|fallback|refer|decline|exception|default)\b/i.test(joined)) return;
   warn('routine', routine.id, `Condition routine "${routine.name || routine.id}" has no explicit fallback or ELSE branch; verify the fallback behavior against the source.`, routine.source_pages);
 }
 
@@ -388,17 +389,17 @@ function checkStructuredDependencies(routine, warn, knownNames, knownStepRefs = 
   const deps = routine.dependencies ?? [];
   for (const dep of deps) {
     const target = String(dep?.target ?? '').trim();
-    if (target && !knownNames.has(target.toLowerCase())) {
+    if (target && !knownNames.has(target.toLowerCase()) && !resolveTableReference(tables, target)) {
       warn('routine', routine.id, `Routine "${routine.name || routine.id}" depends on "${target}", which matches no extracted table or routine.`, dep?.source_pages?.length ? dep.source_pages : routine.source_pages);
     }
   }
   const detailed = routine.steps_detailed ?? [];
   if (detailed.length === 0) return;
-  const localOutputs = new Set(
-    [...(routine.inputs ?? []), ...(routine.outputs ?? []), ...detailed.flatMap((s) => (s?.output ? [String(s.output)] : []))]
-      .map((s) => String(s ?? '').trim().toLowerCase())
-      .filter(Boolean)
-  );
+  const localTerms = [...(routine.inputs ?? []), ...(routine.outputs ?? []), ...detailed.flatMap((s) => (s?.output ? [String(s.output)] : []))];
+  const localOutputs = new Set(localTerms.map((s) => String(s ?? '').trim().toLowerCase()).filter(Boolean));
+  const normalizedLocal = new Set(localTerms.map((s) => normalizeVariableKey(s)).filter(Boolean));
+  const normalizedStepRefs = new Set([...(knownStepRefs ?? [])].map((s) => normalizeVariableKey(s)).filter(Boolean));
+  const normalizedRoutineOutputs = new Set([...(routineOutputs ?? [])].map((s) => normalizeVariableKey(s)).filter(Boolean));
   for (const step of detailed) {
     const refs = [...(step?.inputs ?? []), ...(step?.depends_on ?? [])];
     for (const ref of refs) {
@@ -407,6 +408,8 @@ function checkStructuredDependencies(routine, warn, knownNames, knownStepRefs = 
       if (localOutputs.has(name.toLowerCase())) continue;
       if (knownStepRefs.has(name.toLowerCase())) continue;
       if (routineOutputs.has(name.toLowerCase())) continue;
+      const key = normalizeVariableKey(name);
+      if (key && (normalizedLocal.has(key) || normalizedStepRefs.has(key) || normalizedRoutineOutputs.has(key))) continue;
       if (resolveTableReference(tables, name)) continue;
       warn('routine', routine.id, `Step${step?.sequence !== undefined && step?.sequence !== '' ? ` ${step.sequence}` : ''} references "${name}", which matches no defined input, step output, routine output, table, column, or routine; flagged as unresolved.`, step?.source_pages?.length ? step.source_pages : routine.source_pages);
     }

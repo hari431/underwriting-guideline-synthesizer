@@ -124,6 +124,20 @@ test('validate: leading-zero identifiers and suspected continuations warn', () =
   assert.ok(issues.some((i) => /continuation/.test(i.message)));
 });
 
+test('validate: refer and decline dispositions satisfy the fallback check symmetrically', () => {
+  const job = jobWith({
+    routines: [
+      { name: 'Referred', kind: 'condition', sourcePages: [1], evidenceText: 'e', conditions: ['RULE-1 Widget count is high. Refer'] },
+      { name: 'Declined', kind: 'condition', sourcePages: [1], evidenceText: 'e', conditions: ['RULE-2 Widget count is low. Decline'] },
+      { name: 'NoFallback', kind: 'condition', sourcePages: [1], evidenceText: 'e', conditions: ['RULE-3 Widget count is steady. Apply widget credit.'] },
+    ],
+  });
+  const issues = validateJob(job);
+  assert.ok(!issues.some((i) => i.target_id === 'R1' && /no explicit fallback/.test(i.message)));
+  assert.ok(!issues.some((i) => i.target_id === 'R2' && /no explicit fallback/.test(i.message)));
+  assert.ok(issues.some((i) => i.target_id === 'R3' && /no explicit fallback/.test(i.message)));
+});
+
 test('validate: condition fallback, lookup keys, and unresolved step refs warn', () => {
   const job = jobWith({
     routines: [
@@ -143,6 +157,34 @@ test('validate: condition fallback, lookup keys, and unresolved step refs warn',
   assert.ok(issues.some((i) => /has no lookup keys/.test(i.message)));
   assert.ok(issues.some((i) => /flagged as unresolved/.test(i.message)));
   assert.ok(issues.every((i) => i.severity === 'warning'));
+});
+
+test('validate: normalized kinds skip kind warnings but unknown kinds still warn', () => {
+  const job = jobWith({
+    routines: [
+      { name: 'E', kind: 'eligibility', sourcePages: [1], evidenceText: 'e', conditions: ['RULE-1 Widget count is high. Refer'] },
+      { name: 'C', kind: 'calculation', sourcePages: [1], evidenceText: 'e', steps: ['1 Find the widget rate for widget_class in Schedule Q.'] },
+      { name: 'M', kind: 'mystery', sourcePages: [1], evidenceText: 'e' },
+    ],
+  });
+  const kinds = job.routines.map((r) => r.kind);
+  assert.deepEqual(kinds, ['condition', 'calculation_steps', 'mystery']);
+  const issues = validateJob(job);
+  assert.ok(!issues.some((i) => i.target_id === 'R1' && /unrecognized kind/.test(i.message)));
+  assert.ok(!issues.some((i) => i.target_id === 'R2' && /unrecognized kind/.test(i.message)));
+  assert.ok(issues.some((i) => i.target_id === 'R3' && /unrecognized kind "mystery"/.test(i.message)));
+});
+
+test('validate: factor tables without units keep semantics warnings', () => {
+  const job = jobWith({
+    tables: [
+      { name: 'Widget Factors', sourcePages: [1], evidenceText: 'Widget factor schedule', headers: ['Widget key', 'Factor'], rows: [['w1', '0.90']] },
+      { name: 'Priced Widgets', sourcePages: [1], evidenceText: 'Widget prices in dollars per unit', headers: ['Widget key', 'Price'], rows: [['w1', '12.50']] },
+    ],
+  });
+  const issues = validateJob(job);
+  assert.ok(issues.some((i) => i.target_id === 'T1' && /unclear units/.test(i.message)));
+  assert.ok(!issues.some((i) => i.target_id === 'T2' && /unclear units/.test(i.message)));
 });
 
 test('validate: step refs matching table columns resolve; unknown refs still flag', () => {

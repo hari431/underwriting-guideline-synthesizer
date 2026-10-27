@@ -186,6 +186,35 @@ test('models: single-word captures reject articles and prepositions', () => {
   assert.deepEqual(det[1].inputs, ['a', 'b']);
 });
 
+test('models: lookup keys and table derive from "using key in table" wording', () => {
+  const job = normalizeJob(
+    createJob({
+      routines: [{
+        name: 'Calc', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'ev',
+        steps: [
+          'Step 1: Look up base_rate using vehicle_class in the Base rate table.',
+          'Look up driver_factor using years_licensed in the Driver experience factor table.',
+          'Look up r using k in The Ledger.',
+        ],
+      }],
+    })
+  );
+  const det = job.routines[0].steps_detailed;
+  assert.equal(det.length, 3);
+  // Keys stay clean; the prose table mention becomes the table reference.
+  assert.equal(det[0].operation, 'lookup');
+  assert.equal(det[0].output, 'base_rate');
+  assert.deepEqual(det[0].inputs, ['vehicle_class']);
+  assert.deepEqual(det[0].depends_on, ['Base rate table']);
+  assert.equal(det[1].operation, 'lookup');
+  assert.equal(det[1].output, 'driver_factor');
+  assert.deepEqual(det[1].inputs, ['years_licensed']);
+  assert.deepEqual(det[1].depends_on, ['Driver experience factor table']);
+  // A capitalized leading article is part of the name, not prose: keep verbatim.
+  assert.deepEqual(det[2].inputs, ['k']);
+  assert.deepEqual(det[2].depends_on, ['The Ledger']);
+});
+
 test('models: table mentions resolve exactly or by unique prefix only', () => {
   const tables = [
     { id: 'T1', name: 'Table 1 - Base Rates' },
@@ -254,4 +283,271 @@ test('models: structured steps, conditions, and dependencies preserved with stri
   assert.equal(r.conditions_detailed[0].referral_code, 'REF-1');
   assert.equal(r.dependencies[0].target, 'Base table');
   assert.deepEqual(r.depends_on, ['Base table']);
+});
+
+test('models: lookups parse across Find/Retrieve/Select phrasings with normalized outputs', () => {
+  const job = normalizeJob(
+    createJob({
+      routines: [{
+        name: 'Calc', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'ev',
+        steps: [
+          'Step 1: Find the base rate for occupancy_class in Table A.',
+          'Step 2: Retrieve construction_factor from Table B using construction_code.',
+          'Look up protection_factor using protection_class in Table C.',
+          'Select the territory factor for territory from Table D.',
+          'Find base_rate in Table A.',
+          'Fetch discount_rate using customer_tier from Schedule Q.',
+          'Obtain risk_score for account_age in Appendix R.',
+          'Find the base-rate for class_code in Table A.',
+          'Find time in review.',
+          'Get approval from manager.',
+        ],
+      }],
+    })
+  );
+  const det = job.routines[0].steps_detailed;
+  assert.equal(det.length, 10);
+  assert.equal(det[0].operation, 'lookup');
+  assert.equal(det[0].output, 'base_rate');
+  assert.deepEqual(det[0].inputs, ['occupancy_class']);
+  assert.deepEqual(det[0].depends_on, ['Table A']);
+  assert.equal(det[1].operation, 'lookup');
+  assert.equal(det[1].output, 'construction_factor');
+  assert.deepEqual(det[1].inputs, ['construction_code']);
+  assert.deepEqual(det[1].depends_on, ['Table B']);
+  assert.equal(det[2].operation, 'lookup');
+  assert.equal(det[2].output, 'protection_factor');
+  assert.deepEqual(det[2].inputs, ['protection_class']);
+  assert.deepEqual(det[2].depends_on, ['Table C']);
+  assert.equal(det[3].operation, 'lookup');
+  assert.equal(det[3].output, 'territory_factor');
+  assert.deepEqual(det[3].inputs, ['territory']);
+  assert.deepEqual(det[3].depends_on, ['Table D']);
+  assert.equal(det[4].operation, 'lookup');
+  assert.equal(det[4].output, 'base_rate');
+  assert.deepEqual(det[4].depends_on, ['Table A']);
+  assert.equal(det[5].operation, 'lookup');
+  assert.equal(det[5].output, 'discount_rate');
+  assert.deepEqual(det[5].inputs, ['customer_tier']);
+  assert.deepEqual(det[5].depends_on, ['Schedule Q']);
+  assert.equal(det[6].operation, 'lookup');
+  assert.equal(det[6].output, 'risk_score');
+  assert.deepEqual(det[6].inputs, ['account_age']);
+  assert.deepEqual(det[6].depends_on, ['Appendix R']);
+  assert.equal(det[7].operation, 'lookup');
+  assert.equal(det[7].output, 'base_rate');
+  assert.deepEqual(det[7].inputs, ['class_code']);
+  // Prose without table structure stays minimal.
+  assert.equal(det[8].operation, undefined);
+  assert.equal(det[9].operation, undefined);
+  assert.deepEqual(job.routines[0].steps[0], 'Step 1: Find the base rate for occupancy_class in Table A.');
+});
+
+test('models: conditions parse IF-comma-otherwise and WHEN variants with both branches', () => {
+  const job = normalizeJob(
+    createJob({
+      routines: [{
+        name: 'Gate', kind: 'condition', sourcePages: [1], evidenceText: 'ev',
+        conditions: [
+          'If raw_premium is below 350, set adjusted_premium to 350; otherwise adjusted_premium equals raw_premium.',
+          'Otherwise adjusted_premium equals raw_premium.',
+          'When territory is remote, apply surcharge; otherwise apply standard rate.',
+          'IF x THEN y OTHERWISE z',
+          'If cost exceeds limit, refer for review.',
+          'Unstructured note.',
+        ],
+      }],
+    })
+  );
+  const det = job.routines[0].conditions_detailed;
+  assert.equal(det.length, 6);
+  assert.equal(det[0].condition, 'raw_premium is below 350');
+  assert.equal(det[0].true_branch, 'set adjusted_premium to 350');
+  assert.equal(det[0].false_branch, 'adjusted_premium equals raw_premium.');
+  assert.equal(det[1].false_branch, 'adjusted_premium equals raw_premium.');
+  assert.equal(det[1].condition, undefined);
+  assert.equal(det[2].condition, 'territory is remote');
+  assert.equal(det[2].true_branch, 'apply surcharge');
+  assert.equal(det[2].false_branch, 'apply standard rate.');
+  assert.equal(det[3].condition, 'x');
+  assert.equal(det[3].true_branch, 'y');
+  assert.equal(det[3].false_branch, 'z');
+  assert.equal(det[4].condition, 'cost exceeds limit');
+  assert.equal(det[4].true_branch, 'refer for review.');
+  assert.equal(det[4].false_branch, undefined);
+  assert.equal(det[5].condition, undefined);
+  assert.equal(det[5].true_branch, undefined);
+  assert.equal(det[5].original_text, 'Unstructured note.');
+});
+
+test('models: rounding Store-as and conditional steps keep intermediate stages separate', () => {
+  const job = normalizeJob(
+    createJob({
+      routines: [{
+        name: 'Calc', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'ev',
+        steps: [
+          'Round adjusted_premium to the nearest whole currency unit using half-up rounding. Store the result as annual_premium.',
+          'Round indicated_premium to the nearest dollar.',
+          'Apply minimum. If raw_premium is below 350, set adjusted_premium to 350; otherwise adjusted_premium equals raw_premium.',
+          'If x is above 5, set y to 1; otherwise y equals x.',
+          'Building replacement cost exceeds threshold.',
+        ],
+      }],
+    })
+  );
+  const det = job.routines[0].steps_detailed;
+  assert.equal(det.length, 5);
+  assert.equal(det[0].operation, 'rounding');
+  assert.equal(det[0].operand, 'adjusted_premium');
+  assert.equal(det[0].output, 'annual_premium');
+  assert.deepEqual(det[0].inputs, ['adjusted_premium']);
+  assert.equal(det[1].operation, 'rounding');
+  assert.equal(det[1].operand, 'indicated_premium');
+  assert.equal(det[1].output, 'indicated_premium');
+  assert.deepEqual(det[1].inputs ?? [], []);
+  assert.equal(det[2].operation, 'condition');
+  assert.equal(det[2].output, 'adjusted_premium');
+  assert.deepEqual(det[2].inputs, ['raw_premium']);
+  assert.match(det[2].expression ?? '', /If raw_premium is below 350/);
+  assert.equal(det[3].operation, 'condition');
+  assert.equal(det[3].output, 'y');
+  assert.deepEqual(det[3].inputs, ['x']);
+  assert.equal(det[4].operation, undefined);
+});
+
+test('models: bare-numbered steps parse without a Step prefix', () => {
+  const job = normalizeJob(
+    createJob({
+      routines: [{
+        name: 'Widget Calc', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'ev',
+        steps: [
+          '1 Find the widget rate for widget_class in Schedule Q.',
+          '2 Retrieve gadget_factor from Appendix R using gadget_code.',
+          '3 widget_total = widget_rate × gadget_factor.',
+          '4 Round widget_total to the nearest whole unit. Store the result as billed_total.',
+          '5 Apply floor. If widget_total is below 100, set floored_total to 100; otherwise floored_total equals widget_total.',
+          '2-factor review is required before binding.',
+          '1.20 is the minimum retained value.',
+        ],
+      }],
+    })
+  );
+  const det = job.routines[0].steps_detailed;
+  assert.equal(det.length, 7);
+  assert.equal(det[0].operation, 'lookup');
+  assert.equal(det[0].output, 'widget_rate');
+  assert.deepEqual(det[0].inputs, ['widget_class']);
+  assert.deepEqual(det[0].depends_on, ['Schedule Q']);
+  assert.equal(det[1].operation, 'lookup');
+  assert.equal(det[1].output, 'gadget_factor');
+  assert.deepEqual(det[1].inputs, ['gadget_code']);
+  assert.deepEqual(det[1].depends_on, ['Appendix R']);
+  assert.equal(det[2].operation, 'expression');
+  assert.equal(det[2].output, 'widget_total');
+  assert.equal(det[2].expression, 'widget_total = widget_rate × gadget_factor');
+  assert.deepEqual(det[2].inputs, ['widget_rate', 'gadget_factor']);
+  assert.equal(det[3].operation, 'rounding');
+  assert.equal(det[3].operand, 'widget_total');
+  assert.equal(det[3].output, 'billed_total');
+  assert.equal(det[4].operation, 'condition');
+  assert.equal(det[4].output, 'floored_total');
+  assert.deepEqual(det[4].inputs, ['widget_total']);
+  // Hyphenated terms and leading decimals are not step numbers: stay minimal.
+  assert.equal(det[5].operation, undefined);
+  assert.equal(det[6].operation, undefined);
+  assert.deepEqual(job.routines[0].steps[0], '1 Find the widget rate for widget_class in Schedule Q.');
+});
+
+test('models: trailing rule actions split from the condition without invented branches', () => {
+  const job = normalizeJob(
+    createJob({
+      routines: [{
+        name: 'Widget eligibility', kind: 'condition', sourcePages: [1], evidenceText: 'ev',
+        conditions: [
+          'RULE-7 Widget count exceeds 10 units. Refer',
+          'RULE-8 Account was opened before 2019 and paperwork is missing. Decline',
+          'RULE-9 Risk score is low. Apply widget credit from the Widget table.',
+          'Single unstructured note.',
+        ],
+      }],
+    })
+  );
+  const det = job.routines[0].conditions_detailed;
+  assert.equal(det.length, 4);
+  assert.equal(det[0].condition, 'RULE-7 Widget count exceeds 10 units.');
+  assert.equal(det[0].true_branch, 'Refer');
+  assert.equal(det[0].false_branch, undefined);
+  assert.equal(det[1].true_branch, 'Decline');
+  assert.equal(det[1].false_branch, undefined);
+  assert.equal(det[2].condition, 'RULE-9 Risk score is low.');
+  assert.equal(det[2].true_branch, 'Apply widget credit from the Widget table.');
+  assert.equal(det[2].false_branch, undefined);
+  assert.equal(det[3].condition, undefined);
+  assert.equal(det[3].true_branch, undefined);
+  assert.equal(det[3].original_text, 'Single unstructured note.');
+  assert.equal(job.routines[0].conditions[0], 'RULE-7 Widget count exceeds 10 units. Refer');
+});
+
+test('models: routine kinds normalize recognized types and keep unknown ones', () => {
+  const job = normalizeJob(
+    createJob({
+      routines: [
+        { name: 'E', kind: 'eligibility', sourcePages: [1], evidenceText: 'ev', conditions: ['RULE-1 Widget count is high. Refer'] },
+        { name: 'C', kind: 'calculation', sourcePages: [1], evidenceText: 'ev', steps: ['Do first thing'] },
+        { name: 'F', kind: 'calculation', sourcePages: [1], evidenceText: 'ev', expressionText: 'total = alpha_value + beta_value' },
+        { name: 'S', kind: 'Calculation Steps', sourcePages: [1], evidenceText: 'ev', steps: ['Do first thing'] },
+        { name: 'E2', kind: 'Eligibility screening rules', sourcePages: [1], evidenceText: 'ev', conditions: ['RULE-2 Widget count is high. Refer'] },
+        { name: 'P', kind: 'Premium rating procedure', sourcePages: [1], evidenceText: 'ev', steps: ['Do first thing'] },
+        { name: 'M', kind: 'mystery', sourcePages: [1], evidenceText: 'ev' },
+      ],
+    })
+  );
+  assert.deepEqual(job.routines.map((r) => r.kind), ['condition', 'calculation_steps', 'formula', 'calculation_steps', 'condition', 'calculation_steps', 'mystery']);
+});
+
+test('models: sparse explicit steps enrich from their own instructions', () => {
+  const job = normalizeJob(
+    createJob({
+      routines: [{
+        name: 'Widget Calc', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'ev',
+        steps: [
+          { sequence: 1, instruction: 'Find the widget rate for widget_class in Schedule Q.' },
+          { sequence: 2, instruction: 'Look up factor', operation: 'lookup', output: 'f' },
+          { sequence: 3, instruction: 'Initialize total', operation: 'assignment', expression: 'total = 0', output: 'total' },
+        ],
+      }],
+    })
+  );
+  const det = job.routines[0].steps_detailed;
+  assert.equal(det.length, 3);
+  assert.equal(det[0].sequence, 1);
+  assert.equal(det[0].operation, 'lookup');
+  assert.equal(det[0].output, 'widget_rate');
+  assert.deepEqual(det[0].inputs, ['widget_class']);
+  assert.deepEqual(det[0].depends_on, ['Schedule Q']);
+  assert.equal(det[0].interpretation_status, 'inferred');
+  // Explicitly provided fields are never overwritten by the parse.
+  assert.equal(det[1].operation, 'lookup');
+  assert.equal(det[1].output, 'f');
+  assert.equal(det[1].inputs, undefined);
+  assert.equal(det[2].expression, 'total = 0');
+  assert.equal(det[2].interpretation_status, undefined);
+  assert.deepEqual(job.routines[0].steps[0], 'Find the widget rate for widget_class in Schedule Q.');
+});
+
+test('models: table aliases resolve via prefix both ways, keywords, and dash variants', () => {
+  const tables = [
+    { id: 'T1', name: 'Table A \u2014 Base property rate by occupancy class' },
+    { id: 'T2', name: 'Table B \u2014 Construction factor' },
+    { id: 'T3', name: 'Table C \u2014 Protection factor' },
+  ];
+  assert.equal(resolveTableReference(tables, 'Table A')?.id, 'T1');
+  assert.equal(resolveTableReference(tables, 'Table A \u2014 Base property rate')?.id, 'T1');
+  assert.equal(resolveTableReference(tables, 'Table A - Base property rate')?.id, 'T1');
+  assert.equal(resolveTableReference(tables, 'Base rate table')?.id, 'T1');
+  assert.equal(resolveTableReference(tables, 'Protection factor table')?.id, 'T3');
+  assert.equal(resolveTableReference(tables, 'factor table'), null);
+  assert.equal(resolveTableReference(tables, 'Table'), null);
+  assert.equal(resolveTableReference(tables, 'Table Z'), null);
+  assert.equal(resolveTableReference([{ id: 'T1', name: 'Table A' }], 'Table A \u2014 Base property rate')?.id, 'T1');
 });

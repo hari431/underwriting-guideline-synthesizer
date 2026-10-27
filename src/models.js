@@ -8,6 +8,11 @@ export const TABLE_PREFIX = 'T';
 export const ROUTINE_PREFIX = 'R';
 export const ISSUE_PREFIX = 'V';
 
+// Canonical routine kinds. Model-provided kinds normalize to one of these
+// when recognized (see normalizeRoutineKind); anything else is preserved
+// verbatim so validation can warn about genuinely unknown types.
+export const ROUTINE_KINDS = ['formula', 'condition', 'calculation_steps'];
+
 export function createDocument({ filename, pageCount, page_count } = {}) {
   return {
     filename: String(filename ?? ''),
@@ -115,10 +120,17 @@ export function createRatingRoutine({
       if (isEffectivelyEmpty(normOutputs) && parsed.outputs.length > 0) normOutputs = parsed.outputs;
     }
   }
+  const normKind = normalizeRoutineKind(kind, {
+    steps: normSteps.steps,
+    stepsDetailed: normSteps.steps_detailed,
+    expressionText: expressionTextStr,
+    conditions: normConds.conditions,
+    conditionsDetailed: normConds.conditions_detailed,
+  });
   return {
     id: id ?? routine_id ?? null,
     name: String(title ?? name ?? ''),
-    kind: String(kind ?? 'formula'),
+    kind: normKind,
     source_pages: normalizePages(sourcePages ?? source_pages ?? []),
     source_type: String(source_type ?? sourceType ?? ''),
     source_location: String(source_location ?? sourceLocation ?? ''),
@@ -367,7 +379,27 @@ function normalizeOneStep(entry, index) {
   const status = entry.interpretation_status ?? entry.interpretationStatus ?? entry.status;
   if (status !== undefined && status !== null && String(status) !== '') out.interpretation_status = String(status);
   if (entry.original_text !== undefined && entry.original_text !== null) out.original_text = String(entry.original_text);
+  enrichSparseStep(out);
   return out;
+}
+
+// Fill a sparse explicit step object from its own instruction text: when the
+// source states the operation only in prose ('Find ... in Table Q'), derive
+// the structured fields so Op/Operand/Line Comment populate. Explicitly
+// provided fields are never overwritten.
+function enrichSparseStep(out) {
+  if (!out || out.operation) return;
+  const instruction = out.instruction;
+  if (!instruction || !String(instruction).trim()) return;
+  const parsed = deriveStepDetail(instruction);
+  if (!parsed || !parsed.operation) return;
+  out.operation = parsed.operation;
+  if (parsed.expression !== undefined && out.expression === undefined) out.expression = parsed.expression;
+  if (parsed.operand !== undefined && out.operand === undefined) out.operand = parsed.operand;
+  if (parsed.inputs !== undefined && out.inputs === undefined) out.inputs = parsed.inputs;
+  if (parsed.output !== undefined && out.output === undefined) out.output = parsed.output;
+  if (parsed.depends_on !== undefined && out.depends_on === undefined) out.depends_on = parsed.depends_on;
+  if (!out.interpretation_status) out.interpretation_status = 'inferred';
 }
 
 function normalizeStepLists({ steps, steps_detailed }) {
@@ -563,6 +595,23 @@ const NON_CAPTURE_WORDS = new Set([
   'with', 'using', 'from', 'to', 'by', 'per', 'in', 'on', 'of', 'for', 'the', 'a', 'an', 'as', 'is',
 ]);
 
+// Generic English verbs/prepositions/comparatives filtered when extracting
+// variables from conditional prose. Plain language, not domain vocabulary.
+const CONDITION_FILTER_WORDS = new Set([
+  ...NON_CAPTURE_WORDS,
+  'otherwise', 'are', 'was', 'were', 'be', 'been', 'being', 'has', 'have', 'had',
+  'does', 'do', 'did', 'exceeds', 'exceed', 'exceeding', 'exceeded',
+  'below', 'above', 'greater', 'less', 'lesser', 'more', 'than',
+  'equal', 'equals', 'set', 'sets',
+]);
+
+// Canonical key for variable matching: case, spacing, underscore, and
+// punctuation variants of the same name compare equal ("base rate" matches
+// "base_rate"). Used for traceability, never for display.
+export function normalizeVariableKey(value) {
+  return String(value ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
 function acceptableCapture(word) {
   const w = String(word ?? '').trim();
   return w !== '' && !NON_CAPTURE_WORDS.has(w.toLowerCase());
@@ -598,7 +647,11 @@ function parseAssignmentOperands(text) {
 }
 
 function stripStepLabel(text) {
-  return String(text ?? '').replace(/^\s*(?:step\s*\d+\s*[:.)-]?\s*)+/i, '').trim();
+  const withoutStep = String(text ?? '').replace(/^\s*(?:step\s*\d+\s*[:.)-]?\s*)+/i, '');
+  // Bare numbering ('1 Find ...', '1. Find ...', '(1) Find ...') strips only
+  // when a letter follows, so quantities, decimals, and hyphenated terms
+  // ('350 units', '1.20 ...', '2-factor ...') are never touched.
+  return withoutStep.replace(/^\s*(?:\(\d{1,3}\)\s*|\d{1,3}\s*[:.)]\s*|\d{1,2}\s+)(?=[A-Za-z])/, '').trim();
 }
 
 function splitKeys(text) {
@@ -608,24 +661,70 @@ function splitKeys(text) {
     .filter(Boolean);
 }
 
-// Resolve an abbreviated table mention (e.g. "Table 1") to an extracted
-// table: exact id/name match first, else a unique word-boundary prefix match
-// on the table name (so "Table 1" never resolves to "Table 10"). Returns the
-// table or null when there is no single confident match.
+// Drop a lowercase prose article from a table mention ("in the Base rate
+// table" refers to "Base rate table"). Capitalized names stay verbatim so a
+// table actually named "The Ledger" keeps its exact reference.
+function stripLeadingArticle(text) {
+  return String(text ?? '').replace(/^(the|a|an)\s+/, '').trim();
+}
+
+// Normalize table text for dash/space-insensitive comparison.
+function normalizeTableText(value) {
+  return String(value ?? '')
+    .replace(/[\u2010-\u2015\u2212-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function isWordBoundaryPrefix(longer, shorter) {
+  if (!longer.startsWith(shorter) || longer.length === shorter.length) return false;
+  return !/[a-z0-9]/.test(longer[shorter.length] ?? '');
+}
+
+// Significant keywords of a table mention: drop one leading article and the
+// generic word "table" so "the Protection factor table" becomes
+// ["protection", "factor"] while a code like "Table A" keeps ["a"].
+function tableMentionKeywords(text) {
+  const norm = normalizeTableText(text);
+  let words = norm.split(/[^a-z0-9]+/).filter(Boolean);
+  if (words.length > 0 && (words[0] === 'the' || words[0] === 'a' || words[0] === 'an')) {
+    words = words.slice(1);
+  }
+  return words.filter((w) => w !== 'table' && w !== 'tables');
+}
+
+// Resolve a table mention to an extracted table: exact id/name match first
+// (dash-insensitive), else a unique word-boundary prefix in either direction
+// (short "Table 1" to long "Table 1 - ..." and long mentions to short
+// extracted names), else a unique keyword-subset match for valid aliases
+// ("Base rate table" to "Table A - Base property rate"). Returns the table or
+// null when there is no single confident match.
 export function resolveTableReference(tables, mention) {
-  const key = String(mention ?? '').trim().toLowerCase();
-  if (!key) return null;
+  const raw = String(mention ?? '').trim();
+  if (!raw) return null;
+  const key = raw.toLowerCase();
+  const keyNorm = normalizeTableText(raw);
   const list = Array.isArray(tables) ? tables : [];
   const exact = list.find((t) =>
     String(t?.id ?? '').trim().toLowerCase() === key
-    || String(t?.name ?? '').trim().toLowerCase() === key);
+    || String(t?.name ?? '').trim().toLowerCase() === key
+    || normalizeTableText(t?.name ?? '') === keyNorm);
   if (exact) return exact;
-  const candidates = list.filter((t) => {
-    const name = String(t?.name ?? '').trim().toLowerCase();
-    if (!name.startsWith(key) || name.length === key.length) return false;
-    return !/[a-z0-9]/.test(name[key.length] ?? '');
+  const prefixCandidates = list.filter((t) => {
+    const nameNorm = normalizeTableText(t?.name ?? '');
+    if (!nameNorm || !keyNorm || nameNorm === keyNorm) return false;
+    return isWordBoundaryPrefix(nameNorm, keyNorm) || isWordBoundaryPrefix(keyNorm, nameNorm);
   });
-  return candidates.length === 1 ? candidates[0] : null;
+  if (prefixCandidates.length === 1) return prefixCandidates[0];
+  if (prefixCandidates.length > 1) return null;
+  const keywords = tableMentionKeywords(raw);
+  if (keywords.length === 0) return null;
+  const keywordMatches = list.filter((t) => {
+    const words = new Set(normalizeTableText(t?.name ?? '').split(/[^a-z0-9]+/).filter(Boolean));
+    return keywords.every((k) => words.has(k));
+  });
+  return keywordMatches.length === 1 ? keywordMatches[0] : null;
 }
 
 // Lowercased id/name/header/label terms identifying extracted tables,
@@ -645,6 +744,212 @@ export function tableReferenceTerms(tables) {
   );
 }
 
+// Generic lookup verbs across guideline wordings. "Look up" is unambiguous;
+// other verbs only count as lookups when paired with explicit table and/or
+// key structure (from/in/using/for), so prose like "Find the results" stays
+// minimal. Plain English, not domain vocabulary.
+const LOOKUP_VERBS = '(?:look\\s*-?\\s*up|lookup|find|retrieve|select|get|fetch|obtain|determine|read|locate|extract)';
+
+function isLookupVerbStart(body) {
+  return new RegExp(`^${LOOKUP_VERBS}\\b`, 'i').test(String(body ?? ''));
+}
+
+function isClassicLookupStart(body) {
+  return /^look\s*-?\s*up\b/i.test(String(body ?? '')) || /^lookup\b/i.test(String(body ?? ''));
+}
+
+// Normalize a lookup output phrase ("the base rate" to "base_rate") while
+// preserving single-token variables verbatim. Returns '' when no confident
+// variable remains.
+function normalizeLookupOutput(phrase) {
+  let s = String(phrase ?? '').trim().replace(/[.;]+$/, '').trim();
+  s = s.replace(/^(the|a|an)\s+/i, '').trim();
+  if (!s) return '';
+  s = s.replace(/[\s\u2010-\u2015\u2212-]+/g, '_');
+  s = s.replace(/[^A-Za-z0-9_]/g, '');
+  s = s.replace(/_+/g, '_').replace(/^_+|_+$/g, '');
+  if (!s || !acceptableCapture(s)) return '';
+  return s;
+}
+
+function cleanTableMention(text) {
+  const s = stripLeadingArticle(String(text ?? '').trim().replace(/[.;]+$/, '').trim());
+  return s.trim();
+}
+
+// Try generic lookup patterns in specificity order. Returns
+// {output, inputs, depends_on} or null when no confident structure matches.
+function tryParseLookup(body) {
+  const text = String(body ?? '').trim();
+  if (!text) return null;
+  const end = '\\s*[.;]*\\s*$';
+  const patterns = [
+    // Verb output from Table using keys
+    new RegExp(`^${LOOKUP_VERBS}\\s+(.+?)\\s+from\\s+(.+?)\\s+using\\s+(.+?)${end}`, 'i'),
+    // Verb output using keys in/from Table
+    new RegExp(`^${LOOKUP_VERBS}\\s+(.+?)\\s+using\\s+(.+?)\\s+(?:in|from)\\s+(.+?)${end}`, 'i'),
+    // Verb output for keys in/from Table
+    new RegExp(`^${LOOKUP_VERBS}\\s+(.+?)\\s+for\\s+(.+?)\\s+(?:in|from)\\s+(.+?)${end}`, 'i'),
+    // Verb output in/from Table (no keys stated)
+    new RegExp(`^${LOOKUP_VERBS}\\s+(.+?)\\s+(?:in|from)\\s+(.+?)${end}`, 'i'),
+    // Verb output using keys (no table stated)
+    new RegExp(`^${LOOKUP_VERBS}\\s+(.+?)\\s+using\\s+(.+?)${end}`, 'i'),
+  ];
+  const fromUsing = patterns[0].exec(text);
+  if (fromUsing) {
+    const output = normalizeLookupOutput(fromUsing[1]);
+    const table = cleanTableMention(fromUsing[2]);
+    const inputs = splitKeys(fromUsing[3]);
+    if (output || inputs.length > 0 || table) {
+      return { output, inputs, depends_on: table ? [table] : [] };
+    }
+    return { output: '', inputs: [], depends_on: [] };
+  }
+  const usingIn = patterns[1].exec(text);
+  if (usingIn) {
+    const output = normalizeLookupOutput(usingIn[1]);
+    const inputs = splitKeys(usingIn[2]);
+    const table = cleanTableMention(usingIn[3]);
+    return { output, inputs, depends_on: table ? [table] : [] };
+  }
+  const forIn = patterns[2].exec(text);
+  if (forIn) {
+    const output = normalizeLookupOutput(forIn[1]);
+    const inputs = splitKeys(forIn[2]);
+    const table = cleanTableMention(forIn[3]);
+    return { output, inputs, depends_on: table ? [table] : [] };
+  }
+  const inFrom = patterns[3].exec(text);
+  if (inFrom) {
+    const output = normalizeLookupOutput(inFrom[1]);
+    const table = cleanTableMention(inFrom[2]);
+    // Guard: without keys, require a table-like mention so "Find time in
+    // review" does not become a lookup. A table mention names a table.
+    if (!table || !/\btable\b/i.test(table)) return null;
+    return { output, inputs: [], depends_on: table ? [table] : [] };
+  }
+  const usingOnly = patterns[4].exec(text);
+  if (usingOnly) {
+    const output = normalizeLookupOutput(usingOnly[1]);
+    const inputs = splitKeys(usingOnly[2]);
+    if (!output && inputs.length === 0) return null;
+    return { output, inputs, depends_on: [] };
+  }
+  return null;
+}
+
+// Parse explicit conditional branch wording: IF/WHEN with THEN or a comma,
+// ELSE/OTHERWISE as the false branch in either order. Returns
+// {condition?, true_branch?, false_branch?} or null when no confident
+// structure matches. Original text is preserved by callers.
+function parseConditionalBranches(text) {
+  const full = String(text ?? '').trim();
+  if (!full) return null;
+  const elseSplit = (rest) => /^(.+?)\s*(?:[;.,]\s*)?(?:else|otherwise)\s*,?\s+(.+?)\s*$/i.exec(String(rest ?? '').trim());
+  const ifThen = /^\s*(?:if|when)\s+(.+?)\s+then\s+(.+?)\s*$/i.exec(full);
+  if (ifThen && ifThen[1].trim() && ifThen[2].trim()) {
+    const condition = ifThen[1].trim();
+    const rest = ifThen[2].trim();
+    const split = elseSplit(rest);
+    if (split) {
+      return { condition, true_branch: split[1].trim(), false_branch: split[2].trim() };
+    }
+    return { condition, true_branch: rest };
+  }
+  const withElse = /^\s*(?:if|when)\s+(.+?)\s*,\s*(.+?)\s*(?:[;.,]\s*)?(?:else|otherwise)\s*,?\s+(.+?)\s*$/i.exec(full);
+  if (withElse && withElse[1].trim() && withElse[2].trim() && withElse[3].trim()) {
+    return {
+      condition: withElse[1].trim(),
+      true_branch: withElse[2].trim(),
+      false_branch: withElse[3].trim(),
+    };
+  }
+  const commaOnly = /^\s*(?:if|when)\s+(.+?)\s*,\s*(.+?)\s*$/i.exec(full);
+  if (commaOnly && commaOnly[1].trim() && commaOnly[2].trim()) {
+    return { condition: commaOnly[1].trim(), true_branch: commaOnly[2].trim() };
+  }
+  const elseOnly = /^\s*(?:else|otherwise)\s*,?\s*(.+?)\s*$/i.exec(full);
+  if (elseOnly && elseOnly[1].trim()) {
+    return { false_branch: elseOnly[1].trim() };
+  }
+  return null;
+}
+
+function extractConditionalClause(body) {
+  const text = String(body ?? '');
+  if (/^\s*(?:if|when|else|otherwise)\b/i.test(text)) return text.trim();
+  const m = /\b(?:if|when)\b/i.exec(text);
+  if (!m) return null;
+  return text.slice(m.index).trim();
+}
+
+// Assignment target of one branch ("set X to", "X is set to", "store as X",
+// "X = ...", "X equals ..."). Generic syntax, not domain vocabulary.
+function assignmentTargetFromBranch(branch) {
+  const text = String(branch ?? '');
+  if (!text.trim()) return null;
+  let m = /\bset\s+([A-Za-z_]\w*)\s+to\b/i.exec(text);
+  if (m && acceptableCapture(m[1])) return m[1];
+  m = /\b([A-Za-z_]\w*)\s+is\s+set\s+to\b/i.exec(text);
+  if (m && acceptableCapture(m[1])) return m[1];
+  m = /\bstore\b.*?as\s+([A-Za-z_]\w*)/i.exec(text);
+  if (m && acceptableCapture(m[1])) return m[1];
+  m = /\b([A-Za-z_]\w*)\s*=\s*\S+/.exec(text);
+  if (m && acceptableCapture(m[1])) return m[1];
+  m = /\b([A-Za-z_]\w*)\s+equals?\s+/i.exec(text);
+  if (m && acceptableCapture(m[1])) return m[1];
+  return null;
+}
+
+// Right-hand variables of one branch: values read (after equals, after
+// "set X to Y", or assignment right-hand sides), excluding prose.
+function rhsVarsFromBranch(branch) {
+  const out = [];
+  const seen = new Set();
+  const push = (v) => {
+    if (!acceptableCapture(v)) return;
+    if (CONDITION_FILTER_WORDS.has(String(v).toLowerCase())) return;
+    const key = normalizeVariableKey(v);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    out.push(v);
+  };
+  const text = String(branch ?? '');
+  if (!text.trim()) return out;
+  for (const m of text.matchAll(/\b[A-Za-z_]\w*\s+equals?\s+([A-Za-z_]\w*)/gi)) push(m[1]);
+  for (const m of text.matchAll(/\bset\s+[A-Za-z_]\w*\s+to\s+([A-Za-z_]\w*)/gi)) push(m[1]);
+  for (const m of text.matchAll(/\b[A-Za-z_]\w*\s+is\s+set\s+to\s+([A-Za-z_]\w*)/gi)) push(m[1]);
+  for (const m of text.matchAll(/\b[A-Za-z_]\w*\s*=\s*([^;]+)/g)) {
+    for (const v of identifiersOf(m[1] ?? '')) {
+      if (CONDITION_FILTER_WORDS.has(v.toLowerCase())) continue;
+      push(v);
+    }
+  }
+  return out;
+}
+
+// Condition variables worth tracing: snake_case or short identifiers, or
+// words that also appear in the branches. Multi-word prose without branch
+// overlap stays out so eligibility prose does not become false inputs.
+function conditionInputVars(condition, branchText, output) {
+  const condIds = identifiersOf(condition ?? '')
+    .filter((v) => acceptableCapture(v) && !CONDITION_FILTER_WORDS.has(v.toLowerCase()));
+  if (condIds.length === 0) return [];
+  const branchKeys = new Set(identifiersOf(branchText ?? '').map((v) => normalizeVariableKey(v)));
+  const outKey = output ? normalizeVariableKey(output) : '';
+  const out = [];
+  const seen = new Set();
+  for (const v of condIds) {
+    const key = normalizeVariableKey(v);
+    if (!key || key === outKey || seen.has(key)) continue;
+    if (v.includes('_') || v.length <= 2 || branchKeys.has(key)) {
+      seen.add(key);
+      out.push(v);
+    }
+  }
+  return out;
+}
+
 // Derive step operation/expression/operand/inputs/output from explicit
 // wording. Only confident syntactic patterns produce fields; anything else
 // yields a minimal entry so the source text is never embellished.
@@ -654,34 +959,71 @@ function deriveStepDetail(text) {
   if (!full) return entry;
   const body = stripStepLabel(full);
   let derived = false;
-  const lookupFull = /^look\s*-?\s*up\s+([A-Za-z_]\w*)\s+from\s+(.+?)\s+using\s+(.+?)\s*\.?\s*$/i.exec(body);
-  const lookupShort = !lookupFull && /^look\s*-?\s*up\s+([A-Za-z_]\w*)\s+using\s+(.+?)\s*\.?\s*$/i.exec(body);
-  if (/^look\s*-?\s*up\b/i.test(body)) {
+  const lookupParsed = isLookupVerbStart(body) ? tryParseLookup(body) : null;
+  if (isClassicLookupStart(body)) {
     entry.operation = 'lookup';
     derived = true;
-    const parsed = lookupFull || lookupShort;
-    if (parsed) {
-      if (acceptableCapture(parsed[1])) entry.output = parsed[1];
-      entry.inputs = splitKeys(parsed[parsed.length - 1]);
+    if (lookupParsed) {
+      if (lookupParsed.output) entry.output = lookupParsed.output;
+      if (lookupParsed.inputs.length > 0) entry.inputs = lookupParsed.inputs;
+      if (lookupParsed.depends_on.length > 0) entry.depends_on = lookupParsed.depends_on;
     }
-    if (lookupFull && lookupFull[2].trim()) entry.depends_on = [lookupFull[2].trim()];
+  } else if (lookupParsed) {
+    entry.operation = 'lookup';
+    derived = true;
+    if (lookupParsed.output) entry.output = lookupParsed.output;
+    if (lookupParsed.inputs.length > 0) entry.inputs = lookupParsed.inputs;
+    if (lookupParsed.depends_on.length > 0) entry.depends_on = lookupParsed.depends_on;
   } else if (/^round\b/i.test(body)) {
     entry.operation = 'rounding';
     derived = true;
     const target = /^round\s+([A-Za-z_]\w*)/i.exec(body);
-    if (target && acceptableCapture(target[1])) {
-      entry.operand = target[1];
-      entry.output = target[1];
+    let operand = '';
+    if (target && acceptableCapture(target[1])) operand = target[1];
+    const stored = /\bstore\b.*?as\s+([A-Za-z_]\w*)/i.exec(body);
+    const storedOutput = stored && acceptableCapture(stored[1]) ? stored[1] : '';
+    if (operand) entry.operand = operand;
+    if (storedOutput) {
+      entry.output = storedOutput;
+      if (operand && normalizeVariableKey(storedOutput) !== normalizeVariableKey(operand)) {
+        entry.inputs = [operand];
+      }
+    } else if (operand) {
+      entry.output = operand;
     }
-  } else if (!/^(if|else|when|otherwise)\b/i.test(body)) {
-    const main = splitMainClause(body);
-    const assign = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+?)\s*\.?\s*$/.exec(main);
-    if (assign && assign[2].trim()) {
-      entry.operation = 'expression';
-      entry.expression = main.replace(/\.\s*$/, '');
-      entry.output = assign[1];
-      entry.inputs = identifiersOf(assign[2]);
+  } else {
+    const clause = extractConditionalClause(body);
+    const parsed = clause ? parseConditionalBranches(clause) : null;
+    if (parsed && (parsed.condition || parsed.true_branch || parsed.false_branch)) {
+      entry.operation = 'condition';
+      entry.expression = clause.replace(/[.;]+$/, '').trim();
+      const output = assignmentTargetFromBranch(parsed.true_branch)
+        ?? assignmentTargetFromBranch(parsed.false_branch);
+      if (output) entry.output = output;
+      const branchText = `${parsed.true_branch ?? ''} ${parsed.false_branch ?? ''}`;
+      const condVars = parsed.condition ? conditionInputVars(parsed.condition, branchText, output) : [];
+      const rhsVars = [...rhsVarsFromBranch(parsed.true_branch), ...rhsVarsFromBranch(parsed.false_branch)];
+      const combined = [];
+      const seen = new Set();
+      const outKey = output ? normalizeVariableKey(output) : '';
+      for (const v of [...condVars, ...rhsVars]) {
+        const key = normalizeVariableKey(v);
+        if (!key || key === outKey || seen.has(key)) continue;
+        seen.add(key);
+        combined.push(v);
+      }
+      if (combined.length > 0) entry.inputs = combined;
       derived = true;
+    } else if (!/^(if|else|when|otherwise)\b/i.test(body)) {
+      const main = splitMainClause(body);
+      const assign = /^\s*(?:calculate\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+?)\s*\.?\s*$/i.exec(main);
+      if (assign && assign[2].trim()) {
+        entry.operation = 'expression';
+        entry.expression = main.replace(/^\s*calculate\s+/i, '').replace(/\.\s*$/, '');
+        entry.output = assign[1];
+        entry.inputs = identifiersOf(assign[2]);
+        derived = true;
+      }
     }
   }
   if (derived) entry.interpretation_status = 'inferred';
@@ -697,26 +1039,45 @@ function parseReferralCode(text) {
   return null;
 }
 
-// Parse explicit IF/THEN/ELSE branch wording and referral codes. Row order
-// and original text are always preserved; unparseable rows stay minimal.
+// Generic disposition/imperative verbs starting a trailing rule action
+// ('... days. Decline', '... P2. Apply ...'). Plain English, not domain
+// vocabulary; matched only as the final sentence of a multi-sentence row.
+const TRAILING_ACTION_START = /^(refer|decline|approve|accept|reject|apply|use|assign)\b/i;
+
+// Split a non-conditional rule row into leading condition sentences plus a
+// trailing action: either a single disposition word or a sentence starting
+// with an imperative verb. Returns {condition, action} or null. No false
+// branch is inferred; unstated fallbacks stay unstated.
+function splitTrailingAction(text) {
+  const m = /^(.+?[.?!])\s+([A-Za-z][^.\?!]*?[.?!]*)\s*$/.exec(String(text ?? '').trim());
+  if (!m) return null;
+  const condition = m[1].trim();
+  const action = m[2].trim();
+  if (!condition || !action) return null;
+  const bare = action.replace(/[.?!]+$/, '');
+  if (!/^[A-Za-z]+$/.test(bare) && !TRAILING_ACTION_START.test(bare)) return null;
+  return { condition, action };
+}
+
+// Parse explicit IF/WHEN/THEN/ELSE/OTHERWISE branch wording and referral
+// codes. Rule rows without conditional keywords ('... units. Refer') split
+// the trailing action into the true branch instead. Row order and original
+// text are always preserved; unparseable rows stay minimal.
 function deriveConditionDetail(text) {
   const entry = { original_text: String(text ?? '') };
   const full = String(text ?? '').trim();
   if (!full) return entry;
-  const ifMatch = /^\s*IF\s+(.+?)\s+THEN\s+(.+?)\s*$/i.exec(full);
-  if (ifMatch) {
-    entry.condition = ifMatch[1].trim();
-    const rest = ifMatch[2].trim();
-    const elseSplit = /^(.+?)\s+ELSE\s+(.+?)\s*$/i.exec(rest);
-    if (elseSplit) {
-      entry.true_branch = elseSplit[1].trim();
-      entry.false_branch = elseSplit[2].trim();
-    } else {
-      entry.true_branch = rest;
-    }
+  const parsed = parseConditionalBranches(full);
+  if (parsed) {
+    if (parsed.condition) entry.condition = parsed.condition;
+    if (parsed.true_branch) entry.true_branch = parsed.true_branch;
+    if (parsed.false_branch) entry.false_branch = parsed.false_branch;
   } else {
-    const elseMatch = /^\s*ELSE\s+(.+?)\s*$/i.exec(full);
-    if (elseMatch) entry.false_branch = elseMatch[1].trim();
+    const split = splitTrailingAction(full);
+    if (split) {
+      entry.condition = split.condition;
+      entry.true_branch = split.action;
+    }
   }
   const referral = parseReferralCode(full);
   if (referral) entry.referral_code = referral;
@@ -724,6 +1085,37 @@ function deriveConditionDetail(text) {
     entry.interpretation_status = 'inferred';
   }
   return entry;
+}
+
+// Normalize a model-provided routine kind to its canonical form:
+// case/separator variants collapse ('Calculation Steps' to
+// 'calculation_steps'); phrases naming eligibility rules are conditions;
+// a generic calculation/procedure follows its evidenced structure (steps,
+// else expression, else conditions). Unrecognized kinds pass through
+// verbatim so validation keeps warning about them. Generic: driven by
+// common words and shape, never by names.
+function normalizeRoutineKind(kind, evidence = {}) {
+  const raw = String(kind ?? 'formula');
+  const key = raw.trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if (ROUTINE_KINDS.includes(key)) return key;
+  if (!key) return raw;
+  const words = new Set(key.split(/[^a-z0-9]+/).filter(Boolean));
+  if (words.has('eligibility')) return 'condition';
+  if (words.has('calculation') || words.has('procedure')) return structuralRoutineKind(evidence);
+  if (words.has('condition') || words.has('conditional')) return 'condition';
+  if (words.has('formula')) return 'formula';
+  return raw;
+}
+
+function structuralRoutineKind({ steps, stepsDetailed, expressionText, conditions, conditionsDetailed } = {}) {
+  const hasSteps = (Array.isArray(steps) && steps.some((s) => String(s ?? '').trim()))
+    || (Array.isArray(stepsDetailed) && stepsDetailed.length > 0);
+  if (hasSteps) return 'calculation_steps';
+  if (String(expressionText ?? '').trim()) return 'formula';
+  const hasConditions = (Array.isArray(conditions) && conditions.some((c) => String(c ?? '').trim()))
+    || (Array.isArray(conditionsDetailed) && conditionsDetailed.length > 0);
+  if (hasConditions) return 'condition';
+  return 'formula';
 }
 
 function normalizeDependencyLists({ depends_on, dependencies }) {
