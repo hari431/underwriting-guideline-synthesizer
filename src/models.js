@@ -1,4 +1,4 @@
-// Data model for UnderwriteIQ demo jobs.
+// Data model for RateCraft demo jobs.
 // Every extracted object carries source_pages (1-based) and evidence_text
 // (verbatim supporting snippet from the PDF) wherever available.
 // Optional descriptive fields are preserved only when the source provides

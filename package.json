@@ -1,5 +1,5 @@
 {
-  "name": "underwriteiq",
+  "name": "ratecraft",
   "version": "0.1.0",
   "description": "Hackathon demo: extract rating tables and routines from underwriting guideline PDFs into traceable Excel.",
   "type": "module",

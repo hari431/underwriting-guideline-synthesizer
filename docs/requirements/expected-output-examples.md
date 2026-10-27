@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document gives the implementation and test team examples of the structure UnderwriteIQ should produce. The examples are synthetic and intentionally use changed names, factor values, and calculation steps. They are not production rating guidance.
+This document gives the implementation and test team examples of the structure RateCraft should produce. The examples are synthetic and intentionally use changed names, factor values, and calculation steps. They are not production rating guidance.
 
 ## Example 1 — Rating table
 
@@ -70,7 +70,7 @@ A routine initializes a coverage limit, reads an input parameter, looks up a bas
 
 Use a second source with different table titles, different numbers of columns, text-valued lookup keys, a multi-page continuation table, and a routine whose calculation steps are described in prose instead of a numbered grid.
 
-Expected result: UnderwriteIQ should use the same generic data model and export rules without requiring code changes or special-casing the source names or values.
+Expected result: RateCraft should use the same generic data model and export rules without requiring code changes or special-casing the source names or values.
 
 ## Test principle
 

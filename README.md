@@ -1,4 +1,4 @@
-# UnderwriteIQ (hackathon demo)
+# RateCraft (hackathon demo)
 
 An AI-powered tool that transforms P&C insurance underwriting guideline PDFs into structured, traceable, Excel-ready requirements for rating and configuration workflows, using Meta AI models.
 

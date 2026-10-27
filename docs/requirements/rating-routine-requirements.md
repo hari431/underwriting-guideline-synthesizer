@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Define how UnderwriteIQ should represent rating logic described in underwriting documents. A routine may contain assignments, formulas, lookups, conditions, branches, ordered steps, exceptions, rounding rules, and references to other rating assets.
+Define how RateCraft should represent rating logic described in underwriting documents. A routine may contain assignments, formulas, lookups, conditions, branches, ordered steps, exceptions, rounding rules, and references to other rating assets.
 
 These requirements are format-neutral. The example below is synthetic, and all factor values and calculation steps have been changed. It must not be treated as a production formula.
 

@@ -1,6 +1,6 @@
-# UnderwriteIQ Requirements Reference
+# RateCraft Requirements Reference
 
-These documents define generic expected behavior for rating-table and rating-routine extraction. They are intended to be placed under `docs/requirements/` in the UnderwriteIQ repository.
+These documents define generic expected behavior for rating-table and rating-routine extraction. They are intended to be placed under `docs/requirements/` in the RateCraft repository.
 
 ## Files
 

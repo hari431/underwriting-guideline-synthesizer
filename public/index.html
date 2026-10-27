@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>UnderwriteIQ — Guideline Intelligence Workspace</title>
+<title>RateCraft — Guideline Intelligence Workspace</title>
 <style>
   :root {
     --forest-900: #152b26;
@@ -369,6 +369,7 @@
   }
   table.grid th input { color: #fff; font-weight: 600; }
 
+  .steps-title { font-size: 0.86rem; margin: 0.9rem 0 0.35rem; }
   .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 0.9rem; margin-top: 0.4rem; }
   .field-grid .full { grid-column: 1 / -1; }
   label.field { display: block; font-size: 0.76rem; font-weight: 600; color: var(--muted); margin-top: 0.6rem; }
@@ -425,9 +426,9 @@
 <div class="app">
   <aside class="sidebar">
     <div class="brand">
-      <div class="brand-mark" aria-hidden="true">U</div>
+      <div class="brand-mark" aria-hidden="true">R</div>
       <div>
-        <div class="brand-name">UnderwriteIQ</div>
+        <div class="brand-name">RateCraft</div>
         <div class="brand-tag">Guideline intelligence</div>
       </div>
     </div>
@@ -451,7 +452,7 @@
     <main class="workspace" id="workspace">
       <div class="workspace-inner">
         <header class="topbar">
-          <h1>UnderwriteIQ</h1>
+          <h1>RateCraft</h1>
           <p class="sub">Turn underwriting guideline PDFs into traceable rating requirements — review tables &amp; routines against their source evidence, then export to Excel.</p>
         </header>
 
@@ -700,6 +701,646 @@ function tableDetailHtml(t, index) {
     </div>`;
 }
 
+// ---------- Excel-like routine Steps table (read-only, display only) ----------
+// Mirrors the workbook's rating-routine Steps layout (Step #, Instruction,
+// Op, (, Operand, ), Line Comment): one operation per row in extracted
+// order, parentheses preserved, IF/ELSEIF/ELSE/ENDIF under Instruction.
+// Computed from the reviewed routine record; nothing here changes the model.
+function rcNormKey(value) {
+  return String(value ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+function rcParseStepSequence(text, fallbackIndex) {
+  const t = String(text ?? '');
+  const m = /^\s*(?:step\s*)?(\d+)\s*[:.\)\-]/i.exec(t);
+  if (m) return m[1];
+  const bare = /^\s*(?:step\s*)?(?:\((\d{1,3})\)\s*|(\d{1,2})\s+)(?=[A-Za-z])/i.exec(t);
+  if (bare) return bare[1] ?? bare[2];
+  return String(fallbackIndex + 1);
+}
+function rcIsLookupOp(op) {
+  const o = String(op ?? '').toLowerCase();
+  return o.includes('lookup') || o.includes('look-up');
+}
+const RC_CONDITION_OPS = new Set(['condition', 'conditional', 'if', 'elseif', 'else']);
+function rcIsConditionOp(op) {
+  return RC_CONDITION_OPS.has(String(op ?? '').trim().toLowerCase());
+}
+function rcResolveTable(tables, mention) {
+  const raw = String(mention ?? '').trim();
+  if (!raw) return null;
+  const key = raw.toLowerCase();
+  const list = Array.isArray(tables) ? tables : [];
+  const exact = list.find((t) =>
+    String(t?.id ?? '').trim().toLowerCase() === key
+    || String(t?.name ?? '').trim().toLowerCase() === key);
+  if (exact) return exact;
+  const cands = list.filter((t) => {
+    const n = String(t?.name ?? '').trim().toLowerCase();
+    return n && n !== key && (n.startsWith(key) || key.startsWith(n));
+  });
+  return cands.length === 1 ? cands[0] : null;
+}
+function rcHumanizeKey(key) {
+  return String(key ?? '').trim().replace(/\./g, ' ').replace(/\s+/g, ' ').trim();
+}
+function rcLookupOperand(det, tables) {
+  const mention = (det?.depends_on ?? []).map((d) => String(d ?? '').trim()).find(Boolean) ?? '';
+  const resolved = mention ? rcResolveTable(tables, mention) : null;
+  const table = resolved ? String(resolved.name ?? resolved.id ?? '') : mention;
+  const keys = (det?.inputs ?? []).map((k) => rcHumanizeKey(k)).filter(Boolean);
+  if (table && keys.length > 0) return `table:${table} (${keys.join(', ')})`;
+  if (table) return `table:${table}`;
+  return keys.join(', ');
+}
+function rcSplitAssignment(det) {
+  const raw = String(det?.expression ?? '');
+  if (!raw.trim()) {
+    const output = String(det?.output ?? '');
+    const operand = String(det?.operand ?? '');
+    if (output && operand.trim()) return { output, rhs: operand };
+    return null;
+  }
+  const clean = raw.replace(/^\s*calculate\s+(?=[A-Za-z_]\w*\s*=)/i, '').replace(/\.\s*$/, '').trim();
+  if (/^(if|else|when|otherwise)\b/i.test(clean)) return null;
+  const m = /^\s*([A-Za-z_]\w*)\s*=\s*([\s\S]+?)\s*$/.exec(clean);
+  if (!m || !m[2].trim()) return null;
+  if (/^[=<>!]/.test(m[2].trim())) return null;
+  return { output: String(det?.output ?? '') || m[1], rhs: m[2].trim() };
+}
+function rcFallbackOperand(det) {
+  for (const v of [det?.expression, det?.operand]) {
+    const s = String(v ?? '').trim();
+    if (s) return s;
+  }
+  return (det?.inputs ?? []).map((k) => String(k ?? '').trim()).filter(Boolean).join(', ');
+}
+function rcIsVariableLike(value) {
+  return /^[A-Za-z_]\w*(?:\.\w+)*$/.test(String(value ?? '').trim());
+}
+function rcRoundingDetail(text) {
+  let body = String(text ?? '').trim();
+  if (!body) return '';
+  body = body.replace(/^\s*step\s+\d+\s*[:.)\-]?\s*/i, '').replace(/^\s*\(?\d{1,3}\)?[\s:.)\-]+\s*/, '');
+  const m = /^\s*round\s+[A-Za-z_]\w*\s+([\s\S]+?)\s*$/i.exec(body);
+  if (!m || !m[1].trim()) return '';
+  let rest = m[1].trim();
+  rest = rest.split(/\s*\.\s*store\b/i)[0].split(/\s*;\s*store\b/i)[0].split(/\s*,\s*store\s+the\s+result\s+as\b/i)[0].trim();
+  rest = rest.replace(/[.;]+\s*$/, '').trim();
+  if (!rest || /^store\b/i.test(rest)) return '';
+  return rest;
+}
+function rcRenderRatingStep(text, det, tables) {
+  const instruction = String(text ?? '');
+  if (det && rcIsLookupOp(det.operation)) {
+    const operand = rcLookupOperand(det, tables);
+    const output = String(det.output ?? '');
+    if (output && operand) return { instruction: output, operation: '<--', operand, output, det };
+    return { instruction, operation: '', operand: '', output, det };
+  }
+  const word = String(det?.operation ?? '').toLowerCase();
+  if (det && (word === 'expression' || word === 'assignment')) {
+    const split = rcSplitAssignment(det);
+    if (split) return { instruction: split.output, operation: '<--', operand: split.rhs, output: split.output, det };
+    return { instruction, operation: '', operand: rcFallbackOperand(det), output: String(det.output ?? ''), det };
+  }
+  if (det && word === 'rounding') {
+    const target = String(det.output ?? '').trim();
+    const operandRaw = String(det.operand ?? '').trim();
+    const source = rcIsVariableLike(operandRaw)
+      ? operandRaw
+      : (det.inputs ?? []).map((v) => String(v ?? '').trim()).find((v) => rcIsVariableLike(v)) ?? '';
+    const detail = rcRoundingDetail(instruction);
+    const resolvedTarget = target || source;
+    if (!resolvedTarget) {
+      return { instruction, operation: 'R', operand: operandRaw || rcFallbackOperand(det), output: target, det };
+    }
+    const sameVariable = Boolean(target && source) && rcNormKey(target) === rcNormKey(source);
+    let operand;
+    if (target && source && !sameVariable) {
+      operand = detail && !detail.toLowerCase().startsWith(source.toLowerCase())
+        ? `${source} ${detail}`
+        : (detail || source);
+      if (operandRaw && !rcIsVariableLike(operandRaw) && operandRaw !== detail && !operand.includes(operandRaw)) {
+        operand = `${operand} (${operandRaw})`;
+      }
+    } else {
+      operand = detail || operandRaw || source;
+    }
+    return { instruction: resolvedTarget, operation: 'R', operand, output: target || source, det };
+  }
+  if (det && rcIsConditionOp(det.operation)) {
+    return { instruction, operation: '', operand: String(det.output ?? ''), output: String(det.output ?? ''), det };
+  }
+  if (det && det.operation !== undefined && det.operation !== null && String(det.operation) !== '') {
+    return { instruction, operation: String(det.operation), operand: rcFallbackOperand(det), output: String(det.output ?? ''), det };
+  }
+  return { instruction, operation: '', operand: '', output: '', det: det ?? null };
+}
+const RC_NON_IDENT = new Set(['and', 'or', 'not', 'if', 'then', 'else', 'when', 'where']);
+function rcIdentifiers(text) {
+  const seen = new Set();
+  const out = [];
+  for (const m of String(text ?? '').matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)) {
+    const low = m[0].toLowerCase();
+    if (seen.has(low) || RC_NON_IDENT.has(low)) continue;
+    seen.add(low);
+    out.push(m[0]);
+  }
+  return out;
+}
+function rcParseAssignmentExpr(text) {
+  const t = String(text ?? '').trim();
+  if (!t || /^(if|else|when|otherwise)\b/i.test(t)) return null;
+  const idx = t.search(/,\s*(where|with)\b/i);
+  const main = idx < 0 ? t : t.slice(0, idx);
+  const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+?)\s*$/.exec(main);
+  if (!m || !m[2].trim()) return null;
+  return { inputs: rcIdentifiers(m[2]), outputs: [m[1]] };
+}
+function rcSynthesizedExpressionEntry(r) {
+  const raw = String(r.expression_text ?? '');
+  if (!raw.trim()) return null;
+  const clean = raw.replace(/^\s*calculate\s+(?=[A-Za-z_]\w*\s*=)/i, '').replace(/\.\s*$/, '').trim();
+  const parsed = rcParseAssignmentExpr(clean);
+  const rhs = parsed ? clean.replace(/^\s*[A-Za-z_]\w*\s*=\s*/, '') : '';
+  if (parsed && parsed.outputs[0] && rhs.trim() && !/^[=<>!]/.test(rhs.trim())) {
+    return {
+      seq: '1',
+      instruction: parsed.outputs[0],
+      operation: '<--',
+      operand: rhs.trim(),
+      output: parsed.outputs[0],
+      det: { inputs: parsed.inputs, output: parsed.outputs[0] },
+    };
+  }
+  return { seq: '1', instruction: raw, operation: '', operand: '', output: '', det: null };
+}
+function rcTokenizeArithmetic(rhs) {
+  const tokens = [];
+  const text = String(rhs ?? '');
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (/\s/.test(ch)) { i += 1; continue; }
+    if (ch === '(') { tokens.push({ type: 'lparen', value: '(' }); i += 1; continue; }
+    if (ch === ')') { tokens.push({ type: 'rparen', value: ')' }); i += 1; continue; }
+    if (ch === '+' || ch === '-' || ch === '*' || ch === '/' || ch === '%' || ch === '×' || ch === '÷') {
+      tokens.push({ type: 'op', value: ch }); i += 1; continue;
+    }
+    const idMatch = /[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*/.exec(text.slice(i));
+    if (idMatch && idMatch.index === 0) { tokens.push({ type: 'operand', value: idMatch[0] }); i += idMatch[0].length; continue; }
+    const numMatch = /\d+(?:\.\d+)?/.exec(text.slice(i));
+    if (numMatch && numMatch.index === 0) { tokens.push({ type: 'operand', value: numMatch[0] }); i += numMatch[0].length; continue; }
+    return null;
+  }
+  return tokens;
+}
+function rcIsIdentifierOperand(value) {
+  return /^[+-]?[A-Za-z_][A-Za-z0-9_.]*$/.test(String(value ?? '').trim());
+}
+function rcExpandArithmetic(output, rhs) {
+  const tokens = rcTokenizeArithmetic(rhs);
+  if (!tokens || tokens.length === 0) return null;
+  const rows = [];
+  let pendingOpen = '';
+  let pendingOp = null;
+  let pendingUnary = '';
+  let expectOperand = true;
+  for (const token of tokens) {
+    if (token.type === 'lparen') {
+      if (!expectOperand) return null;
+      pendingOpen += '(';
+    } else if (token.type === 'rparen') {
+      if (expectOperand || rows.length === 0) return null;
+      rows[rows.length - 1].close += ')';
+      expectOperand = false;
+    } else if (token.type === 'op') {
+      if (expectOperand) {
+        if ((token.value === '+' || token.value === '-') && !pendingUnary) pendingUnary = token.value;
+        else return null;
+      } else {
+        pendingOp = token.value;
+        expectOperand = true;
+        pendingUnary = '';
+      }
+    } else {
+      if (!expectOperand) return null;
+      const operand = `${pendingUnary}${token.value}`;
+      let op;
+      if (rows.length === 0) {
+        if (pendingOp) return null;
+        op = '<--';
+      } else {
+        if (!pendingOp) return null;
+        op = pendingOp;
+        pendingOp = null;
+      }
+      rows.push({ instruction: rows.length === 0 ? String(output ?? '') : '', op, open: pendingOpen, operand, close: '' });
+      pendingOpen = '';
+      pendingUnary = '';
+      expectOperand = false;
+    }
+  }
+  if (expectOperand || pendingOp || pendingOpen) return null;
+  const opens = rows.reduce((n, row) => n + row.open.length, 0);
+  const closes = rows.reduce((n, row) => n + row.close.length, 0);
+  if (opens !== closes) return null;
+  return rows;
+}
+function rcSimpleIdentifiers(text) {
+  const out = [];
+  const seen = new Set();
+  for (const m of String(text ?? '').matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)) {
+    const low = m[0].toLowerCase();
+    if (['and', 'or', 'not', 'if', 'then', 'else', 'when', 'where', 'otherwise'].includes(low)) continue;
+    if (seen.has(low)) continue;
+    seen.add(low);
+    out.push(m[0]);
+  }
+  return out;
+}
+function rcSplitConditionTail(rest) {
+  const text = String(rest ?? '').trim();
+  if (!text) return null;
+  const delim = /(?:[;.,]\s*)?\b(else\s+if|elseif|elif|otherwise\s+if|otherwise\s+when|else|otherwise)\b\s*,?\s*/gi;
+  const segs = [];
+  const kinds = [];
+  let last = 0;
+  let m;
+  while ((m = delim.exec(text)) !== null) {
+    segs.push(text.slice(last, m.index).trim());
+    const word = m[1].toLowerCase().replace(/\s+/g, ' ');
+    const kind = word === 'else' || word === 'otherwise' ? 'else' : 'elseif';
+    kinds.push(kind);
+    last = m.index + m[0].length;
+    if (kind === 'else') break;
+  }
+  segs.push(text.slice(last).trim());
+  const [first, ...tailSegs] = segs;
+  const stages = [];
+  let elseBranch = '';
+  for (let i = 0; i < tailSegs.length; i += 1) {
+    if (kinds[i] === 'else') {
+      elseBranch = tailSegs[i];
+    } else {
+      const inner = /^\s*(.+?)(?:\s+then\s+|\s*,\s*)([\s\S]+?)\s*$/i.exec(tailSegs[i]);
+      if (!inner || !inner[1].trim() || !inner[2].trim()) return null;
+      stages.push({ keyword: 'ELSEIF', condition: inner[1].trim(), branch: inner[2].trim() });
+    }
+  }
+  return { first, stages, elseBranch };
+}
+function rcParseConditionChain(text) {
+  const full = String(text ?? '').trim();
+  if (!full) return null;
+  const leadingElseIf = /^\s*(?:else\s+if|elseif|elif|otherwise\s+if)\s+(.+?)(?:\s+then\s+|\s*,\s*)([\s\S]+?)\s*$/i.exec(full);
+  if (leadingElseIf && leadingElseIf[1].trim() && leadingElseIf[2].trim()) {
+    const tail = rcSplitConditionTail(leadingElseIf[2].trim());
+    if (!tail) return null;
+    return {
+      stages: [{ keyword: 'ELSEIF', condition: leadingElseIf[1].trim(), branch: tail.first }, ...tail.stages],
+      elseBranch: tail.elseBranch,
+    };
+  }
+  const ifThen = /^\s*(?:if|when)\s+(.+?)\s+then\s+([\s\S]+?)\s*$/i.exec(full);
+  const ifComma = ifThen ? null : /^\s*(?:if|when)\s+(.+?)\s*,\s*([\s\S]+?)\s*$/i.exec(full);
+  const head = ifThen ?? ifComma;
+  if (head && head[1].trim() && head[2].trim()) {
+    const tail = rcSplitConditionTail(head[2].trim());
+    if (!tail) return null;
+    return {
+      stages: [{ keyword: 'IF', condition: head[1].trim(), branch: tail.first }, ...tail.stages],
+      elseBranch: tail.elseBranch,
+    };
+  }
+  const elseOnly = /^\s*(?:else|otherwise)\s*,?\s*(.+?)\s*$/i.exec(full);
+  if (elseOnly && elseOnly[1].trim()) return { stages: [], elseBranch: elseOnly[1].trim() };
+  return null;
+}
+function rcConditionClause(text) {
+  const body = String(text ?? '');
+  if (/^\s*(?:if|when|else|otherwise)\b/i.test(body)) return body.trim();
+  const m = /\b(?:if|when)\b/i.exec(body);
+  return m ? body.slice(m.index).trim() : null;
+}
+function rcBranchValue(branch) {
+  const text = String(branch ?? '').trim().replace(/\.\s*$/, '').trim();
+  if (!text) return '';
+  let m = /\bset\s+[A-Za-z_]\w*\s+to\s+([A-Za-z_]\w*|\d+(?:\.\d+)?)/i.exec(text);
+  if (m) return m[1];
+  m = /\b[A-Za-z_]\w*\s+is\s+set\s+to\s+([A-Za-z_]\w*|\d+(?:\.\d+)?)/i.exec(text);
+  if (m) return m[1];
+  m = /\b[A-Za-z_]\w*\s*=\s*([^;]+)/.exec(text);
+  if (m && m[1].trim()) return m[1].trim().replace(/\.\s*$/, '').trim();
+  m = /\b[A-Za-z_]\w*\s+equals?\s+([A-Za-z_]\w*|\d+(?:\.\d+)?)/i.exec(text);
+  if (m) return m[1];
+  return text;
+}
+function rcExpandConditionEntry(entry) {
+  const det = entry?.det ?? null;
+  const output = String(entry?.output ?? det?.output ?? '');
+  const clause = String(det?.expression ?? '').trim()
+    || rcConditionClause(entry?.instruction ?? '')
+    || '';
+  const parsed = clause ? rcParseConditionChain(clause.replace(/[.;]+$/, '').trim() || clause) : null;
+  if (!parsed) return null;
+  const stages = (parsed.stages ?? []).filter((s) => String(s?.branch ?? '').trim());
+  const elseBranch = String(parsed.elseBranch ?? '').trim();
+  if (stages.length === 0 && !elseBranch) return null;
+  const rows = [];
+  const pushBranchRow = (branch, kind) => {
+    const value = rcBranchValue(branch);
+    rows.push({
+      instruction: output, op: output ? '<--' : '', open: '', operand: value, close: '',
+      output, kind, commentInputs: rcSimpleIdentifiers(value),
+    });
+  };
+  for (const stage of stages) {
+    rows.push({
+      instruction: stage.keyword, op: '', open: '', operand: String(stage.condition ?? '').trim(), close: '',
+      output: '', kind: stage.keyword === 'ELSEIF' ? 'elseif' : 'if',
+      commentInputs: rcSimpleIdentifiers(stage.condition),
+    });
+    pushBranchRow(stage.branch, stage.keyword === 'ELSEIF' ? 'branch-elseif' : 'branch-true');
+  }
+  if (elseBranch) {
+    rows.push({ instruction: 'ELSE', op: '', open: '', operand: '', close: '', output: '', kind: 'else', commentInputs: [] });
+    pushBranchRow(elseBranch, 'branch-false');
+  }
+  rows.push({ instruction: 'ENDIF', op: '', open: '', operand: '', close: '', output: '', kind: 'endif', commentInputs: [] });
+  return rows;
+}
+function rcExpandOneEntry(entry) {
+  const det = entry?.det ?? null;
+  const word = String(det?.operation ?? '').toLowerCase();
+  if (det && rcIsLookupOp(det.operation)) {
+    return [{
+      instruction: entry.instruction, op: entry.operation, open: '', operand: entry.operand, close: '',
+      output: entry.output, kind: 'lookup', commentInputs: det.inputs ?? [], det,
+    }];
+  }
+  if (det && (word === 'expression' || word === 'assignment') && entry.operation === '<--') {
+    const split = rcSplitAssignment(det);
+    const output = split?.output || String(entry.output ?? entry.instruction ?? '');
+    const rhs = split?.rhs ?? String(entry.operand ?? '');
+    if (output && rhs.trim()) {
+      const expanded = rcExpandArithmetic(output, rhs);
+      if (expanded && expanded.length > 1) {
+        return expanded.map((row, idx) => ({
+          ...row, output, kind: idx === 0 ? 'arithmetic-first' : 'arithmetic-cont',
+          commentInputs: rcIsIdentifierOperand(row.operand) ? [row.operand.replace(/^[+-]/, '')] : [],
+        }));
+      }
+      if (expanded && expanded.length === 1) {
+        return [{
+          ...expanded[0], output,
+          kind: expanded[0].open || expanded[0].close ? 'arithmetic-first' : 'assignment',
+          commentInputs: rcIsIdentifierOperand(expanded[0].operand) ? [expanded[0].operand.replace(/^[+-]/, '')] : [],
+        }];
+      }
+    }
+    return [{
+      instruction: entry.instruction, op: entry.operation, open: '', operand: entry.operand, close: '',
+      output: entry.output, kind: 'assignment', commentInputs: det.inputs ?? [], det,
+    }];
+  }
+  if (entry.operation === '<--' && entry.output && String(entry.operand ?? '').trim()
+    && (!det || !String(det.operation ?? '').trim())) {
+    const expanded = rcExpandArithmetic(entry.output, entry.operand);
+    if (expanded && expanded.length > 1) {
+      return expanded.map((row, idx) => ({
+        ...row, output: entry.output, kind: idx === 0 ? 'arithmetic-first' : 'arithmetic-cont',
+        commentInputs: rcIsIdentifierOperand(row.operand) ? [row.operand.replace(/^[+-]/, '')] : [],
+      }));
+    }
+    if (expanded && expanded.length === 1) {
+      return [{
+        ...expanded[0], output: entry.output,
+        kind: expanded[0].open || expanded[0].close ? 'arithmetic-first' : 'assignment',
+        commentInputs: rcIsIdentifierOperand(expanded[0].operand) ? [expanded[0].operand.replace(/^[+-]/, '')] : [],
+      }];
+    }
+  }
+  if (det && rcIsConditionOp(det.operation)) {
+    const expanded = rcExpandConditionEntry(entry);
+    if (expanded) return expanded.map((row) => ({ ...row, det }));
+  }
+  if (det && word === 'rounding') {
+    return [{
+      instruction: entry.instruction, op: entry.operation, open: '', operand: entry.operand, close: '',
+      output: entry.output, kind: 'rounding', commentInputs: det.inputs ?? [], det,
+    }];
+  }
+  if (entry.operation) {
+    return [{
+      instruction: entry.instruction, op: entry.operation, open: '', operand: entry.operand, close: '',
+      output: entry.output, kind: 'explicit-op', commentInputs: det?.inputs ?? [], det,
+    }];
+  }
+  return [{
+    instruction: entry.instruction, op: '', open: '', operand: entry.operand, close: '',
+    output: entry.output, kind: 'unparsed', commentInputs: [], det,
+  }];
+}
+// Condition-only routines (no steps or expression): derive IF/ELSE rows from
+// the extracted conditions, keeping branch text verbatim since no assignment
+// target is evidenced at this level. Returns null when nothing structured
+// is evidenced, leaving the single verbatim row in place.
+function rcConditionEntryRows(text, det) {
+  const cond = String(det?.condition ?? '').trim();
+  const trueBranch = String(det?.true_branch ?? '').trim();
+  const falseBranch = String(det?.false_branch ?? '').trim();
+  if (cond || trueBranch || falseBranch) {
+    const rows = [];
+    if (cond) {
+      rows.push({ instruction: 'IF', op: '', open: '', operand: cond, close: '', output: '', kind: 'if', commentInputs: rcSimpleIdentifiers(cond) });
+      if (trueBranch) rows.push({ instruction: '', op: '', open: '', operand: trueBranch, close: '', output: '', kind: 'branch-true', commentInputs: rcSimpleIdentifiers(trueBranch) });
+    } else if (trueBranch) {
+      rows.push({ instruction: '', op: '', open: '', operand: trueBranch, close: '', output: '', kind: 'branch-true', commentInputs: rcSimpleIdentifiers(trueBranch) });
+    }
+    if (falseBranch) {
+      rows.push({ instruction: 'ELSE', op: '', open: '', operand: '', close: '', output: '', kind: 'else', commentInputs: [] });
+      rows.push({ instruction: '', op: '', open: '', operand: falseBranch, close: '', output: '', kind: 'branch-false', commentInputs: rcSimpleIdentifiers(falseBranch) });
+    }
+    if (cond || falseBranch) rows.push({ instruction: 'ENDIF', op: '', open: '', operand: '', close: '', output: '', kind: 'endif', commentInputs: [] });
+    return rows.length > 0 ? rows : null;
+  }
+  const clause = rcConditionClause(text) || '';
+  const parsed = clause ? rcParseConditionChain(clause.replace(/[.;]+$/, '').trim() || clause) : null;
+  if (!parsed) return null;
+  const stages = (parsed.stages ?? []).filter((s) => String(s?.branch ?? '').trim());
+  const elseBranch = String(parsed.elseBranch ?? '').trim();
+  if (stages.length === 0 && !elseBranch) return null;
+  const rows = [];
+  for (const stage of stages) {
+    const branch = String(stage.branch ?? '').trim();
+    rows.push({
+      instruction: stage.keyword, op: '', open: '', operand: String(stage.condition ?? '').trim(), close: '',
+      output: '', kind: stage.keyword === 'ELSEIF' ? 'elseif' : 'if',
+      commentInputs: rcSimpleIdentifiers(stage.condition),
+    });
+    rows.push({ instruction: '', op: '', open: '', operand: branch, close: '', output: '', kind: stage.keyword === 'ELSEIF' ? 'branch-elseif' : 'branch-true', commentInputs: rcSimpleIdentifiers(branch) });
+  }
+  if (elseBranch) {
+    rows.push({ instruction: 'ELSE', op: '', open: '', operand: '', close: '', output: '', kind: 'else', commentInputs: [] });
+    rows.push({ instruction: '', op: '', open: '', operand: elseBranch, close: '', output: '', kind: 'branch-false', commentInputs: rcSimpleIdentifiers(elseBranch) });
+  }
+  rows.push({ instruction: 'ENDIF', op: '', open: '', operand: '', close: '', output: '', kind: 'endif', commentInputs: [] });
+  return rows;
+}
+function rcFallbackComment(spec, tables) {
+  const orig = spec.srcLabel || 'source step';
+  const output = String(spec.output ?? '').trim();
+  const operand = String(spec.operand ?? '').trim();
+  switch (spec.kind) {
+    case 'lookup': {
+      if (!output) return `Table lookup (${orig})`;
+      const det = spec.det ?? null;
+      const mention = (det?.depends_on ?? []).map((d) => String(d ?? '').trim()).find(Boolean) ?? '';
+      const resolved = mention ? rcResolveTable(tables, mention) : null;
+      const table = resolved ? String(resolved.name ?? resolved.id ?? '') : mention;
+      return table ? `Lookup ${output} from ${table}` : `Lookup ${output} (${orig})`;
+    }
+    case 'arithmetic-first':
+      if (rcIsIdentifierOperand(operand)) return `Start ${output} from ${operand.replace(/^[+-]/, '')} (${orig})`;
+      return `Start ${output} from ${operand || 'source expression'} (${orig})`;
+    case 'arithmetic-cont':
+      if (rcIsIdentifierOperand(operand)) return `Apply ${spec.op} ${operand.replace(/^[+-]/, '')} to continue ${output} from prior step (${orig})`;
+      return `Apply ${spec.op} ${operand} to continue ${output} from prior step (${orig})`;
+    case 'assignment':
+      if (output && operand) return `Assign ${operand} to ${output} (${orig})`;
+      if (output) return `Assign ${output} (${orig})`;
+      return `Assignment (${orig})`;
+    case 'if':
+      return operand ? `IF ${operand} (${orig})` : `Conditional check (${orig})`;
+    case 'elseif':
+      return operand ? `ELSEIF ${operand} (${orig})` : `Else-if branch (${orig})`;
+    case 'else':
+      return `Else branch (${orig})`;
+    case 'endif':
+      return `End of conditional (${orig})`;
+    case 'branch-true':
+      return output && operand ? `Set ${output} to ${operand} (true branch, ${orig})` : `True branch (${orig})`;
+    case 'branch-elseif':
+      return output && operand ? `Set ${output} to ${operand} (else-if branch, ${orig})` : `Else-if branch (${orig})`;
+    case 'branch-false':
+      return output && operand ? `Set ${output} to ${operand} (false branch, ${orig})` : `False branch (${orig})`;
+    case 'rounding': {
+      const target = output || operand;
+      return target ? `Round ${target} (${orig})` : `Rounding (${orig})`;
+    }
+    case 'explicit-op':
+      if (operand) return `Apply ${spec.op} ${operand} (${orig})`;
+      return `Operation ${spec.op} (${orig})`;
+    default:
+      return `Source instruction (${orig})`;
+  }
+}
+function rcPriorTable(det, tables) {
+  if (!det || !rcIsLookupOp(det.operation)) return null;
+  for (const raw of det.depends_on ?? []) {
+    const mention = String(raw ?? '').trim();
+    if (!mention) continue;
+    const table = rcResolveTable(tables, mention);
+    if (table) return String(table.name ?? table.id ?? '');
+  }
+  return null;
+}
+function rcTraceComment(spec, r, routines, tables, priorOutputs) {
+  const det = spec.det ?? null;
+  const parts = [];
+  if (det && rcIsLookupOp(det.operation)) {
+    const mentions = (det.depends_on ?? []).map((d) => String(d ?? '').trim()).filter(Boolean);
+    if (mentions.length > 0 && !rcResolveTable(tables, mentions[0])) parts.push('table unresolved — verify');
+  }
+  for (const raw of spec.commentInputs ?? []) {
+    const variable = String(raw ?? '').trim();
+    if (!variable) continue;
+    const prior = priorOutputs instanceof Map ? priorOutputs.get(rcNormKey(variable)) : null;
+    if (prior) {
+      const tableBit = prior.table ? ` (${prior.table})` : '';
+      parts.push(prior.seq ? `uses ${variable} from step ${prior.seq}${tableBit}` : `uses ${variable} from prior step${tableBit}`);
+      continue;
+    }
+    const key = rcNormKey(variable);
+    if (!key) continue;
+    const producers = (Array.isArray(routines) ? routines : []).filter((s) =>
+      String(s?.id ?? '') !== String(r?.id ?? '')
+      && (s?.outputs ?? []).some((o) => rcNormKey(o) === key));
+    if (producers.length === 1) parts.push(`uses ${variable} from ${producers[0].name ?? producers[0].id ?? ''}`);
+    else if (producers.length > 1) parts.push(`uses ${variable} from multiple routines (${producers.map((s) => String(s?.name ?? s?.id ?? '')).join('; ')}) — verify`);
+  }
+  return parts.join('; ');
+}
+function rcRoutineStepRows(r, routines, tables) {
+  const steps = r.steps ?? [];
+  const detailed = r.steps_detailed ?? [];
+  const aligned = detailed.length > 0 && detailed.length === steps.length;
+  const entries = [];
+  const seqOf = (text, det, idx) => (det?.sequence !== undefined && det?.sequence !== null && String(det.sequence) !== ''
+    ? String(det.sequence)
+    : rcParseStepSequence(String(text ?? ''), idx));
+  if (steps.length > 0) {
+    steps.forEach((stepText, idx) => {
+      const det = aligned ? detailed[idx] : null;
+      entries.push({ seq: seqOf(stepText, det, idx), ...rcRenderRatingStep(stepText, det, tables) });
+    });
+  } else if (detailed.length > 0) {
+    detailed.forEach((det, idx) => {
+      const text = det?.instruction ?? det?.original_text ?? '';
+      entries.push({ seq: seqOf(text, det, idx), ...rcRenderRatingStep(text, det, tables) });
+    });
+  } else {
+    const synth = rcSynthesizedExpressionEntry(r);
+    if (synth) entries.push({ ...synth, srcLabel: 'source expression' });
+  }
+  const expanded = [];
+  if (entries.length > 0) {
+    for (const e of entries) {
+      for (const spec of rcExpandOneEntry(e)) {
+        expanded.push({ ...spec, srcLabel: e.srcLabel || `source step ${e.seq ?? ''}` });
+      }
+    }
+    const didExpand = expanded.length !== entries.length;
+    expanded.forEach((spec, idx) => {
+      spec.newSeq = didExpand ? String(idx + 1) : String(entries[idx]?.seq ?? idx + 1);
+    });
+  } else {
+    const conds = r.conditions ?? [];
+    const condDetailed = r.conditions_detailed ?? [];
+    const condAligned = condDetailed.length > 0 && condDetailed.length === conds.length;
+    const count = Math.max(conds.length, condDetailed.length);
+    for (let idx = 0; idx < count; idx += 1) {
+      const text = idx < conds.length ? String(conds[idx] ?? '') : '';
+      const det = condAligned ? condDetailed[idx] : (idx < condDetailed.length ? condDetailed[idx] : null);
+      const instruction = text || String(det?.condition ?? det?.original_text ?? '');
+      if (!instruction.trim()) continue;
+      const label = `source condition ${idx + 1}`;
+      const rows = rcConditionEntryRows(instruction, det);
+      if (rows) {
+        for (const spec of rows) expanded.push({ ...spec, srcLabel: label, det: spec.det ?? det ?? null });
+      } else {
+        expanded.push({ instruction, op: '', open: '', operand: '', close: '', output: '', kind: 'unparsed', commentInputs: [], det: det ?? null, srcLabel: label });
+      }
+    }
+    expanded.forEach((spec, idx) => { spec.newSeq = String(idx + 1); });
+  }
+  const priorOutputs = new Map();
+  const out = [];
+  for (const spec of expanded) {
+    const traceDet = (spec.kind === 'lookup' || spec.kind === 'rounding')
+      ? (spec.det ?? { inputs: spec.commentInputs ?? [] })
+      : { inputs: spec.commentInputs ?? [], output: spec.output };
+    const traced = rcTraceComment({ ...spec, det: traceDet }, r, routines, tables, priorOutputs);
+    const comment = traced || rcFallbackComment(spec, tables);
+    out.push([spec.newSeq, spec.instruction, spec.op, spec.open, spec.operand, spec.close, comment]);
+    if (spec.output) {
+      priorOutputs.set(rcNormKey(spec.output), { seq: spec.newSeq ?? '', table: rcPriorTable(spec.det ?? null, tables) });
+    }
+  }
+  return out;
+}
+
 function routineDetailHtml(r, index) {
   const kinds = kindOptions.includes(r.kind) ? kindOptions : [...kindOptions, r.kind];
   const deps = r.depends_on || [];
@@ -707,6 +1348,12 @@ function routineDetailHtml(r, index) {
   const structuredHtml = structured.length > 0
     ? `<ul class="dep-list">${structured.map((d) => `<li>${esc(d.target || d.source || '')}${d.relationship_type ? ` <span class="pill neutral">${esc(d.relationship_type)}</span>` : ''}</li>`).join('')}</ul>`
     : '';
+  const stepRows = rcRoutineStepRows(r, draft ? draft.routines : [], draft ? draft.tables : []);
+  const stepsHtml = stepRows.length > 0
+    ? `<h3 class="steps-title">Steps</h3><div class="table-wrap"><table class="grid"><thead><tr><th>Step #</th><th>Instruction</th><th>Op</th><th>(</th><th>Operand</th><th>)</th><th>Line Comment</th></tr></thead><tbody>` +
+      stepRows.map((row) => `<tr>${row.map((cell) => `<td>${esc(cell)}</td>`).join('')}</tr>`).join('') +
+      `</tbody></table></div>`
+    : `<h3 class="steps-title">Steps</h3><p class="empty-note">No steps extracted.</p>`;
   return `
     <div class="card" id="DetailCard" data-routine-detail="${index}">
       <div class="card-head">
@@ -715,6 +1362,8 @@ function routineDetailHtml(r, index) {
         <span class="page-chip">${esc(pagesLabel(r.source_pages))}</span>
       </div>
       <details class="evidence"><summary>Source evidence</summary><p class="evidence-body">${esc(r.evidence_text || '—')}</p></details>
+      ${stepsHtml}
+      <details class="evidence"><summary>Details</summary>
       <div class="field-grid">
         <label class="field">Kind
           <select data-f="kind">
@@ -729,11 +1378,9 @@ function routineDetailHtml(r, index) {
         <label class="field">Outputs (one per line) <textarea data-f="outputs" style="min-height:2.2rem;">${esc((r.outputs || []).map(disp).join('\n'))}</textarea></label>
         <label class="field full">Expression <input class="mono" type="text" data-f="expression_text" value="${esc(r.expression_text || '')}"></label>
         <label class="field">Conditions (one per line) <textarea data-f="conditions">${esc((r.conditions || []).map(disp).join('\n'))}</textarea></label>
-        <label class="field">Steps (one per line) <textarea data-f="steps">${esc((r.steps || []).map(disp).join('\n'))}</textarea></label>
-      </div>
-      <details class="evidence"><summary>Dependencies (${deps.length})</summary>
         <label class="field">Depends on (one per line)<textarea data-f="depends_on" style="min-height:2.2rem;">${esc(deps.map(disp).join('\n'))}</textarea></label>
-        ${structuredHtml}
+      </div>
+      ${structuredHtml}
       </details>
       ${itemIssuesHtml('routines', r)}
     </div>`;
@@ -883,10 +1530,12 @@ function syncDetailToDraft() {
   } else {
     const orig = draft.routines[index];
     if (!orig) return;
-    const val = (k) => { const el = card.querySelector(`[data-f="${k}"]`); return el ? el.value : (orig[k] ?? ''); };
-    const lines = (k) => String(val(k)).split('\n').map((s) => s.trim()).filter(Boolean);
-    draft.routines[index] = {
-      ...orig,
+    // The Steps table is display-only: only fields present in the DOM are
+    // written back, so steps and any other unrendered values are preserved.
+    const val = (k) => { const el = card.querySelector(`[data-f="${k}"]`); return el ? el.value : undefined; };
+    const lines = (k) => { const v = val(k); return v === undefined ? undefined : String(v).split('\n').map((s) => s.trim()).filter(Boolean); };
+    const next = { ...orig };
+    for (const [k, v] of Object.entries({
       name: val('name'),
       kind: val('kind'),
       purpose: val('purpose'),
@@ -896,10 +1545,12 @@ function syncDetailToDraft() {
       outputs: lines('outputs'),
       expression_text: val('expression_text'),
       conditions: lines('conditions'),
-      steps: lines('steps'),
       depends_on: lines('depends_on'),
       notes: val('notes'),
-    };
+    })) {
+      if (v !== undefined) next[k] = v;
+    }
+    draft.routines[index] = next;
   }
 }
 

@@ -1,4 +1,4 @@
-// Minimal local server for the UnderwriteIQ demo (zero dependencies).
+// Minimal local server for the RateCraft demo (zero dependencies).
 // Serves the review UI plus a small JSON API. Run: npm start (PORT=3000).
 import http from 'node:http';
 import { promises as fs } from 'node:fs';
@@ -116,7 +116,7 @@ export function createServer({ storeDir = path.join(ROOT, 'jobs'), modelEnv = pr
           res.writeHead(200, {
             'content-type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             'content-length': xlsx.length,
-            'content-disposition': `attachment; filename="underwriteiq-${id}.xlsx"`,
+            'content-disposition': `attachment; filename="ratecraft-${id}.xlsx"`,
           });
           return res.end(xlsx);
         }
@@ -168,6 +168,6 @@ if (invokedDirectly) {
   const port = Number(process.env.PORT || 3000);
   const server = createServer();
   server.listen(port, () => {
-    console.log(`UnderwriteIQ demo: open http://localhost:${port} in your browser`);
+    console.log(`RateCraft demo: open http://localhost:${port} in your browser`);
   });
 }

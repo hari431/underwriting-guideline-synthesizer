@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Define how UnderwriteIQ should identify, structure, validate, review, and export rating tables from underwriting guidelines and existing spreadsheet files.
+Define how RateCraft should identify, structure, validate, review, and export rating tables from underwriting guidelines and existing spreadsheet files.
 
 These requirements are format-neutral. Examples below are synthetic and intentionally use changed names and values. They are not production rates or instructions to implement a particular insurance platform.
 

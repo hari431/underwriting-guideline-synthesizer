@@ -60,7 +60,7 @@ test('server: health reports model disabled by default', async () => {
 test('server: serves review UI', async () => {
   const res = await call(listener(), { method: 'GET', url: '/' });
   assert.equal(res.status, 200);
-  assert.match(res.body.toString('utf8'), /UnderwriteIQ/);
+  assert.match(res.body.toString('utf8'), /RateCraft/);
   assert.match(res.body.toString('utf8'), /Export Excel/);
 });
 

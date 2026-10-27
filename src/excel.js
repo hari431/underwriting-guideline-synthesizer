@@ -1812,7 +1812,7 @@ function jobRows(job, source) {
   const routineSheetNameList = routineSheetNames(routines, tableSheetNameList);
   const cover = [
     ['Field', 'Value'],
-    ['UnderwriteIQ export (hackathon demo)', ''],
+    ['RateCraft export (hackathon demo)', ''],
     ['Document', doc.filename ?? ''],
     ['Pages', String(doc.page_count ?? '')],
     ['Extraction source', source],
