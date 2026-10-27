@@ -9,6 +9,7 @@ import { processPdf, applyReviewEdits } from './pipeline.js';
 import { saveJob, loadJob, listJobs } from './store.js';
 import { buildWorkbookXlsx } from './excel.js';
 import { ModelDisabledError, isModelEnabled } from './extract.js';
+import { loadDotEnv } from './dotenv.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(here, '..');
@@ -137,11 +138,18 @@ export function createServer({ storeDir = path.join(ROOT, 'jobs'), modelEnv = pr
       return sendJson(res, 404, { error: 'Not found' });
     } catch (err) {
       if (err instanceof ModelDisabledError) {
-        return sendJson(res, 409, {
+        const body = {
           error: err.message,
           code: 'MODEL_DISABLED',
-          hint: 'Use the offline sample, or set UNDERWRITEIQ_ENABLE_MODEL=1 with API credentials.',
-        });
+          hint: 'Custom PDF extraction needs the live Meta model. Use the offline sample, or set UNDERWRITEIQ_ENABLE_MODEL=1 with API credentials.',
+        };
+        if (err.details && typeof err.details === 'object') {
+          body.document = {
+            filename: String(err.details.filename ?? ''),
+            pageCount: Number(err.details.pageCount ?? 0),
+          };
+        }
+        return sendJson(res, 409, body);
       }
       if (err && err.code === 'ENOENT') return sendJson(res, 404, { error: 'Unknown job' });
       if (err instanceof SyntaxError) return sendJson(res, 400, { error: 'Invalid JSON body' });
@@ -156,6 +164,7 @@ export function createServer({ storeDir = path.join(ROOT, 'jobs'), modelEnv = pr
 
 const invokedDirectly = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (invokedDirectly) {
+  loadDotEnv(path.join(ROOT, '.env'));
   const port = Number(process.env.PORT || 3000);
   const server = createServer();
   server.listen(port, () => {

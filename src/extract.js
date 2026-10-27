@@ -8,6 +8,12 @@ export const KEY_VAR = 'UNDERWRITEIQ_API_KEY';
 export const URL_VAR = 'UNDERWRITEIQ_MODEL_URL';
 export const MODEL_VAR = 'UNDERWRITEIQ_MODEL_NAME';
 
+// Meta hackathon Model API defaults (per official Model API docs).
+// URL_VAR expects the FULL chat-completions endpoint URL, not the base URL:
+// fetch() posts to it directly with no path joining.
+export const DEFAULT_MODEL_URL = 'https://api.meta.ai/v1/chat/completions';
+export const DEFAULT_MODEL_NAME = 'muse-spark-1.3';
+
 export class ModelDisabledError extends Error {
   constructor(message) {
     super(message);
@@ -67,11 +73,8 @@ export async function extractWithModel(pages, { env = process.env, fetchImpl = f
   if (!apiKey) {
     throw new ModelDisabledError(`Missing API key: set ${KEY_VAR} to enable Meta API calls.`);
   }
-  const url = env[URL_VAR];
-  const model = env[MODEL_VAR];
-  if (!url || !model) {
-    throw new ModelDisabledError(`Set ${URL_VAR} and ${MODEL_VAR} to enable Meta API calls.`);
-  }
+  const url = env[URL_VAR] || DEFAULT_MODEL_URL;
+  const model = env[MODEL_VAR] || DEFAULT_MODEL_NAME;
   const res = await fetchImpl(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },

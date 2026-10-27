@@ -25,12 +25,12 @@ npm test
 Live extraction stays **off** until you explicitly enable it (no surprise API calls or billing). Local tests and the sample demo use the recorded response in `fixtures/recorded/`.
 
 ```sh
-export UNDERWRITEIQ_ENABLE_MODEL=1
-export UNDERWRITEIQ_API_KEY="<key>"
-export UNDERWRITEIQ_MODEL_URL="<chat-completions endpoint>"
-export UNDERWRITEIQ_MODEL_NAME="<model>"
+Copy-Item .env.example .env   # then put your Meta API key in .env
+npm run verify:model          # one minimal request to confirm auth + model
 npm start
 ```
+
+`UNDERWRITEIQ_MODEL_URL` is the **full** chat-completions endpoint URL (`https://api.meta.ai/v1/chat/completions`), not the base URL. URL/model fall back to the Meta hackathon defaults when unset, so only the flag + key are required. The server loads `.env` automatically; shell exports still work and take precedence. `.env` is gitignored — never commit it.
 
 ## Layout
 

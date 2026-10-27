@@ -996,13 +996,25 @@ async function init() {
     $('modelBadge').innerHTML = health.modelEnabled
       ? '<span class="pill live">Meta model: enabled</span>'
       : '<span class="pill recorded">Meta model: disabled (offline demo)</span>';
+    if (!health.modelEnabled) {
+      setStatus('Offline demo: “Load sample guideline” works without API keys. “Extract from PDF” needs the live Meta model for custom PDFs.');
+    }
   } catch { $('modelBadge').textContent = ''; }
   updateSteps();
 }
 
 async function loadJobPayload(res) {
   const payload = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(payload.error || `Request failed (${res.status})`);
+  if (!res.ok) {
+    const parts = [payload.error || `Request failed (${res.status})`];
+    if (payload.document && payload.document.pageCount) {
+      parts.push(`Uploaded ${payload.document.filename || 'PDF'} (${payload.document.pageCount} pages) was read successfully; extraction still needs the live model.`);
+    }
+    if (payload.hint) parts.push(payload.hint);
+    const err = new Error(parts.join(' '));
+    err.code = payload.code;
+    throw err;
+  }
   return payload;
 }
 

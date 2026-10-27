@@ -1,6 +1,6 @@
 // End-to-end pipeline: ingest PDF -> extract -> normalize -> validate.
 import { extractPdfText } from './pdf-extract.js';
-import { runExtraction } from './extract.js';
+import { ModelDisabledError, runExtraction } from './extract.js';
 import { createDocument, createJob, normalizeJob } from './models.js';
 import { validateJob } from './validate.js';
 
@@ -15,7 +15,14 @@ export async function processPdf(
   { filename = 'upload.pdf', recordingPath = null, modelOptions = {} } = {}
 ) {
   const { pageCount, pages } = extractPdfText(pdfBuffer);
-  const { tables, routines } = await runExtraction(pages, { recordingPath, modelOptions });
+  let tables;
+  let routines;
+  try {
+    ({ tables, routines } = await runExtraction(pages, { recordingPath, modelOptions }));
+  } catch (err) {
+    if (err instanceof ModelDisabledError) err.details = { filename, pageCount };
+    throw err;
+  }
   let job = normalizeJob(
     createJob({
       document: createDocument({ filename, pageCount }),

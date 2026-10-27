@@ -5,3 +5,5 @@ local-reference/
 !fixtures/**/*.xlsx
 # Temporary files and generated verification artifacts
 tmp/
+# Local secrets (never commit)
+.env

@@ -116,3 +116,20 @@ test('server: PDF upload without model config returns 409, not a silent stub', a
   assert.equal(res.status, 409);
   assert.equal(json(res).code, 'MODEL_DISABLED');
 });
+
+test('server: upload 409 reports offline ingest details and offline-sample hint', async () => {
+  const pdf = await fs.readFile(path.join(here, '..', 'fixtures', 'sample-guideline.pdf'));
+  const res = await call(listener(), {
+    method: 'POST',
+    url: '/api/jobs',
+    headers: { 'content-type': 'application/pdf', 'x-filename': 'custom.pdf' },
+    body: pdf,
+  });
+  assert.equal(res.status, 409);
+  const body = json(res);
+  assert.equal(body.code, 'MODEL_DISABLED');
+  assert.ok(body.hint && /offline sample/i.test(body.hint), 'expected hint to point at offline sample');
+  assert.ok(body.document, 'expected document ingest details on MODEL_DISABLED');
+  assert.equal(body.document.filename, 'custom.pdf');
+  assert.equal(body.document.pageCount, 3);
+});
