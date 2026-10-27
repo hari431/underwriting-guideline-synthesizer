@@ -229,20 +229,17 @@ test('excel: sample routine sheets populate fields supported by the source', asy
   assert.equal(t1conds.body[1][3], 'refer to underwriter (code REF-TERR)');
   assert.equal(t1conds.body[1][4], 'REF-TERR');
 
-  // F1: ordered operations, operands, and lookup keys populated.
+  // F1: ordered operations with traced tables, keys, results, and sources.
   const f1 = byIndex(2);
   const f1steps = sectionRows(f1, 'Steps');
-  assert.deepEqual(f1steps.body.map((row) => row[2]), ['lookup', 'lookup', 'expression', 'rounding']);
+  assert.deepEqual(f1steps.header, ['Step #', 'Instruction', 'Op', 'Operand', 'Line Comment']);
   assert.deepEqual(f1steps.body.map((row) => row[0]), ['1', '2', '3', '4']);
-  assert.ok(f1steps.body[0][1].startsWith('Look up base_rate'));
-  assert.equal(f1steps.body[0][5], 'driver class');
-  assert.equal(f1steps.body[1][5], 'territory');
-  assert.equal(f1steps.body[2][5], 'base_premium; policy_fee');
-  assert.equal(f1steps.body[2][6], 'final_premium');
-  assert.equal(f1steps.body[3][6], 'final_premium');
-  const f1lookups = sectionRows(f1, 'Lookups');
-  assert.equal(f1lookups.body.length, 2);
-  assert.deepEqual(f1lookups.body[0].slice(0, 2), ['1', f1steps.body[0][1]]);
+  assert.deepEqual(f1steps.body.map((row) => row[2]), ['lookup', 'lookup', 'expression', 'rounding']);
+  assert.deepEqual(f1steps.body[0], ['1', 'Look up base_rate from Table 1 using driver class.', 'lookup', 'driver class', 'lookup Table 1 - Base Rate by Driver Class → base_rate']);
+  assert.deepEqual(f1steps.body[1], ['2', 'Look up territory_factor from Table 2 using territory.', 'lookup', 'territory', 'lookup Table 2 - Territory Factor → territory_factor']);
+  assert.deepEqual(f1steps.body[2], ['3', 'final_premium = base_premium + policy_fee, where policy_fee = 25.', 'expression', 'final_premium = base_premium + policy_fee', 'uses base_premium from B1 - Base premium formula']);
+  assert.deepEqual(f1steps.body[3], ['4', 'Round final_premium to the nearest dollar.', 'rounding', 'final_premium', '']);
+  assert.equal(sectionRows(f1, 'Lookups'), null);
 
   // G1: unfamiliar wording kept verbatim with nothing invented, flagged instead.
   const g1 = byIndex(3);
@@ -328,13 +325,13 @@ test('excel: routine sheet keeps steps, conditions, and dependencies as separate
   const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Calc'), strings);
   assert.deepEqual(values[0], ['Calc']); // routine name in A1
   const steps = sectionRows(values, 'Steps');
-  assert.deepEqual(steps.header.slice(0, 3), ['Step #', 'Instructions', 'Operation']);
-  assert.ok(steps.header.includes('Operand'));
+  assert.deepEqual(steps.header, ['Step #', 'Instruction', 'Op', 'Operand', 'Line Comment']);
   assert.equal(steps.body.length, 2);
   assert.equal(steps.body[0][0], '1'); // original numbering gaps preserved
   assert.equal(steps.body[1][0], '3');
   assert.equal(steps.body[0][1], 'Step 1: first');
   assert.equal(steps.body[1][1], 'Step 3: third');
+  assert.ok(steps.body.every((row) => row.length === 5));
   const conditions = sectionRows(values, 'Conditions');
   assert.equal(conditions.body.length, 2);
   assert.equal(conditions.body[0][1], 'IF x THEN y');
@@ -435,13 +432,45 @@ test('excel: routine sheet preserves structured operations, operands, and lookup
   assert.ok(values.some((row) => row[0] === 'Applicability' && row[1] === 'Each item'));
   assert.ok(values.some((row) => row[0] === 'Execution context' && row[1] === 'per item'));
   const steps = sectionRows(values, 'Steps');
+  assert.deepEqual(steps.header, ['Step #', 'Instruction', 'Op', 'Operand', 'Line Comment']);
   assert.deepEqual(steps.body.map((row) => row[0]), ['1', '2', '4']); // gaps preserved
   assert.deepEqual(steps.body.map((row) => row[2]), ['assignment', 'lookup', 'rounding']);
-  assert.equal(steps.body[0][3], 'x = 0');
-  assert.equal(steps.body[2][4], 'round to whole');
-  const lookups = sectionRows(values, 'Lookups');
-  assert.equal(lookups.body.length, 1);
-  assert.deepEqual(lookups.body[0], ['2', 'Look up factor', 'key_a; key_b', 'f']);
+  assert.deepEqual(steps.body[0], ['1', 'Initialize limit', 'assignment', 'x = 0', '']);
+  assert.deepEqual(steps.body[1], ['2', 'Look up factor', 'lookup', 'key_a; key_b', 'lookup → f']);
+  assert.deepEqual(steps.body[2], ['4', 'Round result', 'rounding', 'round to whole', '']);
+  assert.equal(sectionRows(values, 'Lookups'), null); // lookup detail lives in the step row
+});
+
+test('excel: line comments trace routine outputs and flag unresolved tables', () => {
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'g.pdf', pageCount: 2 }),
+      tables: [{ name: 'Factors', sourcePages: [1], evidenceText: 'ev', headers: ['K'], rows: [['a']] }],
+      routines: [
+        { name: 'Upstream', kind: 'formula', sourcePages: [1], evidenceText: 'ev', expressionText: 'shared = base + 1' },
+        {
+          name: 'Downstream', kind: 'calculation_steps', sourcePages: [2], evidenceText: 'ev',
+          inputs: ['fee'],
+          steps: [
+            { sequence: 1, instruction: 'Compute total', operation: 'expression', expression: 'total = shared + fee', inputs: ['shared', 'fee'], output: 'total' },
+            { sequence: 2, instruction: 'Look up rate', operation: 'lookup', inputs: ['K'], output: 'rate', depends_on: ['Table 9'] },
+          ],
+        },
+      ],
+    })
+  );
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Downstream'), strings);
+  const steps = sectionRows(values, 'Steps');
+  assert.deepEqual(steps.body[0], ['1', 'Compute total', 'expression', 'total = shared + fee', 'uses shared from Upstream']);
+  assert.deepEqual(steps.body[1], ['2', 'Look up rate', 'lookup', 'K', 'lookup "Table 9" → rate; table unresolved — verify']);
+  assert.equal(sectionRows(values, 'Lookups'), null);
+  // The cross-routine value resolves; only the unknown table is flagged.
+  assert.ok(!job.issues.some((i) => /"shared"/.test(i.message)));
+  assert.ok(job.issues.some((i) => /Table 9/.test(i.message) && /flagged as unresolved/.test(i.message)));
 });
 
 test('excel: routine sheet preserves condition branches and referral codes', () => {

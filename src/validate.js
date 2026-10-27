@@ -1,7 +1,7 @@
 // Deterministic validation for extracted jobs. Pure functions, no model calls.
 // Policy: structural/traceability breaks are errors; anything interpretive —
 // including unfamiliar formula syntax — is a warning flagged for review.
-import { createValidationIssue } from './models.js';
+import { createValidationIssue, resolveTableReference, tableReferenceTerms } from './models.js';
 
 export const ROUTINE_KINDS = ['formula', 'condition', 'calculation_steps'];
 
@@ -96,13 +96,11 @@ export function validateJob(job) {
     [...tables, ...routines].flatMap((item) => [item.id, item.name].filter(Boolean).map((s) => s.toLowerCase()))
   );
   // Step references may also point at extracted table columns (lookup keys).
-  const knownStepRefs = new Set([
-    ...knownNames,
-    ...tables.flatMap((t) => [
-      ...(t.headers ?? []),
-      ...(t.columns ?? []).map((c) => c?.label ?? c?.original_label),
-    ]).filter(Boolean).map((s) => String(s).trim().toLowerCase()).filter(Boolean),
-  ]);
+  const knownStepRefs = new Set([...knownNames, ...tableReferenceTerms(tables)]);
+  // Values produced by any routine are defined, including cross-routine flows.
+  const routineOutputs = new Set(
+    routines.flatMap((r) => r.outputs ?? []).map((s) => String(s ?? '').trim().toLowerCase()).filter(Boolean)
+  );
   for (const routine of routines) {
     checkTraceability('routine', routine);
     if (!ROUTINE_KINDS.includes(routine.kind)) {
@@ -131,7 +129,7 @@ export function validateJob(job) {
     checkConditionFallback(routine, warn);
     checkStepFormulas(routine, warn);
     checkLookupKeys(routine, warn);
-    checkStructuredDependencies(routine, warn, knownNames, knownStepRefs);
+    checkStructuredDependencies(routine, warn, knownNames, knownStepRefs, tables, routineOutputs);
     checkConfidence('routine', routine, warn);
   }
 
@@ -386,7 +384,7 @@ function checkLookupKeys(routine, warn) {
   });
 }
 
-function checkStructuredDependencies(routine, warn, knownNames, knownStepRefs = knownNames) {
+function checkStructuredDependencies(routine, warn, knownNames, knownStepRefs = knownNames, tables = [], routineOutputs = new Set()) {
   const deps = routine.dependencies ?? [];
   for (const dep of deps) {
     const target = String(dep?.target ?? '').trim();
@@ -408,7 +406,9 @@ function checkStructuredDependencies(routine, warn, knownNames, knownStepRefs = 
       if (!name) continue;
       if (localOutputs.has(name.toLowerCase())) continue;
       if (knownStepRefs.has(name.toLowerCase())) continue;
-      warn('routine', routine.id, `Step${step?.sequence !== undefined && step?.sequence !== '' ? ` ${step.sequence}` : ''} references "${name}", which matches no defined input, prior step output, table, column, or routine; flagged as unresolved.`, step?.source_pages?.length ? step.source_pages : routine.source_pages);
+      if (routineOutputs.has(name.toLowerCase())) continue;
+      if (resolveTableReference(tables, name)) continue;
+      warn('routine', routine.id, `Step${step?.sequence !== undefined && step?.sequence !== '' ? ` ${step.sequence}` : ''} references "${name}", which matches no defined input, step output, routine output, table, column, or routine; flagged as unresolved.`, step?.source_pages?.length ? step.source_pages : routine.source_pages);
     }
   }
 }

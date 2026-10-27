@@ -554,10 +554,19 @@ function isEffectivelyEmpty(list) {
 
 // Generic connective words excluded when collecting identifiers from an
 // expression. Plain English, not domain vocabulary.
-const NON_IDENTIFIER_WORDS = new Set([
-  'and', 'or', 'not', 'if', 'then', 'else', 'when', 'where', 'with', 'using',
-  'from', 'to', 'by', 'per', 'in', 'on', 'of', 'for', 'the', 'a', 'an',
+const NON_IDENTIFIER_WORDS = new Set(['and', 'or', 'not', 'if', 'then', 'else', 'when', 'where']);
+
+// Extra guard for single-word captures (rounding targets, lookup outputs),
+// where an article or preposition would otherwise be mistaken for a variable.
+const NON_CAPTURE_WORDS = new Set([
+  ...NON_IDENTIFIER_WORDS,
+  'with', 'using', 'from', 'to', 'by', 'per', 'in', 'on', 'of', 'for', 'the', 'a', 'an', 'as', 'is',
 ]);
+
+function acceptableCapture(word) {
+  const w = String(word ?? '').trim();
+  return w !== '' && !NON_CAPTURE_WORDS.has(w.toLowerCase());
+}
 
 function identifiersOf(text) {
   const seen = new Set();
@@ -599,6 +608,43 @@ function splitKeys(text) {
     .filter(Boolean);
 }
 
+// Resolve an abbreviated table mention (e.g. "Table 1") to an extracted
+// table: exact id/name match first, else a unique word-boundary prefix match
+// on the table name (so "Table 1" never resolves to "Table 10"). Returns the
+// table or null when there is no single confident match.
+export function resolveTableReference(tables, mention) {
+  const key = String(mention ?? '').trim().toLowerCase();
+  if (!key) return null;
+  const list = Array.isArray(tables) ? tables : [];
+  const exact = list.find((t) =>
+    String(t?.id ?? '').trim().toLowerCase() === key
+    || String(t?.name ?? '').trim().toLowerCase() === key);
+  if (exact) return exact;
+  const candidates = list.filter((t) => {
+    const name = String(t?.name ?? '').trim().toLowerCase();
+    if (!name.startsWith(key) || name.length === key.length) return false;
+    return !/[a-z0-9]/.test(name[key.length] ?? '');
+  });
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
+// Lowercased id/name/header/label terms identifying extracted tables,
+// for matching references against defined table structure.
+export function tableReferenceTerms(tables) {
+  return new Set(
+    (Array.isArray(tables) ? tables : [])
+      .flatMap((t) => [
+        t?.id,
+        t?.name,
+        ...(t?.headers ?? []),
+        ...(t?.columns ?? []).map((c) => c?.label ?? c?.original_label),
+      ])
+      .filter((s) => s !== undefined && s !== null)
+      .map((s) => String(s).trim().toLowerCase())
+      .filter(Boolean)
+  );
+}
+
 // Derive step operation/expression/operand/inputs/output from explicit
 // wording. Only confident syntactic patterns produce fields; anything else
 // yields a minimal entry so the source text is never embellished.
@@ -615,21 +661,24 @@ function deriveStepDetail(text) {
     derived = true;
     const parsed = lookupFull || lookupShort;
     if (parsed) {
-      entry.output = parsed[1];
+      if (acceptableCapture(parsed[1])) entry.output = parsed[1];
       entry.inputs = splitKeys(parsed[parsed.length - 1]);
     }
+    if (lookupFull && lookupFull[2].trim()) entry.depends_on = [lookupFull[2].trim()];
   } else if (/^round\b/i.test(body)) {
     entry.operation = 'rounding';
-    entry.operand = full;
     derived = true;
     const target = /^round\s+([A-Za-z_]\w*)/i.exec(body);
-    if (target) entry.output = target[1];
+    if (target && acceptableCapture(target[1])) {
+      entry.operand = target[1];
+      entry.output = target[1];
+    }
   } else if (!/^(if|else|when|otherwise)\b/i.test(body)) {
     const main = splitMainClause(body);
     const assign = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+?)\s*\.?\s*$/.exec(main);
     if (assign && assign[2].trim()) {
       entry.operation = 'expression';
-      entry.expression = full;
+      entry.expression = main.replace(/\.\s*$/, '');
       entry.output = assign[1];
       entry.inputs = identifiersOf(assign[2]);
       derived = true;

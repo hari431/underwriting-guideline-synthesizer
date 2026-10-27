@@ -3,10 +3,11 @@
 // per rating table, one sheet per routine, Issues.
 // Rating-table sheets hold only the title, headers, and factor rows.
 // Routine sheets hold the name, details, ordered steps, conditions,
-// dependencies, lookups, unresolved items, and source evidence.
+// dependencies, unresolved items, and source evidence.
 // Cover and the summaries link each asset name to its detail worksheet.
 // Fixed ZIP timestamps keep builds byte-deterministic.
 import { deflateRawSync } from 'node:zlib';
+import { resolveTableReference, tableReferenceTerms } from './models.js';
 
 // ---------- CRC32 + minimal ZIP writer ----------
 
@@ -292,11 +293,81 @@ function parseStepSequence(text, fallbackIndex) {
   return String(fallbackIndex + 1);
 }
 
+function isLookupOperation(op) {
+  const o = String(op ?? '').toLowerCase();
+  return o.includes('lookup') || o.includes('look-up');
+}
+
+// Routines (other than the current one) listing a variable among outputs.
+function producingRoutines(routines, routineId, variable) {
+  const key = String(variable ?? '').trim().toLowerCase();
+  if (!key) return [];
+  return (Array.isArray(routines) ? routines : []).filter((s) =>
+    String(s?.id ?? '') !== String(routineId ?? '')
+    && (s?.outputs ?? []).some((o) => String(o ?? '').trim().toLowerCase() === key));
+}
+
+// Line Comment for one step: the lookup's table and result plus any
+// routine-to-routine input sources. Returns '' when nothing is traceable;
+// unknown references stay silent here because the validator flags them.
+function stepLineComment(step, routine, routines, tables, tableTerms, priorOutputs) {
+  const det = step.det ?? null;
+  const output = step.output || '';
+  const parts = [];
+  const flags = [];
+  if (det && isLookupOperation(det.operation)) {
+    const mentions = (det.depends_on ?? []).map((d) => String(d ?? '').trim()).filter(Boolean);
+    const resolved = [];
+    const seen = new Set();
+    for (const mention of mentions) {
+      const table = resolveTableReference(tables, mention);
+      if (table && !seen.has(table)) {
+        seen.add(table);
+        resolved.push(table);
+      }
+    }
+    const outputBit = output ? ` → ${output}` : '';
+    if (resolved.length > 0) {
+      parts.push(`lookup ${resolved.map((t) => String(t.name ?? t.id ?? '')).join('; ')}${outputBit}`);
+    } else if (mentions.length > 0) {
+      parts.push(`lookup "${mentions[0]}"${outputBit}`);
+      flags.push('table unresolved — verify');
+    } else if (output) {
+      parts.push(`lookup${outputBit}`);
+    }
+  }
+  const routineTerms = new Set(
+    [...(routine.inputs ?? []), ...(routine.outputs ?? [])]
+      .map((s) => String(s ?? '').trim().toLowerCase())
+      .filter(Boolean)
+  );
+  const definedLocally = new Set(priorOutputs);
+  if (output) definedLocally.add(output.toLowerCase());
+  for (const raw of det?.inputs ?? []) {
+    const variable = String(raw ?? '').trim();
+    if (!variable || definedLocally.has(variable.toLowerCase())) continue;
+    const producers = producingRoutines(routines, routine?.id, variable);
+    if (producers.length === 1) {
+      parts.push(`uses ${variable} from ${producers[0].name ?? producers[0].id ?? ''}`);
+    } else if (producers.length > 1) {
+      parts.push(`uses ${variable} from multiple routines (${producers.map((s) => String(s?.name ?? s?.id ?? '')).join('; ')}) — verify`);
+    } else if (routineTerms.has(variable.toLowerCase()) || tableTerms.has(variable.toLowerCase())) {
+      continue;
+    }
+  }
+  return [...parts, ...flags].join('; ');
+}
+
+function stepOperandCell(step) {
+  if (isLookupOperation(step.det?.operation)) return step.keys || '';
+  return step.expression || step.operand || step.keys || '';
+}
+
 // One worksheet body per routine: name in A1, available details, ordered
-// step table, then clearly labelled Conditions, Dependencies, Lookups,
-// Unresolved items, and Source evidence sections. Only available content is
-// included; missing fields stay blank and empty sections are omitted.
-function routineSheetRows(r, routineIssues) {
+// step table, then clearly labelled Conditions, Dependencies, Unresolved
+// items, and Source evidence sections. Only available content is included;
+// missing fields stay blank and empty sections are omitted.
+function routineSheetRows(r, routineIssues, ctx = {}) {
   const rows = [[String(r.name ?? '')]];
   const detail = (label, value) => {
     if (value !== '' && value !== null && value !== undefined) rows.push([label, String(value)]);
@@ -352,9 +423,14 @@ function routineSheetRows(r, routineIssues) {
   }
   if (stepEntries.length > 0) {
     rows.push(['Steps']);
-    rows.push(['Step #', 'Instructions', 'Operation', 'Expression', 'Operand', 'Inputs', 'Output', 'Depends on']);
+    rows.push(['Step #', 'Instruction', 'Op', 'Operand', 'Line Comment']);
+    const routines = ctx.routines ?? [];
+    const tables = ctx.tables ?? [];
+    const tableTerms = tableReferenceTerms(tables);
+    const priorOutputs = new Set();
     for (const e of stepEntries) {
-      rows.push([e.seq, e.instruction, e.operation, e.expression, e.operand, e.keys, e.output, e.dependsOn]);
+      rows.push([e.seq, e.instruction, e.operation, stepOperandCell(e), stepLineComment(e, r, routines, tables, tableTerms, priorOutputs)]);
+      if (e.output) priorOutputs.add(e.output.toLowerCase());
     }
   }
 
@@ -409,18 +485,6 @@ function routineSheetRows(r, routineIssues) {
     rows.push(['Target', 'Type', 'Explicit/Inferred']);
     for (const e of depEntries) {
       rows.push([e.target, e.type, e.explicit]);
-    }
-  }
-
-  const lookupEntries = stepEntries.filter((e) => {
-    const op = String(e.det?.operation ?? '').toLowerCase();
-    return op.includes('lookup') || op.includes('look-up');
-  });
-  if (lookupEntries.length > 0) {
-    rows.push(['Lookups']);
-    rows.push(['Step #', 'Instruction', 'Keys', 'Output']);
-    for (const e of lookupEntries) {
-      rows.push([e.seq, e.instruction, e.keys, e.output]);
     }
   }
 
@@ -588,7 +652,7 @@ function jobRows(job, source) {
     const routineIssues = issues.filter(
       (i) => i.target_type === 'routine' && String(i.target_id ?? '') === String(r.id ?? '')
     );
-    const sheetRows = routineSheetRows(r, routineIssues);
+    const sheetRows = routineSheetRows(r, routineIssues, { routines, tables });
     const colCount = Math.max(1, ...sheetRows.map((row) => row.length));
     // Bold only the Steps heading and its column headers; step contents,
     // overview, and evidence keep their existing styling.

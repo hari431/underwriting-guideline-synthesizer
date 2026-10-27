@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createJob, createDocument, normalizeJob } from '../src/models.js';
+import { createJob, createDocument, normalizeJob, resolveTableReference } from '../src/models.js';
 
 test('normalizeJob assigns stable sequential IDs and preserves evidence', () => {
   const job = normalizeJob(
@@ -151,20 +151,54 @@ test('models: step operations derive from explicit wording without invention', (
   assert.equal(det[0].operation, 'lookup');
   assert.equal(det[0].output, 'base_rate');
   assert.deepEqual(det[0].inputs, ['driver class', 'territory']);
+  assert.deepEqual(det[0].depends_on, ['Table 1']);
   assert.equal(det[0].interpretation_status, 'inferred');
   assert.equal(det[1].operation, 'lookup');
   assert.deepEqual(det[1].inputs, ['region']);
+  assert.deepEqual(det[1].depends_on ?? [], []);
   assert.equal(det[2].operation, undefined);
   assert.equal(det[2].interpretation_status, undefined);
   assert.equal(det[3].operation, 'rounding');
   assert.equal(det[3].output, 'final_premium');
-  assert.ok(det[3].operand.includes('nearest dollar'));
+  assert.equal(det[3].operand, 'final_premium');
   assert.equal(det[4].operation, 'expression');
   assert.equal(det[4].output, 'final_premium');
   assert.deepEqual(det[4].inputs, ['base_premium', 'policy_fee']);
-  assert.ok(det[4].expression.includes('where policy_fee = 25'));
+  assert.equal(det[4].expression, 'final_premium = base_premium + policy_fee');
   assert.equal(det[5].operation, undefined);
   assert.deepEqual(job.routines[0].steps[0], 'Step 1: Look up base_rate from Table 1 using driver class and territory.');
+  assert.deepEqual(job.routines[0].steps[4], 'final_premium = base_premium + policy_fee, where policy_fee = 25.');
+});
+
+test('models: single-word captures reject articles and prepositions', () => {
+  const job = normalizeJob(
+    createJob({
+      routines: [{
+        name: 'Calc', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'ev',
+        steps: ['Round the result down.', 'total = a + b'],
+      }],
+    })
+  );
+  const det = job.routines[0].steps_detailed;
+  assert.equal(det[0].operation, 'rounding');
+  assert.equal(det[0].output, undefined);
+  assert.equal(det[0].operand, undefined);
+  assert.deepEqual(det[1].inputs, ['a', 'b']);
+});
+
+test('models: table mentions resolve exactly or by unique prefix only', () => {
+  const tables = [
+    { id: 'T1', name: 'Table 1 - Base Rates' },
+    { id: 'T2', name: 'Table 10 - Surcharges' },
+    { id: 'T3', name: 'Schedule A' },
+  ];
+  assert.equal(resolveTableReference(tables, 'Table 1 - Base Rates')?.id, 'T1');
+  assert.equal(resolveTableReference(tables, 't2')?.id, 'T2');
+  assert.equal(resolveTableReference(tables, 'Table 1')?.id, 'T1');
+  assert.equal(resolveTableReference(tables, 'Schedule A')?.id, 'T3');
+  assert.equal(resolveTableReference(tables, 'Table 9'), null);
+  assert.equal(resolveTableReference(tables, 'Table'), null);
+  assert.equal(resolveTableReference([], 'Table 1'), null);
 });
 
 test('models: condition branches and referral codes derive from explicit wording', () => {
