@@ -2,8 +2,9 @@
 // Sheets: Cover, Table Summary, Routine Summary, Table Columns, one sheet
 // per rating table, one sheet per routine, Issues.
 // Rating-table sheets hold only the title, headers, and factor rows.
-// Routine sheets hold the name, details, ordered steps, conditions,
-// dependencies, unresolved items, and source evidence.
+// Routine sheets hold the name, identity details, then the rating execution
+// flow (inputs with sources, ordered steps, final calculation), followed by
+// conditions, dependencies, unresolved items, and source evidence.
 // Cover and the summaries link each asset name to its detail worksheet.
 // Fixed ZIP timestamps keep builds byte-deterministic.
 import { deflateRawSync } from 'node:zlib';
@@ -139,11 +140,22 @@ class SharedStrings {
   }
 }
 
-function sheetXml(rows, shared, widths = [], links = [], boldRows = []) {
+function sheetXml(rows, shared, widths = [], links = [], styleSpec = []) {
   const colCount = Math.max(1, ...rows.map((r) => r.length));
   const lastRef = `${colName(colCount - 1)}${Math.max(rows.length, 1)}`;
   const linkByCell = new Map(links.map((l) => [`${l.r},${l.c}`, l.location]));
+  let boldRows = [];
+  let sectionRows = [];
+  let titleStyleId = null;
+  if (Array.isArray(styleSpec)) {
+    boldRows = styleSpec;
+  } else if (styleSpec && typeof styleSpec === 'object') {
+    boldRows = styleSpec.boldRows ?? [];
+    sectionRows = styleSpec.sectionRows ?? styleSpec.sectionHeadingRows ?? [];
+    titleStyleId = styleSpec.titleStyle ?? styleSpec.titleStyleId ?? null;
+  }
   const boldRowSet = new Set(boldRows);
+  const sectionRowSet = new Set(sectionRows);
   const parts = [
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
     '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
@@ -164,7 +176,16 @@ function sheetXml(rows, shared, widths = [], links = [], boldRows = []) {
     row.forEach((value, c) => {
       const ref = `${colName(c)}${r + 1}`;
       const link = linkByCell.get(`${r},${c}`);
-      const style = link ? ' s="2"' : (r === 0 || boldRowSet.has(r) ? ' s="1"' : '');
+      let style = '';
+      if (link) {
+        style = ' s="2"';
+      } else if (r === 0) {
+        style = titleStyleId !== null && titleStyleId !== undefined ? ` s="${titleStyleId}"` : ' s="1"';
+      } else if (sectionRowSet.has(r)) {
+        style = ' s="4"';
+      } else if (boldRowSet.has(r)) {
+        style = ' s="1"';
+      }
       parts.push(`<c r="${ref}" t="s"${style}><v>${shared.idOf(value)}</v></c>`);
     });
     parts.push('</row>');
@@ -307,9 +328,143 @@ function producingRoutines(routines, routineId, variable) {
     && (s?.outputs ?? []).some((o) => String(o ?? '').trim().toLowerCase() === key));
 }
 
-// Line Comment for one step: the lookup's table and result plus any
-// routine-to-routine input sources. Returns '' when nothing is traceable;
-// unknown references stay silent here because the validator flags them.
+function normalizeMatch(s) {
+  return String(s ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+// Normalized lookup-key terms across all routines: inputs of lookup steps.
+// Used to recognize primary parameters so keys are never mapped as table outputs.
+function collectLookupKeyTerms(routines) {
+  const out = new Set();
+  for (const r of Array.isArray(routines) ? routines : []) {
+    for (const d of r?.steps_detailed ?? []) {
+      if (!d || !isLookupOperation(d.operation)) continue;
+      for (const k of d.inputs ?? []) {
+        const n = normalizeMatch(k);
+        if (n) out.add(n);
+      }
+    }
+  }
+  return out;
+}
+
+function candidateTablesForRoutine(routine, tables) {
+  const out = [];
+  const seen = new Set();
+  const targets = [
+    ...((routine?.dependencies ?? []).map((d) => d?.target)),
+    ...(routine?.depends_on ?? []),
+  ];
+  for (const t of targets) {
+    const mention = String(t ?? '').trim();
+    if (!mention) continue;
+    const table = resolveTableReference(tables, mention);
+    if (table && !seen.has(table)) {
+      seen.add(table);
+      out.push(table);
+    }
+  }
+  return out;
+}
+
+function findRoutinesByTarget(routines, target) {
+  const key = String(target ?? '').trim().toLowerCase();
+  if (!key) return [];
+  return (Array.isArray(routines) ? routines : []).filter((s) =>
+    String(s?.id ?? '').trim().toLowerCase() === key
+    || String(s?.name ?? '').trim().toLowerCase() === key);
+}
+
+// Map each routine input to its source table or producing routine using only
+// explicit evidence: own lookup steps, unique routine outputs, then a unique
+// name/header match within the routine's explicit table dependencies.
+// Anything else is an input parameter (when no sources are evidenced or the
+// value is a known lookup key) or marked unresolved rather than guessed.
+function resolveInputSources(routine, routines, tables) {
+  const inputs = routine?.inputs ?? [];
+  if (inputs.length === 0) return [];
+  const allKeys = collectLookupKeyTerms(routines);
+  const candidates = candidateTablesForRoutine(routine, tables);
+  const hasSourcesEvidence = (routine?.depends_on ?? []).some((v) => String(v ?? '').trim())
+    || (routine?.dependencies ?? []).length > 0
+    || (routine?.steps_detailed ?? []).length > 0;
+  const out = [];
+  for (const rawInput of inputs) {
+    const trimmed = String(rawInput ?? '').trim();
+    if (!trimmed) continue;
+    const lower = trimmed.toLowerCase();
+    const own = (routine?.steps_detailed ?? []).find((d) =>
+      d && isLookupOperation(d.operation) && String(d.output ?? '').trim().toLowerCase() === lower);
+    if (own) {
+      const mentions = (own.depends_on ?? []).map((d) => String(d ?? '').trim()).filter(Boolean);
+      const resolved = [];
+      const seen = new Set();
+      for (const m of mentions) {
+        const t = resolveTableReference(tables, m);
+        if (t && !seen.has(t)) {
+          seen.add(t);
+          resolved.push(t);
+        }
+      }
+      const keys = listJoin(own.inputs);
+      if (resolved.length === 1) {
+        out.push({ input: trimmed, source: String(resolved[0].name ?? resolved[0].id ?? ''), keys });
+      } else if (resolved.length > 1) {
+        out.push({ input: trimmed, source: `${resolved.map((t) => String(t.name ?? t.id ?? '')).join('; ')} (multiple — verify)`, keys });
+      } else if (mentions.length > 0) {
+        out.push({ input: trimmed, source: `"${mentions[0]}" (unresolved — verify)`, keys });
+      } else {
+        out.push({ input: trimmed, source: 'unresolved — verify', keys });
+      }
+      continue;
+    }
+    const producers = producingRoutines(routines, routine?.id, trimmed);
+    if (producers.length === 1) {
+      out.push({ input: trimmed, source: String(producers[0].name ?? producers[0].id ?? ''), keys: '' });
+      continue;
+    }
+    if (producers.length > 1) {
+      out.push({ input: trimmed, source: `multiple routines (${producers.map((s) => String(s?.name ?? s?.id ?? '')).join('; ')}) — verify`, keys: '' });
+      continue;
+    }
+    const norm = normalizeMatch(trimmed);
+    if (norm && allKeys.has(norm)) {
+      out.push({ input: trimmed, source: 'input parameter', keys: '' });
+      continue;
+    }
+    if (norm.length >= 3 && candidates.length > 0) {
+      const matches = candidates.filter((t) => {
+        const nameNorm = normalizeMatch(t?.name ?? '');
+        if (nameNorm && nameNorm.includes(norm)) return true;
+        const headers = [
+          ...(t?.headers ?? []),
+          ...(t?.columns ?? []).map((c) => c?.label ?? c?.original_label),
+        ];
+        return headers.some((h) => normalizeMatch(h) === norm);
+      });
+      if (matches.length === 1) {
+        out.push({ input: trimmed, source: String(matches[0].name ?? matches[0].id ?? ''), keys: '' });
+        continue;
+      }
+      if (matches.length > 1) {
+        out.push({ input: trimmed, source: 'unresolved — verify', keys: '' });
+        continue;
+      }
+    }
+    if (!hasSourcesEvidence) {
+      out.push({ input: trimmed, source: 'input parameter', keys: '' });
+    } else {
+      out.push({ input: trimmed, source: 'unresolved — verify', keys: '' });
+    }
+  }
+  return out;
+}
+
+// Line Comment for one step: the lookup's table and result plus how each
+// input was produced — an earlier step in this routine or another routine's
+// output. Returns '' when nothing is traceable; unknown references stay
+// silent here because the validator flags them. priorOutputs maps
+// lowercased output -> { seq, table } for earlier steps in order.
 function stepLineComment(step, routine, routines, tables, tableTerms, priorOutputs) {
   const det = step.det ?? null;
   const output = step.output || '';
@@ -341,11 +496,19 @@ function stepLineComment(step, routine, routines, tables, tableTerms, priorOutpu
       .map((s) => String(s ?? '').trim().toLowerCase())
       .filter(Boolean)
   );
-  const definedLocally = new Set(priorOutputs);
-  if (output) definedLocally.add(output.toLowerCase());
   for (const raw of det?.inputs ?? []) {
     const variable = String(raw ?? '').trim();
-    if (!variable || definedLocally.has(variable.toLowerCase())) continue;
+    if (!variable) continue;
+    const prior = priorOutputs instanceof Map ? priorOutputs.get(variable.toLowerCase()) : null;
+    if (prior) {
+      const tableBit = prior.table ? ` (${prior.table})` : '';
+      if (prior.seq !== '' && prior.seq !== null && prior.seq !== undefined) {
+        parts.push(`uses ${variable} from step ${prior.seq}${tableBit}`);
+      } else {
+        parts.push(`uses ${variable} from prior step${tableBit}`);
+      }
+      continue;
+    }
     const producers = producingRoutines(routines, routine?.id, variable);
     if (producers.length === 1) {
       parts.push(`uses ${variable} from ${producers[0].name ?? producers[0].id ?? ''}`);
@@ -358,15 +521,99 @@ function stepLineComment(step, routine, routines, tables, tableTerms, priorOutpu
   return [...parts, ...flags].join('; ');
 }
 
+function priorTableForStep(det, tables) {
+  if (!det || !isLookupOperation(det.operation)) return null;
+  for (const raw of det.depends_on ?? []) {
+    const mention = String(raw ?? '').trim();
+    if (!mention) continue;
+    const table = resolveTableReference(tables, mention);
+    if (table) return String(table.name ?? table.id ?? '');
+  }
+  return null;
+}
+
+// Table and routine links evidenced by the routine's own steps, in step
+// order: lookup targets with retrieved variables and keys, plus cross-routine
+// inputs (skipping values produced by earlier steps in this routine).
+// Returns a Map keyed by lowercased display target.
+function collectStepDerived(stepEntries, routine, routines, tables) {
+  const map = new Map();
+  const prior = new Map();
+  const ensure = (target, type) => {
+    const key = String(target ?? '').toLowerCase();
+    if (!map.has(key)) map.set(key, { target: String(target ?? ''), type, vars: new Map() });
+    return map.get(key);
+  };
+  for (const e of stepEntries ?? []) {
+    const det = e?.det ?? null;
+    if (det && isLookupOperation(det.operation)) {
+      const mentions = (det.depends_on ?? []).map((d) => String(d ?? '').trim()).filter(Boolean);
+      const resolved = [];
+      const seen = new Set();
+      for (const m of mentions) {
+        const t = resolveTableReference(tables, m);
+        if (t && !seen.has(t)) {
+          seen.add(t);
+          resolved.push(t);
+        }
+      }
+      const keys = e.keys || listJoin(det.inputs);
+      const output = e.output || String(det.output ?? '');
+      const varFmt = output ? (keys ? `${output} (keys: ${keys})` : output) : (keys ? `(keys: ${keys})` : '');
+      if (resolved.length > 0) {
+        for (const t of resolved) {
+          const entry = ensure(String(t.name ?? t.id ?? ''), 'table');
+          if (varFmt && output && !entry.vars.has(output.toLowerCase())) entry.vars.set(output.toLowerCase(), varFmt);
+          else if (varFmt && !output && !entry.vars.has(varFmt.toLowerCase())) entry.vars.set(varFmt.toLowerCase(), varFmt);
+        }
+      } else if (mentions.length > 0) {
+        const entry = ensure(mentions[0], '');
+        if (varFmt) {
+          const vk = (output || varFmt).toLowerCase();
+          if (!entry.vars.has(vk)) entry.vars.set(vk, varFmt);
+        }
+      }
+    }
+    for (const raw of det?.inputs ?? []) {
+      const variable = String(raw ?? '').trim();
+      if (!variable || prior.has(variable.toLowerCase())) continue;
+      for (const p of producingRoutines(routines, routine?.id, variable)) {
+        const entry = ensure(String(p.name ?? p.id ?? ''), 'routine');
+        if (!entry.vars.has(variable.toLowerCase())) entry.vars.set(variable.toLowerCase(), variable);
+      }
+    }
+    if (e?.output) {
+      prior.set(String(e.output).toLowerCase(), { seq: e.seq ?? '', table: priorTableForStep(det, tables) });
+    }
+  }
+  return map;
+}
+
 function stepOperandCell(step) {
   if (isLookupOperation(step.det?.operation)) return step.keys || '';
   return step.expression || step.operand || step.keys || '';
 }
 
-// One worksheet body per routine: name in A1, available details, ordered
-// step table, then clearly labelled Conditions, Dependencies, Unresolved
-// items, and Source evidence sections. Only available content is included;
-// missing fields stay blank and empty sections are omitted.
+// Section headings on routine sheets and their column headers (null when the
+// section carries detail rows instead of a table). Used only to locate rows
+// for formatting; routineSheetRows remains the single source of sheet content.
+const ROUTINE_SECTION_HEADERS = new Map([
+  ['Inputs', ['Input', 'Source', 'Lookup keys']],
+  ['Steps', ['Step #', 'Instruction', 'Op', 'Operand', 'Line Comment']],
+  ['Final calculation', ['Calculation', 'Output']],
+  ['Conditions', ['#', 'Condition', 'True branch', 'False branch', 'Referral code']],
+  ['Dependencies', ['Target', 'Type', 'Explicit/Inferred', 'Variable / Keys']],
+  ['Unresolved items', ['Issue ID', 'Severity', 'Message']],
+  ['Source evidence', null],
+]);
+
+// One worksheet body per routine: name in A1 and identity details, then the
+// rating execution flow in order — Inputs (required variables with sources),
+// ordered Steps (lookups with keys and returned variables, then intermediate
+// calculations), and the Final calculation with its output — followed by the
+// clearly labelled Conditions, Dependencies, Unresolved items, and Source
+// evidence sections. Only available content is included; missing fields stay
+// blank and empty sections are omitted.
 function routineSheetRows(r, routineIssues, ctx = {}) {
   const rows = [[String(r.name ?? '')]];
   const detail = (label, value) => {
@@ -376,12 +623,18 @@ function routineSheetRows(r, routineIssues, ctx = {}) {
   detail('Purpose', String(r.purpose ?? ''));
   detail('Applicability', String(r.applicability ?? ''));
   detail('Execution context', String(r.execution_context ?? ''));
-  detail('Expression', String(r.expression_text ?? ''));
-  const inputs = listJoin(r.inputs);
-  if (inputs) rows.push(['Inputs', inputs]);
-  const outputs = listJoin(r.outputs);
-  if (outputs) rows.push(['Outputs', outputs]);
   detail('Notes', String(r.notes ?? ''));
+
+  const routines = ctx.routines ?? [];
+  const tables = ctx.tables ?? [];
+  const inputSources = resolveInputSources(r, routines, tables);
+  if (inputSources.length > 0) {
+    rows.push(['Inputs']);
+    rows.push(['Input', 'Source', 'Lookup keys']);
+    for (const e of inputSources) {
+      rows.push([e.input, e.source, e.keys]);
+    }
+  }
 
   const steps = r.steps ?? [];
   const detailed = r.steps_detailed ?? [];
@@ -424,13 +677,30 @@ function routineSheetRows(r, routineIssues, ctx = {}) {
   if (stepEntries.length > 0) {
     rows.push(['Steps']);
     rows.push(['Step #', 'Instruction', 'Op', 'Operand', 'Line Comment']);
-    const routines = ctx.routines ?? [];
-    const tables = ctx.tables ?? [];
     const tableTerms = tableReferenceTerms(tables);
-    const priorOutputs = new Set();
+    const priorOutputs = new Map();
     for (const e of stepEntries) {
       rows.push([e.seq, e.instruction, e.operation, stepOperandCell(e), stepLineComment(e, r, routines, tables, tableTerms, priorOutputs)]);
-      if (e.output) priorOutputs.add(e.output.toLowerCase());
+      if (e.output) priorOutputs.set(e.output.toLowerCase(), { seq: e.seq ?? '', table: priorTableForStep(e.det, tables) });
+    }
+  }
+
+  // Final calculation closes the execution flow: the routine's stated
+  // formula when one was extracted, else the terminal step restated verbatim
+  // with its output. Nothing is composed or reinterpreted here.
+  const finalExpression = String(r.expression_text ?? '');
+  if (finalExpression.trim()) {
+    rows.push(['Final calculation']);
+    rows.push(['Calculation', 'Output']);
+    rows.push([finalExpression, listJoin(r.outputs)]);
+  } else if (stepEntries.length > 0) {
+    const last = stepEntries[stepEntries.length - 1];
+    const calculation = last.expression || last.instruction || last.operand || last.keys;
+    const output = last.output || '';
+    if (calculation || output) {
+      rows.push(['Final calculation']);
+      rows.push(['Calculation', 'Output']);
+      rows.push([calculation, output]);
     }
   }
 
@@ -480,11 +750,103 @@ function routineSheetRows(r, routineIssues, ctx = {}) {
     if (detailedTargets.has(text.trim().toLowerCase())) continue;
     depEntries.push({ target: text, type: '', explicit: 'explicit', det: null });
   }
+  const stepDerived = collectStepDerived(stepEntries, r, routines, tables);
+  const explicitTableObjects = new Set();
+  const explicitRoutineObjects = new Set();
+  const explicitUnresolved = new Set();
+  for (const e of depEntries) {
+    const table = resolveTableReference(tables, e.target);
+    if (table) {
+      explicitTableObjects.add(table);
+      continue;
+    }
+    const matched = findRoutinesByTarget(routines, e.target);
+    if (matched.length > 0) {
+      for (const m of matched) explicitRoutineObjects.add(m);
+      continue;
+    }
+    explicitUnresolved.add(String(e.target ?? '').toLowerCase());
+  }
+  const variableForExplicit = (target) => {
+    const vars = new Map();
+    const table = resolveTableReference(tables, target);
+    if (table) {
+      const tableName = String(table.name ?? table.id ?? '').toLowerCase();
+      for (const s of inputSources) {
+        if (String(s.source ?? '').toLowerCase() === tableName) {
+          const fmt = s.keys ? `${s.input} (keys: ${s.keys})` : s.input;
+          if (!vars.has(s.input.toLowerCase())) vars.set(s.input.toLowerCase(), fmt);
+        }
+      }
+      for (const derived of stepDerived.values()) {
+        if (derived.type !== 'table') continue;
+        const dt = resolveTableReference(tables, derived.target);
+        if (dt !== table) continue;
+        for (const [k, v] of derived.vars) {
+          if (!vars.has(k)) vars.set(k, v);
+        }
+      }
+      return [...vars.values()].join('; ');
+    }
+    const matched = findRoutinesByTarget(routines, target);
+    if (matched.length > 0) {
+      const outputTerms = new Set();
+      for (const m of matched) {
+        for (const o of m?.outputs ?? []) {
+          const t = String(o ?? '').trim().toLowerCase();
+          if (t) outputTerms.add(t);
+        }
+      }
+      for (const raw of r.inputs ?? []) {
+        const v = String(raw ?? '').trim();
+        if (v && outputTerms.has(v.toLowerCase()) && !vars.has(v.toLowerCase())) vars.set(v.toLowerCase(), v);
+      }
+      for (const derived of stepDerived.values()) {
+        if (derived.type !== 'routine') continue;
+        const dm = findRoutinesByTarget(routines, derived.target);
+        if (!dm.some((m) => matched.includes(m))) continue;
+        for (const [k, v] of derived.vars) {
+          if (!vars.has(k)) vars.set(k, v);
+        }
+      }
+      return [...vars.values()].join('; ');
+    }
+    const derived = stepDerived.get(String(target ?? '').toLowerCase());
+    if (derived) return [...derived.vars.values()].join('; ');
+    return '';
+  };
+  for (const e of depEntries) {
+    if (!e.type) {
+      if (resolveTableReference(tables, e.target)) e.type = 'table';
+      else if (findRoutinesByTarget(routines, e.target).length > 0) e.type = 'routine';
+    }
+    e.variable = variableForExplicit(e.target);
+  }
+  for (const derived of stepDerived.values()) {
+    if (derived.type === 'table') {
+      const table = resolveTableReference(tables, derived.target);
+      if (table && explicitTableObjects.has(table)) continue;
+    } else if (derived.type === 'routine') {
+      const matched = findRoutinesByTarget(routines, derived.target);
+      if (matched.some((m) => explicitRoutineObjects.has(m))) continue;
+    } else if (explicitUnresolved.has(String(derived.target ?? '').toLowerCase())) {
+      continue;
+    }
+    const key = String(derived.target ?? '').toLowerCase();
+    if (depEntries.some((e) => String(e.target ?? '').toLowerCase() === key)) continue;
+    depEntries.push({
+      target: derived.target,
+      type: derived.type,
+      explicit: 'inferred',
+      variable: [...derived.vars.values()].join('; '),
+      det: null,
+    });
+  }
   if (depEntries.length > 0) {
     rows.push(['Dependencies']);
-    rows.push(['Target', 'Type', 'Explicit/Inferred']);
+    rows.push(['Target', 'Type', 'Explicit/Inferred', 'Variable / Keys']);
     for (const e of depEntries) {
-      rows.push([e.target, e.type, e.explicit]);
+      rows.push([e.target, e.type, e.explicit, e.variable ?? '']);
     }
   }
 
@@ -654,12 +1016,30 @@ function jobRows(job, source) {
     );
     const sheetRows = routineSheetRows(r, routineIssues, { routines, tables });
     const colCount = Math.max(1, ...sheetRows.map((row) => row.length));
-    // Bold only the Steps heading and its column headers; step contents,
-    // overview, and evidence keep their existing styling.
-    const boldRows = [];
-    const stepsLabel = sheetRows.findIndex((row) => row.length === 1 && row[0] === 'Steps');
-    if (stepsLabel >= 0) boldRows.push(stepsLabel, stepsLabel + 1);
-    return { name: routineSheetNameList[idx], rows: sheetRows, colCount, boldRows };
+    // Title uses a larger bold style; every present section heading uses the
+    // shared heading style (bold + subtle fill); each table header row stays
+    // bold. Data rows keep normal weight. Only existing sections are styled.
+    const sectionHeadingRows = [];
+    const headerRows = [];
+    sheetRows.forEach((row, rowIdx) => {
+      if (rowIdx === 0 || row.length !== 1) return;
+      const label = row[0];
+      if (!ROUTINE_SECTION_HEADERS.has(label)) return;
+      sectionHeadingRows.push(rowIdx);
+      const expected = ROUTINE_SECTION_HEADERS.get(label);
+      if (expected && rowIdx + 1 < sheetRows.length) {
+        const next = sheetRows[rowIdx + 1];
+        if (next.length === expected.length && next.every((v, i) => v === expected[i])) {
+          headerRows.push(rowIdx + 1);
+        }
+      }
+    });
+    return {
+      name: routineSheetNameList[idx],
+      rows: sheetRows,
+      colCount,
+      styleSpec: { boldRows: headerRows, sectionRows: sectionHeadingRows, titleStyle: '3' },
+    };
   });
 
   const issuesRows = [['Issue ID', 'Severity', 'Target type', 'Target ID', 'Message', 'Source pages']];
@@ -694,7 +1074,7 @@ export function buildWorkbookXlsx(job, { source = 'recorded', compress = true } 
     sheetXml(routineSummary, shared, [11, 34, 18, 24, 24, 20, 30, 30, 40, 12, 18, 60, 30, 14], routineSummaryLinks),
     sheetXml(tableColumns, shared, [10, 34, 10, 28, 28, 16, 16, 16, 40]),
     ...tableSheets.map((s) => sheetXml(s.rows, shared, Array(Math.max(s.colCount, 1)).fill(28))),
-    ...routineSheets.map((s) => sheetXml(s.rows, shared, Array(Math.max(s.colCount, 1)).fill(28), [], s.boldRows ?? [])),
+    ...routineSheets.map((s) => sheetXml(s.rows, shared, Array(Math.max(s.colCount, 1)).fill(28), [], s.styleSpec ?? s.boldRows ?? [])),
     sheetXml(issues, shared, [10, 10, 12, 11, 80, 12]),
   ];
 
@@ -737,11 +1117,11 @@ export function buildWorkbookXlsx(job, { source = 'recorded', compress = true } 
   const styles = [
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
     '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
-    '<fonts count="3"><font><sz val="11"/><name val="Calibri"/></font><font><sz val="11"/><b/><name val="Calibri"/></font><font><sz val="11"/><color rgb="FF0563C1"/><name val="Calibri"/><u/></font></fonts>',
-    '<fills count="1"><fill><patternFill patternType="none"/></fill></fills>',
+    '<fonts count="4"><font><sz val="11"/><name val="Calibri"/></font><font><sz val="11"/><b/><name val="Calibri"/></font><font><sz val="11"/><color rgb="FF0563C1"/><name val="Calibri"/><u/></font><font><sz val="14"/><b/><name val="Calibri"/></font></fonts>',
+    '<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFD9E1F2"/><bgColor indexed="64"/></patternFill></fill></fills>',
     '<borders count="1"><border/></borders>',
     '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>',
-    '<cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0"/></cellXfs>',
+    '<cellXfs count="5"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="1" borderId="0" xfId="0"/></cellXfs>',
     '</styleSheet>',
   ].join('');
 

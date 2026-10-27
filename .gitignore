@@ -1,4 +1,7 @@
 node_modules/
 jobs/
+local-reference/
 *.xlsx
 !fixtures/**/*.xlsx
+# Temporary files and generated verification artifacts
+tmp/

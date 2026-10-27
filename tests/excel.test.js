@@ -214,9 +214,12 @@ test('excel: sample routine sheets populate fields supported by the source', asy
   // B1: inputs/outputs populated from the explicit assignment; wording kept.
   const b1 = byIndex(0);
   assert.deepEqual(b1[0], ['B1 - Base premium formula']);
-  assert.ok(b1.some((row) => row[0] === 'Inputs' && row[1] === 'base_rate; territory_factor'));
-  assert.ok(b1.some((row) => row[0] === 'Outputs' && row[1] === 'base_premium'));
-  assert.ok(b1.some((row) => row[0] === 'Expression' && row[1] === 'base_premium = base_rate * territory_factor'));
+  assert.ok(!b1.some((row) => row.length === 2 && (row[0] === 'Inputs' || row[0] === 'Outputs' || row[0] === 'Expression')));
+  assert.deepEqual(sectionRows(b1, 'Inputs').body, [
+    ['base_rate', 'Table 1 - Base Rate by Driver Class', ''],
+    ['territory_factor', 'Table 2 - Territory Factor', ''],
+  ]);
+  assert.deepEqual(sectionRows(b1, 'Final calculation').body, [['base_premium = base_rate * territory_factor', 'base_premium']]);
   assert.equal(sectionRows(b1, 'Steps'), null);
 
   // T1: true/false branches and referral code populated from explicit text.
@@ -228,6 +231,7 @@ test('excel: sample routine sheets populate fields supported by the source', asy
   assert.equal(t1conds.body[1][1], 'ELSE refer to underwriter (code REF-TERR)');
   assert.equal(t1conds.body[1][3], 'refer to underwriter (code REF-TERR)');
   assert.equal(t1conds.body[1][4], 'REF-TERR');
+  assert.equal(sectionRows(t1, 'Final calculation'), null); // no formula or steps: nothing to close the flow
 
   // F1: ordered operations with traced tables, keys, results, and sources.
   const f1 = byIndex(2);
@@ -240,10 +244,11 @@ test('excel: sample routine sheets populate fields supported by the source', asy
   assert.deepEqual(f1steps.body[2], ['3', 'final_premium = base_premium + policy_fee, where policy_fee = 25.', 'expression', 'final_premium = base_premium + policy_fee', 'uses base_premium from B1 - Base premium formula']);
   assert.deepEqual(f1steps.body[3], ['4', 'Round final_premium to the nearest dollar.', 'rounding', 'final_premium', '']);
   assert.equal(sectionRows(f1, 'Lookups'), null);
+  assert.deepEqual(sectionRows(f1, 'Final calculation').body, [['final_premium = base_premium + policy_fee', 'final_premium']]);
 
   // G1: unfamiliar wording kept verbatim with nothing invented, flagged instead.
   const g1 = byIndex(3);
-  assert.ok(g1.some((row) => row[0] === 'Expression' && row[1] === 'APPLY legacy_matrix_v2 surcharge curve'));
+  assert.deepEqual(sectionRows(g1, 'Final calculation').body, [['APPLY legacy_matrix_v2 surcharge curve', '']]);
   assert.equal(sectionRows(g1, 'Steps'), null);
   const g1issues = sectionRows(g1, 'Unresolved items');
   assert.ok(g1issues !== null && g1issues.body.length >= 1);
@@ -612,17 +617,19 @@ test('excel: cover indexes tables and routines with hyperlinks to detail sheets'
   assert.equal(links.size, 4);
 });
 
-test('excel: routine steps heading and headers are bold, contents are not', () => {
+test('excel: routine titles, section headings, and column headers are styled, data is not', () => {
   const job = normalizeJob(
     createJob({
       document: createDocument({ filename: 'g.pdf', pageCount: 1 }),
+      tables: [{ name: 'Base', sourcePages: [1], evidenceText: 'ev', headers: ['K', 'V'], rows: [['a', '1']] }],
       routines: [
         {
           name: 'Calc', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'ev',
           steps: ['Step 1: Do first thing', 'Step 2: Do second thing'],
           conditions: ['IF x THEN y'],
+          dependsOn: ['Base'],
         },
-        { name: 'Plain', kind: 'formula', sourcePages: [1], evidenceText: 'ev', expressionText: 'a = 1' },
+        { name: 'Plain', kind: 'formula', sourcePages: [1], evidenceText: 'ev', expressionText: 'a = b * 2', dependsOn: ['Base'] },
       ],
     })
   );
@@ -630,36 +637,52 @@ test('excel: routine steps heading and headers are bold, contents are not', () =
   const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
   const workbook = zip.get('xl/workbook.xml');
   const strings = zip.get('xl/sharedStrings.xml');
-  const calcXml = sheetXmlByName(zip, workbook, 'Calc');
-  const values = sheetRowsAsValues(calcXml, strings);
-  const rowNumOf = (label) => values.findIndex((row) => row.length === 1 && row[0] === label) + 1;
-  // Steps heading and column headers are bold; step data is untouched.
-  const stepsLabel = rowNumOf('Steps');
-  assert.deepEqual(rowCellStyles(calcXml, stepsLabel), ['1']);
-  const headerStyles = rowCellStyles(calcXml, stepsLabel + 1);
-  assert.ok(headerStyles.length > 0 && headerStyles.every((s) => s === '1'));
-  const steps = sectionRows(values, 'Steps');
-  assert.deepEqual(steps.body.map((row) => row[1]), ['Step 1: Do first thing', 'Step 2: Do second thing']);
-  steps.body.forEach((_, i) => {
-    assert.ok(rowCellStyles(calcXml, stepsLabel + 2 + i).every((s) => s === null));
-  });
-  // Overview title stays bold; other sections stay unstyled.
-  assert.deepEqual(rowCellStyles(calcXml, 1), ['1']);
-  assert.ok(rowCellStyles(calcXml, rowNumOf('Conditions')).every((s) => s === null));
-  const evidence = blockRows(values, 'Source evidence');
-  const evidenceLabel = values.findIndex((row) => row.length === 1 && row[0] === 'Source evidence') + 1;
-  assert.ok(rowCellStyles(calcXml, evidenceLabel).every((s) => s === null));
-  evidence.forEach((_, i) => {
-    assert.ok(rowCellStyles(calcXml, evidenceLabel + 1 + i).every((s) => s === null));
-  });
-  // A routine without steps keeps only its title row bold.
-  const plainXml = sheetXmlByName(zip, workbook, 'Plain');
-  const plainValues = sheetRowsAsValues(plainXml, strings);
-  plainValues.forEach((_, i) => {
-    const styles = rowCellStyles(plainXml, i + 1);
-    if (i === 0) assert.deepEqual(styles, ['1']);
-    else assert.ok(styles.every((s) => s === null));
-  });
+  // Title font is bold and slightly larger; section headings share one subtle fill.
+  const styles = zip.get('xl/styles.xml');
+  assert.ok(styles.includes('<font><sz val="14"/><b/><name val="Calibri"/></font>'), 'title font must be bold and larger');
+  assert.ok(styles.includes('FFD9E1F2'), 'section headings must share one subtle fill');
+  assert.ok(styles.includes('<xf numFmtId="0" fontId="3" fillId="0"'), 'title style must use the larger bold font');
+  assert.ok(styles.includes('<xf numFmtId="0" fontId="1" fillId="1"'), 'section heading style must be bold with fill');
+
+  const assertRoutineFormatting = (sheetName, expectedSections) => {
+    const sheetXml = sheetXmlByName(zip, workbook, sheetName);
+    const values = sheetRowsAsValues(sheetXml, strings);
+    assert.deepEqual(rowCellStyles(sheetXml, 1), ['3']); // routine title: bold + larger
+    for (const label of expectedSections) {
+      const idx = values.findIndex((row) => row.length === 1 && row[0] === label);
+      assert.ok(idx >= 0, `${sheetName} missing section: ${label}`);
+      assert.deepEqual(rowCellStyles(sheetXml, idx + 1), ['4'], `${sheetName} heading must use section style: ${label}`);
+      if (label === 'Source evidence') {
+        const body = blockRows(values, label);
+        body.forEach((_, i) => {
+          assert.ok(rowCellStyles(sheetXml, idx + 2 + i).every((s) => s === null), `${sheetName} evidence data must stay normal`);
+        });
+        continue;
+      }
+      const section = sectionRows(values, label);
+      assert.ok(section !== null, `${sheetName} missing table: ${label}`);
+      assert.ok(rowCellStyles(sheetXml, idx + 2).length > 0);
+      assert.ok(rowCellStyles(sheetXml, idx + 2).every((s) => s === '1'), `${sheetName} column headers must be bold: ${label}`);
+      section.body.forEach((_, i) => {
+        assert.ok(rowCellStyles(sheetXml, idx + 3 + i).every((s) => s === null), `${sheetName} data must stay normal: ${label}`);
+      });
+    }
+    return values;
+  };
+
+  // Step-based routine: every present section is styled; data stays normal.
+  const calcValues = assertRoutineFormatting('Calc', ['Steps', 'Final calculation', 'Conditions', 'Dependencies', 'Source evidence']);
+  assert.deepEqual(sectionRows(calcValues, 'Steps').header, ['Step #', 'Instruction', 'Op', 'Operand', 'Line Comment']);
+  assert.deepEqual(sectionRows(calcValues, 'Steps').body.map((row) => row[1]), ['Step 1: Do first thing', 'Step 2: Do second thing']);
+  // No empty sections are added for visual consistency.
+  assert.equal(sectionRows(calcValues, 'Inputs'), null);
+  assert.equal(sectionRows(calcValues, 'Unresolved items'), null);
+
+  // Formula-only routine: same title/heading/header styling, no Steps section.
+  const plainValues = assertRoutineFormatting('Plain', ['Inputs', 'Final calculation', 'Dependencies', 'Source evidence']);
+  assert.deepEqual(sectionRows(plainValues, 'Inputs').header, ['Input', 'Source', 'Lookup keys']);
+  assert.deepEqual(sectionRows(plainValues, 'Final calculation').header, ['Calculation', 'Output']);
+  assert.equal(sectionRows(plainValues, 'Steps'), null);
 });
 
 test('excel: summaries link each name to its detail sheet', () => {
@@ -687,4 +710,253 @@ test('excel: summaries link each name to its detail sheet', () => {
   const routineValues = sheetRowsAsValues(routineXml, strings);
   assert.equal(routineValues[1][1], 'First Routine');
   assert.equal(routineValues[2][1], 'Second Routine');
+});
+
+test('excel: input sources map variables to tables and routines without guessing', () => {
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'g.pdf', pageCount: 3 }),
+      tables: [
+        { name: 'Table 1 - Base Rate by Driver Class', sourcePages: [1], evidenceText: 'ev', headers: ['Driver Class', 'Base Rate'], rows: [['Preferred', '480']] },
+        { name: 'Table 2 - Territory Factor', sourcePages: [2], evidenceText: 'ev', headers: ['Territory', 'Factor'], rows: [['T01', '1.35']] },
+      ],
+      routines: [
+        {
+          name: 'B1 - Base premium formula', kind: 'formula', sourcePages: [1], evidenceText: 'ev',
+          expressionText: 'base_premium = base_rate * territory_factor',
+          dependsOn: ['Table 1 - Base Rate by Driver Class', 'Table 2 - Territory Factor'],
+        },
+        {
+          name: 'T1 - Territory eligibility condition', kind: 'condition', sourcePages: [2], evidenceText: 'ev',
+          conditions: ['IF territory IN (T01) THEN apply Table 2 factor'],
+          dependsOn: ['Table 2 - Territory Factor'],
+        },
+        {
+          name: 'F1 - Final premium calculation', kind: 'calculation_steps', sourcePages: [3], evidenceText: 'ev',
+          expressionText: 'final_premium = base_premium + policy_fee',
+          steps: [
+            'Look up base_rate from Table 1 using driver class.',
+            'Look up territory_factor from Table 2 using territory.',
+            'final_premium = base_premium + policy_fee, where policy_fee = 25.',
+            'Round final_premium to the nearest dollar.',
+          ],
+          dependsOn: ['B1 - Base premium formula', 'T1 - Territory eligibility condition'],
+        },
+      ],
+    })
+  );
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const routineSheets = routineSheetNames(job.routines, tableSheetNames(job.tables));
+  const byName = (name) => {
+    const idx = job.routines.findIndex((r) => r.name === name);
+    return sheetRowsAsValues(sheetXmlByName(zip, workbook, routineSheets[idx]), strings);
+  };
+
+  // B1: each input maps to its source table; tables alone are not enough.
+  const b1 = byName('B1 - Base premium formula');
+  const b1inputs = sectionRows(b1, 'Inputs');
+  assert.deepEqual(b1inputs.header, ['Input', 'Source', 'Lookup keys']);
+  assert.deepEqual(b1inputs.body, [
+    ['base_rate', 'Table 1 - Base Rate by Driver Class', ''],
+    ['territory_factor', 'Table 2 - Territory Factor', ''],
+  ]);
+  const b1deps = sectionRows(b1, 'Dependencies');
+  assert.deepEqual(b1deps.header, ['Target', 'Type', 'Explicit/Inferred', 'Variable / Keys']);
+  assert.deepEqual(b1deps.body, [
+    ['Table 1 - Base Rate by Driver Class', 'table', 'explicit', 'base_rate'],
+    ['Table 2 - Territory Factor', 'table', 'explicit', 'territory_factor'],
+  ]);
+
+  // F1: routine input traces to its producing routine; undefined input is
+  // marked unresolved rather than guessed.
+  const f1 = byName('F1 - Final premium calculation');
+  const f1inputs = sectionRows(f1, 'Inputs');
+  assert.deepEqual(f1inputs.body, [
+    ['base_premium', 'B1 - Base premium formula', ''],
+    ['policy_fee', 'unresolved — verify', ''],
+  ]);
+  // Dependencies stay consistent with Steps: explicit routine links plus the
+  // tables retrieved by the lookup steps, each with its variable and keys.
+  const f1deps = sectionRows(f1, 'Dependencies');
+  assert.deepEqual(f1deps.body, [
+    ['B1 - Base premium formula', 'routine', 'explicit', 'base_premium'],
+    ['T1 - Territory eligibility condition', 'routine', 'explicit', ''],
+    ['Table 1 - Base Rate by Driver Class', 'table', 'inferred', 'base_rate (keys: driver class)'],
+    ['Table 2 - Territory Factor', 'table', 'inferred', 'territory_factor (keys: territory)'],
+  ]);
+  const f1steps = sectionRows(f1, 'Steps');
+  assert.deepEqual(f1steps.body[0][4], 'lookup Table 1 - Base Rate by Driver Class → base_rate');
+  assert.deepEqual(f1steps.body[2][4], 'uses base_premium from B1 - Base premium formula');
+
+  // T1 has no inputs, so no mapping section is shown.
+  const t1 = byName('T1 - Territory eligibility condition');
+  assert.equal(sectionRows(t1, 'Inputs'), null);
+});
+
+test('excel: steps show how table values feed later calculations', () => {
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'g.pdf', pageCount: 2 }),
+      tables: [{ name: 'Lookup Table', sourcePages: [1], evidenceText: 'ev', headers: ['Key', 'Value'], rows: [['k1', '1']] }],
+      routines: [{
+        name: 'Calc', kind: 'calculation_steps', sourcePages: [2], evidenceText: 'ev',
+        inputs: ['factor'],
+        outputs: ['y'],
+        steps: [
+          { sequence: 1, instruction: 'Look up x', operation: 'lookup', inputs: ['my_key'], output: 'x', depends_on: ['Lookup Table'] },
+          { sequence: 2, instruction: 'Compute y', operation: 'expression', expression: 'y = x * 2', inputs: ['x', 'factor'], output: 'y' },
+        ],
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Calc'), strings);
+  const steps = sectionRows(values, 'Steps');
+  assert.deepEqual(steps.header, ['Step #', 'Instruction', 'Op', 'Operand', 'Line Comment']);
+  assert.deepEqual(steps.body[0], ['1', 'Look up x', 'lookup', 'my_key', 'lookup Lookup Table → x']);
+  assert.deepEqual(steps.body[1], ['2', 'Compute y', 'expression', 'y = x * 2', 'uses x from step 1 (Lookup Table)']);
+  // The inferred table link matches the lookup step; the external factor
+  // without evidence is flagged rather than assigned a guessed source.
+  const deps = sectionRows(values, 'Dependencies');
+  assert.deepEqual(deps.body, [['Lookup Table', 'table', 'inferred', 'x (keys: my_key)']]);
+  const inputs = sectionRows(values, 'Inputs');
+  assert.deepEqual(inputs.body, [['factor', 'unresolved — verify', '']]);
+});
+
+test('excel: dependencies identify the producing routine and output variable', () => {
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'g.pdf', pageCount: 2 }),
+      tables: [{ name: 'Factors', sourcePages: [1], evidenceText: 'ev', headers: ['K'], rows: [['a']] }],
+      routines: [
+        { name: 'Upstream', kind: 'formula', sourcePages: [1], evidenceText: 'ev', expressionText: 'shared = base + 1' },
+        {
+          name: 'Downstream', kind: 'calculation_steps', sourcePages: [2], evidenceText: 'ev',
+          inputs: ['fee'],
+          steps: [
+            { sequence: 1, instruction: 'Compute total', operation: 'expression', expression: 'total = shared + fee', inputs: ['shared', 'fee'], output: 'total' },
+            { sequence: 2, instruction: 'Look up rate', operation: 'lookup', inputs: ['K'], output: 'rate', depends_on: ['Table 9'] },
+          ],
+        },
+      ],
+    })
+  );
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Downstream'), strings);
+  const steps = sectionRows(values, 'Steps');
+  assert.deepEqual(steps.body[0][4], 'uses shared from Upstream');
+  assert.deepEqual(steps.body[1][4], 'lookup "Table 9" → rate; table unresolved — verify');
+  // Dependencies mirror the same links: the producing routine with its
+  // output variable, plus the attempted table lookup with keys.
+  const deps = sectionRows(values, 'Dependencies');
+  assert.deepEqual(deps.header, ['Target', 'Type', 'Explicit/Inferred', 'Variable / Keys']);
+  assert.deepEqual(deps.body, [
+    ['Upstream', 'routine', 'inferred', 'shared'],
+    ['Table 9', '', 'inferred', 'rate (keys: K)'],
+  ]);
+  const inputs = sectionRows(values, 'Inputs');
+  assert.deepEqual(inputs.body, [['fee', 'unresolved — verify', '']]);
+  // A primary input with no evidence of any source stays a parameter.
+  const up = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Upstream'), strings);
+  assert.deepEqual(sectionRows(up, 'Inputs').body, [['base', 'input parameter', '']]);
+});
+
+test('excel: routine sheet follows rating execution flow (Collision_PC_RR)', () => {
+  // Models the Collision_PC_RR rate routine from the reference ratebook:
+  // lookup steps first, intermediate assignments and a chained multiply,
+  // then the terminal assignment plus rounding. Reference ops map to model
+  // vocabulary ('<--' to lookup/assignment, 'R' to rounding); the chained
+  // multiply keeps the source '*' op verbatim, and the rounding operand '1'
+  // is carried through without interpreting its precision meaning.
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'ratebook.pdf', pageCount: 1 }),
+      tables: [
+        {
+          name: 'Collision Driver Vehicle Factor', sourcePages: [1], evidenceText: 'factor schedule ($)',
+          headers: ['Driver Age', 'Deductible', 'Vehicle Age', 'Factor'], rows: [['25', '500', '5', '1.20']],
+        },
+        {
+          name: 'Base Rate', sourcePages: [1], evidenceText: 'base rates ($)',
+          headers: ['Coverage Name', 'Rate'], rows: [['Collision', '70.00']],
+        },
+      ],
+      routines: [{
+        name: 'Collision_PC_RR', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'Collision coverage rating steps 1-8.',
+        inputs: ['AssignedDriver.DriverAge', 'Coverage.Deductible', 'Vehicle.VehicleAge', 'Coverage.Name'],
+        outputs: ['TermAmount'],
+        steps: [
+          { sequence: 1, instruction: 'CollisionDriverVehicleFactor', operation: 'lookup', inputs: ['AssignedDriver.DriverAge', 'Coverage.Deductible', 'Vehicle.VehicleAge'], output: 'CollisionDriverVehicleFactor', depends_on: ['Collision Driver Vehicle Factor'] },
+          { sequence: 2, instruction: 'BaseRateFactor', operation: 'lookup', inputs: ['Coverage.Name'], output: 'BaseRateFactor', depends_on: ['Base Rate'] },
+          { sequence: 3, instruction: 'Basis', operation: 'assignment', expression: 'Basis = 1', output: 'Basis' },
+          { sequence: 4, instruction: 'BaseRate', operation: 'assignment', expression: 'BaseRate = BaseRateFactor', inputs: ['BaseRateFactor'], output: 'BaseRate' },
+          { sequence: 5, instruction: 'AdjustedRate', operation: 'assignment', expression: 'AdjustedRate = BaseRate', inputs: ['BaseRate'], output: 'AdjustedRate' },
+          { sequence: 6, instruction: '', operation: '*', operand: 'CollisionDriverVehicleFactor', inputs: ['CollisionDriverVehicleFactor'] },
+          { sequence: 7, instruction: 'TermAmount', operation: 'assignment', expression: 'TermAmount = AdjustedRate', inputs: ['AdjustedRate'], output: 'TermAmount' },
+          { sequence: 8, instruction: '', operation: 'rounding', operand: '1', inputs: ['TermAmount'], output: 'TermAmount' },
+        ],
+        dependsOn: ['Collision Driver Vehicle Factor', 'Base Rate'],
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Collision_PC_RR'), strings);
+
+  // Flow order: Inputs, then lookups/intermediate steps, then final
+  // calculation; traceability sections follow, not lead.
+  const labelIndex = (label) => values.findIndex((row) => row.length === 1 && row[0] === label);
+  const inputsAt = labelIndex('Inputs');
+  const stepsAt = labelIndex('Steps');
+  const finalAt = labelIndex('Final calculation');
+  assert.ok(inputsAt >= 0 && stepsAt > inputsAt && finalAt > stepsAt, 'expected Inputs, Steps, Final calculation in order');
+  assert.ok(labelIndex('Dependencies') > finalAt);
+  assert.ok(labelIndex('Source evidence') > finalAt);
+  assert.equal(labelIndex('Input sources'), -1);
+  assert.ok(!values.some((row) => row[0] === 'Expression'), 'formula must not lead the sheet');
+
+  // Inputs: required variables with source or origin where supported.
+  const inputs = sectionRows(values, 'Inputs');
+  assert.deepEqual(inputs.header, ['Input', 'Source', 'Lookup keys']);
+  assert.deepEqual(inputs.body, [
+    ['AssignedDriver.DriverAge', 'input parameter', ''],
+    ['Coverage.Deductible', 'input parameter', ''],
+    ['Vehicle.VehicleAge', 'input parameter', ''],
+    ['Coverage.Name', 'input parameter', ''],
+  ]);
+
+  // Steps: lookups with keys and returned variables, then intermediate
+  // calculations in execution order, each traced to its source.
+  const steps = sectionRows(values, 'Steps');
+  assert.deepEqual(steps.header, ['Step #', 'Instruction', 'Op', 'Operand', 'Line Comment']);
+  assert.deepEqual(steps.body.map((row) => row[0]), ['1', '2', '3', '4', '5', '6', '7', '8']);
+  assert.deepEqual(steps.body[0], ['1', 'CollisionDriverVehicleFactor', 'lookup', 'AssignedDriver.DriverAge; Coverage.Deductible; Vehicle.VehicleAge', 'lookup Collision Driver Vehicle Factor → CollisionDriverVehicleFactor']);
+  assert.deepEqual(steps.body[1], ['2', 'BaseRateFactor', 'lookup', 'Coverage.Name', 'lookup Base Rate → BaseRateFactor']);
+  assert.deepEqual(steps.body[5], ['6', '', '*', 'CollisionDriverVehicleFactor', 'uses CollisionDriverVehicleFactor from step 1 (Collision Driver Vehicle Factor)']);
+  assert.deepEqual(steps.body[6], ['7', 'TermAmount', 'assignment', 'TermAmount = AdjustedRate', 'uses AdjustedRate from step 5']);
+  assert.deepEqual(steps.body[7], ['8', '', 'rounding', '1', 'uses TermAmount from step 7']);
+
+  // Final calculation: the terminal computation restated verbatim with its
+  // output. No single expression was stated, so the last step is shown.
+  const final = sectionRows(values, 'Final calculation');
+  assert.deepEqual(final.header, ['Calculation', 'Output']);
+  assert.deepEqual(final.body, [['1', 'TermAmount']]);
+
+  // Dependencies stay consistent with the lookup steps.
+  const deps = sectionRows(values, 'Dependencies');
+  assert.deepEqual(deps.body, [
+    ['Collision Driver Vehicle Factor', 'table', 'explicit', 'CollisionDriverVehicleFactor (keys: AssignedDriver.DriverAge; Coverage.Deductible; Vehicle.VehicleAge)'],
+    ['Base Rate', 'table', 'explicit', 'BaseRateFactor (keys: Coverage.Name)'],
+  ]);
 });
