@@ -27,6 +27,7 @@
     --info-ink: #144a7c;
   }
   * { box-sizing: border-box; }
+  html, body { height: 100%; }
   body {
     margin: 0;
     color: var(--ink);
@@ -34,10 +35,11 @@
     font-size: 0.92rem;
     line-height: 1.5;
     background: var(--white);
+    overflow: hidden;
   }
-  .app { display: flex; min-height: 100vh; }
+  .app { display: flex; height: 100vh; overflow: hidden; }
 
-  /* ---- Sidebar ---- */
+  /* ---- Sidebar (sticky, never scrolls away) ---- */
   .sidebar {
     width: 264px;
     flex-shrink: 0;
@@ -47,6 +49,10 @@
     flex-direction: column;
     padding: 1.25rem 1rem;
     gap: 1.25rem;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
   }
   .brand { display: flex; align-items: center; gap: 0.65rem; }
   .brand-mark {
@@ -100,8 +106,10 @@
   .side-job { color: #9db5ac; border-top: 1px solid rgba(255, 255, 255, 0.14); padding-top: 0.6rem; }
   .side-job:empty { display: none; }
 
-  /* ---- Workspace ---- */
-  .workspace { flex: 1; min-width: 0; padding: 1.5rem 2rem 4rem; max-width: 1080px; }
+  /* ---- Main column: scrollable workspace + fixed bottom bar ---- */
+  .main-col { flex: 1; min-width: 0; display: flex; flex-direction: column; height: 100vh; min-height: 0; }
+  .workspace { flex: 1; min-height: 0; overflow-y: auto; padding: 1.5rem 2rem 2rem; scroll-padding-bottom: 1rem; }
+  .workspace-inner { max-width: 1080px; margin: 0 auto; padding-bottom: 1rem; }
   .topbar h1 { font-size: 1.35rem; margin: 0; font-weight: 700; letter-spacing: -0.01em; }
   .topbar .sub { color: var(--muted); margin: 0.2rem 0 0; font-size: 0.88rem; }
   section { margin-top: 1.5rem; }
@@ -122,7 +130,7 @@
     border-radius: 6px;
     padding: 0.1rem 0.45rem;
   }
-  section > h2 .hint { font-size: 0.78rem; font-weight: 400; color: var(--muted); margin-left: auto; }
+  section > h2 .hint { font-size: 0.78rem; font-weight: 400; color: var(--muted); margin-left: auto; text-align: right; }
 
   .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 1rem 1.1rem; }
   .row { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }
@@ -211,7 +219,98 @@
     white-space: nowrap;
   }
 
-  /* ---- Requirement cards ---- */
+  /* ---- Browse tabs + toolbar ---- */
+  .tabs { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.75rem; }
+  .tabs button[aria-selected="true"] { background: var(--forest-800); border-color: var(--forest-800); color: #fff; }
+  .tabs .count {
+    display: inline-block;
+    min-width: 1.6rem;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+    font-size: 0.78rem;
+    font-weight: 700;
+    border-radius: 999px;
+    padding: 0.05rem 0.45rem;
+    margin-left: 0.35rem;
+    background: rgba(0, 0, 0, 0.08);
+  }
+  .tabs button[aria-selected="true"] .count { background: rgba(255, 255, 255, 0.22); }
+  .toolbar { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.8rem; }
+  .toolbar input[type="search"] {
+    flex: 1;
+    min-width: 12rem;
+    font: inherit;
+    font-size: 0.86rem;
+    border: 1px solid #c3d0c9;
+    border-radius: 7px;
+    padding: 0.45rem 0.6rem;
+    background: var(--white);
+    color: var(--ink);
+  }
+  .toolbar select {
+    font: inherit;
+    font-size: 0.86rem;
+    border: 1px solid #c3d0c9;
+    border-radius: 7px;
+    padding: 0.45rem 0.6rem;
+    background: var(--white);
+    color: var(--ink);
+  }
+  .toolbar .meta { font-size: 0.82rem; color: var(--muted); margin-left: auto; font-variant-numeric: tabular-nums; }
+  .toolbar[hidden] { display: none; }
+
+  /* ---- Compact item cards (list) ---- */
+  .item-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr)); gap: 0.6rem; }
+  .item-card {
+    text-align: left;
+    background: var(--white);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 0.6rem 0.7rem;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+    font: inherit;
+  }
+  .item-card:hover { border-color: #9fb3aa; }
+  .item-card .row1 { display: flex; gap: 0.5rem; align-items: center; min-width: 0; }
+  .item-card .nm {
+    font-weight: 650;
+    font-size: 0.88rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    min-width: 0;
+  }
+  .item-card .meta-row { display: flex; gap: 0.4rem; flex-wrap: wrap; align-items: center; }
+
+  /* ---- Detail view ---- */
+  .detail-nav { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.8rem; }
+  .detail-pos { margin-left: auto; color: var(--muted); font-size: 0.82rem; font-variant-numeric: tabular-nums; }
+  .item-issues { margin-top: 0.8rem; }
+  .item-issues h3 { font-size: 0.86rem; margin: 0 0 0.2rem; }
+  .dep-list { margin: 0.4rem 0 0; padding-left: 1.1rem; font-size: 0.84rem; color: #33403c; }
+  .dep-list li { margin-top: 0.2rem; }
+
+  /* ---- Sticky bottom bar (flex footer: always visible, never overlaps) ---- */
+  .bottombar {
+    flex-shrink: 0;
+    border-top: 1px solid var(--line);
+    background: var(--white);
+    padding: 0.6rem 1rem;
+    display: flex;
+    gap: 0.6rem;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.05);
+  }
+  .bottombar[hidden] { display: none; }
+  .pager-info { font-size: 0.84rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  /* ---- Requirement cards (detail editor) ---- */
   .card {
     background: var(--white);
     border: 1px solid var(--line);
@@ -219,6 +318,7 @@
     padding: 0.9rem 1rem;
     margin-top: 0.8rem;
   }
+  .card:first-child { margin-top: 0; }
   .card-head { display: flex; align-items: center; gap: 0.6rem; }
   .title-input {
     flex: 1;
@@ -306,12 +406,18 @@
   .actions { display: flex; gap: 0.7rem; margin-top: 0.9rem; flex-wrap: wrap; }
 
   @media (max-width: 900px) {
-    .app { flex-direction: column; }
-    .sidebar { width: auto; flex-direction: column; }
+    body { overflow: auto; }
+    .app { flex-direction: column; height: auto; overflow: visible; }
+    .sidebar { width: auto; height: auto; position: static; overflow: visible; }
     .steps { flex-direction: row; overflow-x: auto; }
     .step small { display: none; }
-    .workspace { padding: 1rem 1rem 3rem; }
+    .main-col { height: auto; overflow: visible; }
+    .workspace { overflow: visible; padding: 1rem 1rem 1rem; }
+    .workspace-inner { padding-bottom: 5rem; }
     .field-grid { grid-template-columns: 1fr; }
+    .item-grid { grid-template-columns: 1fr; }
+    .toolbar input[type="search"] { min-width: 0; }
+    .bottombar { position: sticky; bottom: 0; z-index: 10; }
   }
 </style>
 </head>
@@ -330,8 +436,8 @@
       <div class="steps">
         <a class="step" data-step="1" href="#upload"><span class="num"><span>1</span></span><span><strong>Upload</strong><small>Guideline PDF</small></span></a>
         <a class="step" data-step="2" href="#jobSection"><span class="num"><span>2</span></span><span><strong>Extract</strong><small>Tables &amp; routines</small></span></a>
-        <a class="step" data-step="3" href="#tablesSection"><span class="num"><span>3</span></span><span><strong>Tables</strong><small>Rating tables</small></span></a>
-        <a class="step" data-step="4" href="#routinesSection"><span class="num"><span>4</span></span><span><strong>Routines</strong><small>Formulas &amp; steps</small></span></a>
+        <a class="step" data-step="3" href="#browseSection"><span class="num"><span>3</span></span><span><strong>Tables</strong><small>Rating tables</small></span></a>
+        <a class="step" data-step="4" href="#browseSection"><span class="num"><span>4</span></span><span><strong>Routines</strong><small>Formulas &amp; steps</small></span></a>
         <a class="step" data-step="5" href="#reviewSection"><span class="num"><span>5</span></span><span><strong>Validate &amp; export</strong><small>Issues &amp; Excel</small></span></a>
       </div>
     </nav>
@@ -341,52 +447,80 @@
     </div>
   </aside>
 
-  <main class="workspace">
-    <header class="topbar">
-      <h1>UnderwriteIQ</h1>
-      <p class="sub">Turn underwriting guideline PDFs into traceable rating requirements — review tables &amp; routines against their source evidence, then export to Excel.</p>
-    </header>
+  <div class="main-col">
+    <main class="workspace" id="workspace">
+      <div class="workspace-inner">
+        <header class="topbar">
+          <h1>UnderwriteIQ</h1>
+          <p class="sub">Turn underwriting guideline PDFs into traceable rating requirements — review tables &amp; routines against their source evidence, then export to Excel.</p>
+        </header>
 
-    <section id="upload">
-      <h2><span class="step-no">1</span> Upload <span class="hint">One guideline PDF per run</span></h2>
-      <div class="panel">
-        <div class="row">
-          <input type="file" id="file" accept="application/pdf">
-          <button id="uploadBtn" class="primary">Extract from PDF</button>
-          <button id="sampleBtn">Load sample guideline (offline)</button>
-        </div>
-        <div id="status" role="status"></div>
+        <section id="upload">
+          <h2><span class="step-no">1</span> Upload <span class="hint">One guideline PDF per run</span></h2>
+          <div class="panel">
+            <div class="row">
+              <input type="file" id="file" accept="application/pdf">
+              <button id="uploadBtn" class="primary">Extract from PDF</button>
+              <button id="sampleBtn">Load sample guideline (offline)</button>
+            </div>
+            <div id="status" role="status"></div>
+          </div>
+        </section>
+
+        <section id="jobSection" hidden>
+          <h2><span class="step-no">2</span> Extraction <span class="hint">Source document &amp; totals</span></h2>
+          <div id="jobSummary"></div>
+        </section>
+
+        <section id="browseSection" hidden>
+          <h2><span class="step-no">3–4</span> Browse <span class="hint">Select an item to review &amp; correct it before export</span></h2>
+          <div class="tabs" role="tablist" aria-label="Tables and routines">
+            <button type="button" id="tabTables" role="tab" aria-selected="true">Tables<span class="count" id="tablesCount">0</span></button>
+            <button type="button" id="tabRoutines" role="tab" aria-selected="false">Routines<span class="count" id="routinesCount">0</span></button>
+          </div>
+          <div class="toolbar" id="toolbar">
+            <input type="search" id="searchInput" placeholder="Search by ID or name…" aria-label="Search by ID or name">
+            <select id="filterSelect" aria-label="Filter items">
+              <option value="all">All items</option>
+              <option value="warnings">With warnings</option>
+              <option value="unresolved">Unresolved</option>
+            </select>
+            <span class="meta" id="resultMeta"></span>
+          </div>
+          <div id="browser"></div>
+        </section>
+
+        <section id="reviewSection" hidden>
+          <h2><span class="step-no">5</span> Review &amp; export <span class="hint">Deterministic validation — no model calls</span></h2>
+          <div id="issues"></div>
+          <div class="actions">
+            <button id="saveBtn" class="primary">Save edits &amp; re-validate</button>
+            <button id="exportBtn">Export Excel</button>
+          </div>
+        </section>
       </div>
-    </section>
-
-    <section id="jobSection" hidden>
-      <h2><span class="step-no">2</span> Extraction <span class="hint">Source document &amp; totals</span></h2>
-      <div id="jobSummary"></div>
-    </section>
-
-    <section id="tablesSection" hidden>
-      <h2><span class="step-no">3</span> Rating tables <span class="hint">Click any cell to correct it before export</span></h2>
-      <div id="tables"></div>
-    </section>
-
-    <section id="routinesSection" hidden>
-      <h2><span class="step-no">4</span> Rating routines <span class="hint">Formulas, conditions, calculation steps</span></h2>
-      <div id="routines"></div>
-    </section>
-
-    <section id="reviewSection" hidden>
-      <h2><span class="step-no">5</span> Review &amp; export <span class="hint">Deterministic validation — no model calls</span></h2>
-      <div id="issues"></div>
-      <div class="actions">
-        <button id="saveBtn" class="primary">Save edits &amp; re-validate</button>
-        <button id="exportBtn">Export Excel</button>
-      </div>
-    </section>
-  </main>
+    </main>
+    <footer class="bottombar" id="bottomBar" hidden></footer>
+  </div>
 </div>
 
 <script>
 let state = null; // { id, job, source }
+let draft = null; // { tables, routines }: unsaved reviewer edits across all items
+let detailCtx = null; // { kind, index } for the visible detail editor, if any
+const PAGE_SIZE = 20;
+let ui = freshUi();
+
+function freshUi() {
+  return {
+    tab: 'tables', // 'tables' | 'routines'
+    mode: 'list', // 'list' | 'detail'
+    selectedId: null,
+    page: { tables: 1, routines: 1 },
+    search: { tables: '', routines: '' },
+    filter: { tables: 'all', routines: 'all' },
+  };
+}
 
 const $ = (id) => document.getElementById(id);
 function setStatus(msg, isError = false) {
@@ -406,51 +540,144 @@ function disp(v) {
   if (typeof v === 'object') return String(v.label ?? v.original_label ?? v.instruction ?? v.text ?? v.target ?? v.name ?? v.value ?? '');
   return String(v);
 }
+function scrollTop() {
+  const w = $('workspace');
+  if (w) w.scrollTop = 0;
+  window.scrollTo(0, 0);
+}
+function singular(kind) { return kind === 'tables' ? 'table' : 'routine'; }
+function kindLabel(kind) { return kind === 'tables' ? 'Tables' : 'Routines'; }
 
-async function init() {
-  try {
-    const res = await fetch('/api/health');
-    const health = await res.json();
-    $('modelBadge').innerHTML = health.modelEnabled
-      ? '<span class="pill live">Meta model: enabled</span>'
-      : '<span class="pill recorded">Meta model: disabled (offline demo)</span>';
-  } catch { $('modelBadge').textContent = ''; }
-  updateSteps();
+function issuesFor(kind, id) {
+  if (!state) return [];
+  const t = singular(kind);
+  return state.job.issues.filter((i) => i.target_type === t && String(i.target_id) === String(id));
 }
 
-function updateSteps() {
-  // Presentational only: extraction done once a job exists; review/export is current.
-  document.querySelectorAll('.step').forEach((el) => {
-    const n = Number(el.dataset.step);
-    el.classList.toggle('done', !!state && n <= 4);
-    el.classList.toggle('active', (!state && n === 1) || (!!state && n === 5));
+function knownNamesSet() {
+  const set = new Set();
+  if (!draft) return set;
+  for (const item of [...draft.tables, ...draft.routines]) {
+    if (item.id) set.add(String(item.id).toLowerCase());
+    if (item.name && String(item.name).trim()) set.add(String(item.name).trim().toLowerCase());
+  }
+  return set;
+}
+
+// Unresolved = a dependency with no matching extracted table/routine, or a
+// validation issue already flagging an unmatched/unresolved reference.
+// Uses existing data only (depends_on values + validator messages).
+function isUnresolved(kind, item, issues) {
+  const list = issues ?? issuesFor(kind, item.id);
+  if (list.some((i) => /unresolved|matches no|no defined|continuation/i.test(i.message || ''))) return true;
+  if (kind === 'routines') {
+    const known = knownNamesSet();
+    for (const d of item.depends_on || []) {
+      const s = String(d ?? '').trim();
+      if (s && !known.has(s.toLowerCase())) return true;
+    }
+  }
+  return false;
+}
+
+function filtered(kind) {
+  const items = draft ? draft[kind] : [];
+  const q = (ui.search[kind] || '').trim().toLowerCase();
+  const f = ui.filter[kind] || 'all';
+  const out = [];
+  items.forEach((item, index) => {
+    if (q) {
+      const hay = `${item.id || ''} ${item.name || ''}`.toLowerCase();
+      if (!hay.includes(q)) return;
+    }
+    if (f === 'warnings' && issuesFor(kind, item.id).length === 0) return;
+    if (f === 'unresolved' && !isUnresolved(kind, item)) return;
+    out.push({ item, index });
   });
+  return out;
 }
 
-function render() {
-  if (!state) return;
-  const { id, job, source } = state;
-  $('jobSection').hidden = false;
-  $('tablesSection').hidden = false;
-  $('routinesSection').hidden = false;
-  $('reviewSection').hidden = false;
-  updateSteps();
-  const errors = job.issues.filter((i) => i.severity === 'error').length;
-  const warnings = job.issues.filter((i) => i.severity === 'warning').length;
-  $('jobSummary').innerHTML =
-    `<div class="facts">` +
-    `<div class="fact"><div class="k">Source</div><div class="v"><span class="pill ${esc(source)}">${esc(source)}</span></div></div>` +
-    `<div class="fact"><div class="k">Document</div><div class="v">${esc(job.document.filename)}</div></div>` +
-    `<div class="fact"><div class="k">Pages</div><div class="v">${esc(job.document.page_count)}</div></div>` +
-    `<div class="fact"><div class="k">Tables</div><div class="v">${job.tables.length}</div></div>` +
-    `<div class="fact"><div class="k">Routines</div><div class="v">${job.routines.length}</div></div>` +
-    `<div class="fact"><div class="k">Errors</div><div class="v">${errors}</div></div>` +
-    `<div class="fact"><div class="k">Warnings</div><div class="v">${warnings}</div></div>` +
-    `</div>`;
-  $('sideJob').textContent = `${job.document.filename} · ${job.tables.length} tables · ${job.routines.length} routines · job ${id.slice(0, 8)}`;
+function pageCount(kind) {
+  return Math.max(1, Math.ceil(filtered(kind).length / PAGE_SIZE));
+}
 
-  $('tables').innerHTML = job.tables.map((t, ti) => `
-    <div class="card" data-table="${ti}">
+function clampPage(kind) {
+  const pages = pageCount(kind);
+  if (!Number.isInteger(ui.page[kind]) || ui.page[kind] < 1) ui.page[kind] = 1;
+  if (ui.page[kind] > pages) ui.page[kind] = pages;
+}
+
+// Status display uses existing data only: kind, review_status, and the
+// deterministic validation issues already computed for the job.
+function statusPills(kind, item) {
+  const parts = [];
+  if (kind === 'routines' && item.kind) parts.push(`<span class="pill neutral">${esc(item.kind)}</span>`);
+  if (item.review_status && String(item.review_status).trim()) {
+    parts.push(`<span class="pill info">${esc(item.review_status)}</span>`);
+  }
+  const iss = issuesFor(kind, item.id);
+  const e = iss.filter((i) => i.severity === 'error').length;
+  const w = iss.filter((i) => i.severity === 'warning').length;
+  if (e) parts.push(`<span class="pill error">${e} error${e > 1 ? 's' : ''}</span>`);
+  if (w) parts.push(`<span class="pill warning">${w} warning${w > 1 ? 's' : ''}</span>`);
+  return parts.join('');
+}
+
+function cardHtml(kind, item) {
+  const pills = statusPills(kind, item);
+  return `<button type="button" class="item-card" data-kind="${kind}" data-id="${esc(item.id)}">` +
+    `<span class="row1"><span class="id-chip">${esc(item.id)}</span>` +
+    `<span class="nm" title="${esc(item.name || '')}">${esc(item.name || '(untitled)')}</span></span>` +
+    `<span class="meta-row"><span class="page-chip">${esc(pagesLabel(item.source_pages))}</span>${pills}</span>` +
+    `</button>`;
+}
+
+function emptyListHtml(kind) {
+  const total = draft ? draft[kind].length : 0;
+  if (total === 0) return `<p class="empty-note">No ${kind} extracted.</p>`;
+  return `<p class="empty-note">No ${kind} match the current search or filter.</p>` +
+    `<p><button type="button" data-act="clear">Clear search &amp; filters</button></p>`;
+}
+
+function listHtml(kind) {
+  const list = filtered(kind);
+  clampPage(kind);
+  const total = list.length;
+  if (total === 0) {
+    $('resultMeta').textContent = 'No matches';
+    return emptyListHtml(kind);
+  }
+  const start = (ui.page[kind] - 1) * PAGE_SIZE;
+  const slice = list.slice(start, start + PAGE_SIZE);
+  $('resultMeta').textContent = `Showing ${start + 1}–${start + slice.length} of ${total}`;
+  return `<div class="item-grid">` + slice.map(({ item }) => cardHtml(kind, item)).join('') + `</div>`;
+}
+
+const kindLabels = { formula: 'Formula', condition: 'Condition', calculation_steps: 'Calculation steps' };
+const kindOptions = ['formula', 'condition', 'calculation_steps'];
+
+function itemIssuesHtml(kind, item) {
+  const iss = issuesFor(kind, item.id);
+  const rows = iss.map((i) => `
+    <div class="issue ${i.severity}"><span class="pill ${i.severity}">${esc(i.severity)}</span>
+    <span class="msg"><strong>${esc(i.id)}</strong> ${esc(i.message)} <code>[${esc(i.target_type)} ${esc(i.target_id)}]</code></span>
+    <span class="page-chip">${esc(pagesLabel(i.source_pages))}</span></div>`).join('')
+    || '<p class="empty-note">No validation issues for this item.</p>';
+  return `<div class="item-issues"><h3>Validation for ${esc(item.id)} (${iss.length})</h3>${rows}</div>`;
+}
+
+function detailNavHtml(pos, total) {
+  return `<div class="detail-nav">` +
+    `<button type="button" data-act="prev"${pos <= 0 ? ' disabled' : ''}>Previous</button>` +
+    `<button type="button" data-act="back">Back to list</button>` +
+    `<button type="button" data-act="next"${pos >= total - 1 ? ' disabled' : ''}>Next</button>` +
+    (total > 0 ? `<span class="detail-pos">Item ${pos + 1} of ${total}</span>` : '') +
+    `</div>`;
+}
+
+function tableDetailHtml(t, index) {
+  return `
+    <div class="card" id="detailCard" data-table-detail="${index}">
       <div class="card-head">
         <span class="id-chip">${esc(t.id)}</span>
         <input class="title-input" type="text" data-f="name" value="${esc(t.name)}" aria-label="table name">
@@ -469,14 +696,19 @@ function render() {
       </tr></thead><tbody>
         ${(t.rows || []).map((row, ri) => `<tr>${(row || []).map((cell, ci) => `<td><input type="text" data-r="${ri}" data-c="${ci}" value="${esc(disp(cell))}" aria-label="row ${ri + 1} column ${ci + 1}"></td>`).join('')}</tr>`).join('')}
       </tbody></table></div>
-    </div>`).join('') || '<p class="empty-note">No tables extracted.</p>';
+      ${itemIssuesHtml('tables', t)}
+    </div>`;
+}
 
-  const kindLabels = { formula: 'Formula', condition: 'Condition', calculation_steps: 'Calculation steps' };
-  const kindOptions = ['formula', 'condition', 'calculation_steps'];
-  $('routines').innerHTML = job.routines.map((r, ri) => {
-    const kinds = kindOptions.includes(r.kind) ? kindOptions : [...kindOptions, r.kind];
-    return `
-    <div class="card" data-routine="${ri}">
+function routineDetailHtml(r, index) {
+  const kinds = kindOptions.includes(r.kind) ? kindOptions : [...kindOptions, r.kind];
+  const deps = r.depends_on || [];
+  const structured = (r.dependencies || []).filter((d) => d && (d.target || d.source));
+  const structuredHtml = structured.length > 0
+    ? `<ul class="dep-list">${structured.map((d) => `<li>${esc(d.target || d.source || '')}${d.relationship_type ? ` <span class="pill neutral">${esc(d.relationship_type)}</span>` : ''}</li>`).join('')}</ul>`
+    : '';
+  return `
+    <div class="card" id="DetailCard" data-routine-detail="${index}">
       <div class="card-head">
         <span class="id-chip">${esc(r.id)}</span>
         <input class="title-input" type="text" data-f="name" value="${esc(r.name)}" aria-label="routine name">
@@ -498,11 +730,106 @@ function render() {
         <label class="field full">Expression <input class="mono" type="text" data-f="expression_text" value="${esc(r.expression_text || '')}"></label>
         <label class="field">Conditions (one per line) <textarea data-f="conditions">${esc((r.conditions || []).map(disp).join('\n'))}</textarea></label>
         <label class="field">Steps (one per line) <textarea data-f="steps">${esc((r.steps || []).map(disp).join('\n'))}</textarea></label>
-        <label class="field full">Depends on (one per line) <textarea data-f="depends_on" style="min-height:2.2rem;">${esc((r.depends_on || []).map(disp).join('\n'))}</textarea></label>
       </div>
+      <details class="evidence"><summary>Dependencies (${deps.length})</summary>
+        <label class="field">Depends on (one per line)<textarea data-f="depends_on" style="min-height:2.2rem;">${esc(deps.map(disp).join('\n'))}</textarea></label>
+        ${structuredHtml}
+      </details>
+      ${itemIssuesHtml('routines', r)}
     </div>`;
-  }).join('') || '<p class="empty-note">No routines extracted.</p>';
+}
 
+function detailHtml(kind, id) {
+  const list = filtered(kind);
+  const pos = list.findIndex((e) => String(e.item.id) === String(id));
+  if (pos < 0) {
+    detailCtx = null;
+    $('resultMeta').textContent = '';
+    return `<p class="empty-note">This item is hidden by the current search or filter.</p>` +
+      `<div class="detail-nav"><button type="button" data-act="back">Back to list</button></div>`;
+  }
+  const { item, index } = list[pos];
+  detailCtx = { kind, index };
+  $('resultMeta').textContent = `Item ${pos + 1} of ${list.length}`;
+  const editor = kind === 'tables' ? tableDetailHtml(item, index) : routineDetailHtml(item, index);
+  return detailNavHtml(pos, list.length) + editor;
+}
+
+function renderTabs() {
+  $('tablesCount').textContent = draft ? draft.tables.length : 0;
+  $('routinesCount').textContent = draft ? draft.routines.length : 0;
+  $('tabTables').setAttribute('aria-selected', ui.tab === 'tables' ? 'true' : 'false');
+  $('tabRoutines').setAttribute('aria-selected', ui.tab === 'routines' ? 'true' : 'false');
+}
+
+function syncToolbar() {
+  $('toolbar').hidden = ui.mode !== 'list';
+  if ($('searchInput').value !== ui.search[ui.tab]) $('searchInput').value = ui.search[ui.tab];
+  if ($('filterSelect').value !== ui.filter[ui.tab]) $('filterSelect').value = ui.filter[ui.tab];
+}
+
+function renderBrowser() {
+  renderTabs();
+  syncToolbar();
+  $('browser').innerHTML = ui.mode === 'detail' ? detailHtml(ui.tab, ui.selectedId) : listHtml(ui.tab);
+  renderBottomBar();
+}
+
+function renderBottomBar() {
+  const bar = $('bottomBar');
+  if (!state) { bar.hidden = true; bar.innerHTML = ''; return; }
+  bar.hidden = false;
+  if (ui.mode === 'detail') {
+    const list = filtered(ui.tab);
+    const pos = list.findIndex((e) => String(e.item.id) === String(ui.selectedId));
+    if (pos < 0) {
+      bar.innerHTML = `<button type="button" data-act="back">Back to list</button>`;
+      return;
+    }
+    bar.innerHTML =
+      `<button type="button" data-act="prev"${pos <= 0 ? ' disabled' : ''}>Previous</button>` +
+      `<button type="button" data-act="back">Back to list</button>` +
+      `<button type="button" data-act="next"${pos >= list.length - 1 ? ' disabled' : ''}>Next</button>` +
+      `<span class="pager-info">Item ${pos + 1} of ${list.length}</span>`;
+    return;
+  }
+  const total = filtered(ui.tab).length;
+  clampPage(ui.tab);
+  const pages = pageCount(ui.tab);
+  bar.innerHTML =
+    `<button type="button" data-act="pagePrev"${ui.page[ui.tab] <= 1 ? ' disabled' : ''}>Previous page</button>` +
+    `<span class="pager-info">Page ${ui.page[ui.tab]} of ${pages} · ${total} item${total === 1 ? '' : 's'}</span>` +
+    `<button type="button" data-act="pageNext"${ui.page[ui.tab] >= pages ? ' disabled' : ''}>Next page</button>`;
+}
+
+function updateSteps() {
+  document.querySelectorAll('.step').forEach((el) => {
+    const n = Number(el.dataset.step);
+    el.classList.toggle('done', !!state && n <= 2);
+    el.classList.toggle('active', (!state && n === 1) ||
+      (!!state && ((ui.tab === 'tables' && n === 3) || (ui.tab === 'routines' && n === 4))));
+  });
+}
+
+function renderJobSummary() {
+  const { job, source } = state;
+  const errors = job.issues.filter((i) => i.severity === 'error').length;
+  const warnings = job.issues.filter((i) => i.severity === 'warning').length;
+  $('jobSummary').innerHTML =
+    `<div class="facts">` +
+    `<div class="fact"><div class="k">Source</div><div class="v"><span class="pill ${esc(source)}">${esc(source)}</span></div></div>` +
+    `<div class="fact"><div class="k">Document</div><div class="v">${esc(job.document.filename)}</div></div>` +
+    `<div class="fact"><div class="k">Pages</div><div class="v">${esc(job.document.page_count)}</div></div>` +
+    `<div class="fact"><div class="k">Tables</div><div class="v">${job.tables.length}</div></div>` +
+    `<div class="fact"><div class="k">Routines</div><div class="v">${job.routines.length}</div></div>` +
+    `<div class="fact"><div class="k">Errors</div><div class="v">${errors}</div></div>` +
+    `<div class="fact"><div class="k">Warnings</div><div class="v">${warnings}</div></div>` +
+    `</div>`;
+  $('sideJob').textContent = `${job.document.filename} · ${job.tables.length} tables · ${job.routines.length} routines · job ${state.id.slice(0, 8)}`;
+}
+
+function renderIssues() {
+  const job = state.job;
   $('issues').innerHTML = job.issues.map((i) => `
     <div class="issue ${i.severity}"><span class="pill ${i.severity}">${esc(i.severity)}</span>
     <span class="msg"><strong>${esc(i.id)}</strong> ${esc(i.message)} <code>[${esc(i.target_type)} ${esc(i.target_id)}]</code></span>
@@ -510,9 +837,27 @@ function render() {
     || '<p class="empty-note">No validation issues.</p>';
 }
 
-function collectEdits() {
-  const tables = [...document.querySelectorAll('[data-table]')].map((card, ti) => {
-    const orig = state.job.tables[ti];
+function render() {
+  if (!state) return;
+  $('jobSection').hidden = false;
+  $('browseSection').hidden = false;
+  $('reviewSection').hidden = false;
+  updateSteps();
+  renderJobSummary();
+  renderBrowser();
+  renderIssues();
+}
+
+// Copy the visible detail editor back into the draft so edits survive
+// navigation between pages, tabs, and items.
+function syncDetailToDraft() {
+  if (!detailCtx || ui.mode !== 'detail' || !draft) return;
+  const card = $('DetailCard');
+  if (!card) return;
+  const { kind, index } = detailCtx;
+  if (kind === 'tables') {
+    const orig = draft.tables[index];
+    if (!orig) return;
     const headers = [...card.querySelectorAll('[data-h]')].map((el) => el.value);
     const rows = (orig.rows || []).map((origRow, r) => {
       const row = [];
@@ -523,39 +868,136 @@ function collectEdits() {
       }
       return row;
     });
-    const footnotes = card.querySelector('[data-f="footnotes"]').value.split('\n').map((s) => s.trim()).filter(Boolean);
-    return {
+    const val = (k) => { const el = card.querySelector(`[data-f="${k}"]`); return el ? el.value : (orig[k] ?? ''); };
+    draft.tables[index] = {
       ...orig,
-      name: card.querySelector('[data-f="name"]').value,
-      purpose: card.querySelector('[data-f="purpose"]').value,
-      applicability: card.querySelector('[data-f="applicability"]').value,
-      effective_period: card.querySelector('[data-f="effective_period"]').value,
-      notes: card.querySelector('[data-f="notes"]').value,
-      footnotes,
+      name: val('name'),
+      purpose: val('purpose'),
+      applicability: val('applicability'),
+      effective_period: val('effective_period'),
+      notes: val('notes'),
+      footnotes: String(val('footnotes')).split('\n').map((s) => s.trim()).filter(Boolean),
       headers,
       rows,
     };
-  });
-  const routines = [...document.querySelectorAll('[data-routine]')].map((card, ri) => {
-    const orig = state.job.routines[ri];
-    const lines = (key) => card.querySelector(`[data-f="${key}"]`).value.split('\n').map((s) => s.trim()).filter(Boolean);
-    return {
+  } else {
+    const orig = draft.routines[index];
+    if (!orig) return;
+    const val = (k) => { const el = card.querySelector(`[data-f="${k}"]`); return el ? el.value : (orig[k] ?? ''); };
+    const lines = (k) => String(val(k)).split('\n').map((s) => s.trim()).filter(Boolean);
+    draft.routines[index] = {
       ...orig,
-      name: card.querySelector('[data-f="name"]').value,
-      kind: card.querySelector('[data-f="kind"]').value,
-      purpose: card.querySelector('[data-f="purpose"]').value,
-      applicability: card.querySelector('[data-f="applicability"]').value,
-      execution_context: card.querySelector('[data-f="execution_context"]').value,
+      name: val('name'),
+      kind: val('kind'),
+      purpose: val('purpose'),
+      applicability: val('applicability'),
+      execution_context: val('execution_context'),
       inputs: lines('inputs'),
       outputs: lines('outputs'),
-      expression_text: card.querySelector('[data-f="expression_text"]').value,
+      expression_text: val('expression_text'),
       conditions: lines('conditions'),
       steps: lines('steps'),
       depends_on: lines('depends_on'),
-      notes: card.querySelector('[data-f="notes"]').value,
+      notes: val('notes'),
     };
-  });
-  return { tables, routines };
+  }
+}
+
+// Save/export always cover every extracted item, never just the visible page.
+function collectEdits() {
+  syncDetailToDraft();
+  return { tables: draft.tables, routines: draft.routines };
+}
+
+function switchTab(kind, { scrollBrowse = false } = {}) {
+  syncDetailToDraft();
+  ui.tab = kind;
+  ui.mode = 'list';
+  ui.selectedId = null;
+  detailCtx = null;
+  clampPage(kind);
+  renderBrowser();
+  updateSteps();
+  if (scrollBrowse) {
+    const sec = $('browseSection');
+    if (sec) sec.scrollIntoView();
+  } else {
+    scrollTop();
+  }
+}
+
+function openDetail(id) {
+  syncDetailToDraft();
+  ui.mode = 'detail';
+  ui.selectedId = id;
+  renderBrowser();
+  scrollTop();
+}
+
+function stepDetail(delta) {
+  syncDetailToDraft();
+  let list = filtered(ui.tab);
+  let pos = list.findIndex((e) => String(e.item.id) === String(ui.selectedId));
+  if (pos < 0) {
+    // The visible edit moved the current item out of the filtered view
+    // (e.g. renamed): fall back to the full list so Previous/Next keep working.
+    ui.search[ui.tab] = '';
+    ui.filter[ui.tab] = 'all';
+    list = filtered(ui.tab);
+    pos = list.findIndex((e) => String(e.item.id) === String(ui.selectedId));
+  }
+  const next = pos + delta;
+  if (pos < 0 || next < 0 || next >= list.length) return;
+  ui.selectedId = list[next].item.id;
+  renderBrowser();
+  scrollTop();
+}
+
+function backToList() {
+  syncDetailToDraft();
+  ui.mode = 'list';
+  ui.selectedId = null;
+  detailCtx = null;
+  renderBrowser();
+  scrollTop();
+}
+
+function stepPage(delta) {
+  clampPage(ui.tab);
+  const next = ui.page[ui.tab] + delta;
+  const pages = pageCount(ui.tab);
+  if (next < 1 || next > pages) return;
+  ui.page[ui.tab] = next;
+  renderBrowser();
+  scrollTop();
+}
+
+function clearSearchAndFilter() {
+  ui.search[ui.tab] = '';
+  ui.filter[ui.tab] = 'all';
+  ui.page[ui.tab] = 1;
+  renderBrowser();
+}
+
+function handleAction(act, target) {
+  if (act === 'prev') stepDetail(-1);
+  else if (act === 'next') stepDetail(1);
+  else if (act === 'back') backToList();
+  else if (act === 'pagePrev') stepPage(-1);
+  else if (act === 'pageNext') stepPage(1);
+  else if (act === 'clear') clearSearchAndFilter();
+  else if (act === 'open' && target) openDetail(target);
+}
+
+async function init() {
+  try {
+    const res = await fetch('/api/health');
+    const health = await res.json();
+    $('modelBadge').innerHTML = health.modelEnabled
+      ? '<span class="pill live">Meta model: enabled</span>'
+      : '<span class="pill recorded">Meta model: disabled (offline demo)</span>';
+  } catch { $('modelBadge').textContent = ''; }
+  updateSteps();
 }
 
 async function loadJobPayload(res) {
@@ -564,12 +1006,23 @@ async function loadJobPayload(res) {
   return payload;
 }
 
+function adoptJob(payload) {
+  state = payload;
+  draft = {
+    tables: structuredClone(payload.job.tables),
+    routines: structuredClone(payload.job.routines),
+  };
+  ui = freshUi();
+  detailCtx = null;
+  render();
+  scrollTop();
+}
+
 $('sampleBtn').addEventListener('click', async () => {
   setStatus('Loading sample guideline…');
   try {
     const res = await fetch('/api/demo/sample', { method: 'POST' });
-    state = await loadJobPayload(res);
-    render();
+    adoptJob(await loadJobPayload(res));
     setStatus('Sample loaded. Review below, then export.');
   } catch (err) { setStatus(err.message, true); }
 });
@@ -584,8 +1037,7 @@ $('uploadBtn').addEventListener('click', async () => {
       headers: { 'content-type': 'application/pdf', 'x-filename': file.name },
       body: file,
     });
-    state = await loadJobPayload(res);
-    render();
+    adoptJob(await loadJobPayload(res));
     setStatus('Extraction complete. Review below, then export.');
   } catch (err) { setStatus(err.message, true); }
 });
@@ -599,7 +1051,20 @@ $('saveBtn').addEventListener('click', async () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(collectEdits()),
     });
-    state = await loadJobPayload(res);
+    const payload = await loadJobPayload(res);
+    const keepTab = ui.tab;
+    const keepMode = ui.mode;
+    const keepId = ui.selectedId;
+    state = payload;
+    draft = {
+      tables: structuredClone(payload.job.tables),
+      routines: structuredClone(payload.job.routines),
+    };
+    ui.tab = keepTab;
+    ui.mode = keepMode;
+    ui.selectedId = keepId;
+    clampPage('tables');
+    clampPage('routines');
     render();
     setStatus('Saved. Validation re-ran deterministically (no model call).');
   } catch (err) { setStatus(err.message, true); }
@@ -608,6 +1073,43 @@ $('saveBtn').addEventListener('click', async () => {
 $('exportBtn').addEventListener('click', () => {
   if (!state) return;
   window.location.href = `/api/jobs/${state.id}.xlsx`;
+});
+
+$('tabTables').addEventListener('click', () => switchTab('tables'));
+$('tabRoutines').addEventListener('click', () => switchTab('routines'));
+
+$('searchInput').addEventListener('input', (ev) => {
+  ui.search[ui.tab] = ev.target.value;
+  ui.page[ui.tab] = 1;
+  renderBrowser();
+});
+
+$('filterSelect').addEventListener('change', (ev) => {
+  ui.filter[ui.tab] = ev.target.value;
+  ui.page[ui.tab] = 1;
+  renderBrowser();
+});
+
+$('browser').addEventListener('click', (ev) => {
+  const actEl = ev.target.closest('[data-act]');
+  if (actEl) { handleAction(actEl.dataset.act, null); return; }
+  const card = ev.target.closest('.item-card');
+  if (card) handleAction('open', card.dataset.id);
+});
+
+$('bottomBar').addEventListener('click', (ev) => {
+  const btn = ev.target.closest('[data-act]');
+  if (btn && !btn.disabled) handleAction(btn.dataset.act, null);
+});
+
+document.querySelectorAll('.step').forEach((el) => {
+  el.addEventListener('click', (ev) => {
+    const n = Number(el.dataset.step);
+    if ((n === 3 || n === 4) && state) {
+      ev.preventDefault();
+      switchTab(n === 3 ? 'tables' : 'routines', { scrollBrowse: true });
+    }
+  });
 });
 
 init();
