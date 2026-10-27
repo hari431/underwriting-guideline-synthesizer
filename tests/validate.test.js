@@ -85,3 +85,79 @@ test('validate: ragged rows and unknown kinds warn', () => {
   assert.ok(issues.some((i) => /column counts differing/.test(i.message)));
   assert.ok(issues.some((i) => /unrecognized kind/.test(i.message)));
 });
+
+test('validate: blank and duplicated column labels warn', () => {
+  const job = jobWith({
+    tables: [
+      { name: 'Blank', sourcePages: [1], evidenceText: 'e', headers: ['A', ''], rows: [['1', '2']] },
+      { name: 'Dup', sourcePages: [1], evidenceText: 'e', headers: ['Key', 'Key'], rows: [['a', 'b']] },
+    ],
+  });
+  const issues = validateJob(job);
+  assert.ok(issues.some((i) => /blank column label/.test(i.message)));
+  assert.ok(issues.some((i) => /duplicated column label/.test(i.message)));
+  assert.ok(issues.every((i) => i.severity === 'warning'));
+});
+
+test('validate: duplicate rows and conflicting keys warn without deduplication', () => {
+  const job = jobWith({
+    tables: [{
+      name: 'Factors', sourcePages: [1], evidenceText: 'e', headers: ['K', 'V'],
+      rows: [['a', '1'], ['a', '1'], ['b', '2'], ['b', '3']],
+    }],
+  });
+  assert.equal(job.tables[0].rows.length, 4);
+  const issues = validateJob(job);
+  assert.ok(issues.some((i) => /duplicate row/.test(i.message)));
+  assert.ok(issues.some((i) => /conflicting values for the same apparent lookup key/.test(i.message)));
+});
+
+test('validate: leading-zero identifiers and suspected continuations warn', () => {
+  const job = jobWith({
+    tables: [
+      { name: 'First', sourcePages: [1], evidenceText: 'e', headers: ['Code', 'Cost'], rows: [['0012', '1.10']] },
+      { name: 'Second', sourcePages: [2], evidenceText: 'e', headers: ['Code', 'Cost'], rows: [['0045', '1.20']] },
+    ],
+  });
+  const issues = validateJob(job);
+  assert.ok(issues.some((i) => /leading zeros/.test(i.message)));
+  assert.ok(issues.some((i) => /continuation/.test(i.message)));
+});
+
+test('validate: condition fallback, lookup keys, and unresolved step refs warn', () => {
+  const job = jobWith({
+    routines: [
+      { name: 'NoFallback', kind: 'condition', sourcePages: [1], evidenceText: 'e', conditions: ['IF x THEN y'] },
+      {
+        name: 'Lookup', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'e',
+        steps: [{ sequence: 1, instruction: 'Look up factor', operation: 'lookup', output: 'f' }],
+      },
+      {
+        name: 'Unresolved', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'e',
+        steps: [{ sequence: 1, instruction: 'Use missing', inputs: ['undefined_variable'], output: 'out' }],
+      },
+    ],
+  });
+  const issues = validateJob(job);
+  assert.ok(issues.some((i) => /no explicit fallback/.test(i.message)));
+  assert.ok(issues.some((i) => /has no lookup keys/.test(i.message)));
+  assert.ok(issues.some((i) => /flagged as unresolved/.test(i.message)));
+  assert.ok(issues.every((i) => i.severity === 'warning'));
+});
+
+test('validate: step refs matching table columns resolve; unknown refs still flag', () => {
+  const job = jobWith({
+    tables: [{ name: 'Factors', sourcePages: [1], evidenceText: 'e', headers: ['Region Key', 'Value'], rows: [['a', '1']] }],
+    routines: [{
+      name: 'Calc', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'e',
+      steps: [
+        { sequence: 1, instruction: 'Look up value', operation: 'lookup', inputs: ['Region Key'], output: 'v' },
+        { sequence: 2, instruction: 'Use missing', inputs: ['nowhere_defined'], output: 'w' },
+      ],
+    }],
+  });
+  const issues = validateJob(job);
+  assert.ok(!issues.some((i) => /Region Key/.test(i.message)), 'column-matching key must not warn');
+  assert.ok(issues.some((i) => /nowhere_defined/.test(i.message) && /flagged as unresolved/.test(i.message)));
+  assert.ok(issues.every((i) => i.severity === 'warning'));
+});

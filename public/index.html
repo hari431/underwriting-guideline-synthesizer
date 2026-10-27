@@ -400,6 +400,12 @@ function esc(s) {
 function pagesLabel(pages) {
   return (pages && pages.length > 0) ? `p. ${pages.join(', ')}` : 'p. —';
 }
+function disp(v) {
+  if (v === null || v === undefined) return '';
+  if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return String(v);
+  if (typeof v === 'object') return String(v.label ?? v.original_label ?? v.instruction ?? v.text ?? v.target ?? v.name ?? v.value ?? '');
+  return String(v);
+}
 
 async function init() {
   try {
@@ -451,15 +457,25 @@ function render() {
         <span class="page-chip">${esc(pagesLabel(t.source_pages))}</span>
       </div>
       <details class="evidence"><summary>Source evidence</summary><p class="evidence-body">${esc(t.evidence_text || '—')}</p></details>
+      <div class="field-grid">
+        <label class="field">Purpose <input type="text" data-f="purpose" value="${esc(t.purpose || '')}"></label>
+        <label class="field">Applicability <input type="text" data-f="applicability" value="${esc(t.applicability || '')}"></label>
+        <label class="field">Effective period <input type="text" data-f="effective_period" value="${esc(t.effective_period || '')}"></label>
+        <label class="field">Notes <input type="text" data-f="notes" value="${esc(t.notes || '')}"></label>
+        <label class="field full">Footnotes (one per line) <textarea data-f="footnotes" style="min-height:2.2rem;">${esc((t.footnotes || []).map(disp).join('\n'))}</textarea></label>
+      </div>
       <div class="table-wrap"><table class="grid"><thead><tr>
-        ${t.headers.map((h, hi) => `<th><input type="text" data-h="${hi}" value="${esc(h)}" aria-label="header ${hi + 1}"></th>`).join('')}
+        ${(t.headers || []).map((h, hi) => `<th><input type="text" data-h="${hi}" value="${esc(disp(h))}" aria-label="header ${hi + 1}"></th>`).join('')}
       </tr></thead><tbody>
-        ${t.rows.map((row, ri) => `<tr>${row.map((cell, ci) => `<td><input type="text" data-r="${ri}" data-c="${ci}" value="${esc(cell)}" aria-label="row ${ri + 1} column ${ci + 1}"></td>`).join('')}</tr>`).join('')}
+        ${(t.rows || []).map((row, ri) => `<tr>${(row || []).map((cell, ci) => `<td><input type="text" data-r="${ri}" data-c="${ci}" value="${esc(disp(cell))}" aria-label="row ${ri + 1} column ${ci + 1}"></td>`).join('')}</tr>`).join('')}
       </tbody></table></div>
     </div>`).join('') || '<p class="empty-note">No tables extracted.</p>';
 
   const kindLabels = { formula: 'Formula', condition: 'Condition', calculation_steps: 'Calculation steps' };
-  $('routines').innerHTML = job.routines.map((r, ri) => `
+  const kindOptions = ['formula', 'condition', 'calculation_steps'];
+  $('routines').innerHTML = job.routines.map((r, ri) => {
+    const kinds = kindOptions.includes(r.kind) ? kindOptions : [...kindOptions, r.kind];
+    return `
     <div class="card" data-routine="${ri}">
       <div class="card-head">
         <span class="id-chip">${esc(r.id)}</span>
@@ -470,16 +486,22 @@ function render() {
       <div class="field-grid">
         <label class="field">Kind
           <select data-f="kind">
-            ${['formula', 'condition', 'calculation_steps'].map((k) => `<option value="${k}"${k === r.kind ? ' selected' : ''}>${kindLabels[k] || k}</option>`).join('')}
+            ${kinds.map((k) => `<option value="${esc(k)}"${k === r.kind ? ' selected' : ''}>${esc(kindLabels[k] || k)}</option>`).join('')}
           </select>
         </label>
-        <label class="field">Notes <input type="text" data-f="notes" value="${esc(r.notes)}"></label>
-        <label class="field full">Expression <input class="mono" type="text" data-f="expression_text" value="${esc(r.expression_text)}"></label>
-        <label class="field">Conditions (one per line) <textarea data-f="conditions">${esc(r.conditions.join('\n'))}</textarea></label>
-        <label class="field">Steps (one per line) <textarea data-f="steps">${esc(r.steps.join('\n'))}</textarea></label>
-        <label class="field full">Depends on (one per line) <textarea data-f="depends_on" style="min-height:2.2rem;">${esc(r.depends_on.join('\n'))}</textarea></label>
+        <label class="field">Notes <input type="text" data-f="notes" value="${esc(r.notes || '')}"></label>
+        <label class="field">Purpose <input type="text" data-f="purpose" value="${esc(r.purpose || '')}"></label>
+        <label class="field">Applicability <input type="text" data-f="applicability" value="${esc(r.applicability || '')}"></label>
+        <label class="field">Execution context <input type="text" data-f="execution_context" value="${esc(r.execution_context || '')}"></label>
+        <label class="field">Inputs (one per line) <textarea data-f="inputs" style="min-height:2.2rem;">${esc((r.inputs || []).map(disp).join('\n'))}</textarea></label>
+        <label class="field">Outputs (one per line) <textarea data-f="outputs" style="min-height:2.2rem;">${esc((r.outputs || []).map(disp).join('\n'))}</textarea></label>
+        <label class="field full">Expression <input class="mono" type="text" data-f="expression_text" value="${esc(r.expression_text || '')}"></label>
+        <label class="field">Conditions (one per line) <textarea data-f="conditions">${esc((r.conditions || []).map(disp).join('\n'))}</textarea></label>
+        <label class="field">Steps (one per line) <textarea data-f="steps">${esc((r.steps || []).map(disp).join('\n'))}</textarea></label>
+        <label class="field full">Depends on (one per line) <textarea data-f="depends_on" style="min-height:2.2rem;">${esc((r.depends_on || []).map(disp).join('\n'))}</textarea></label>
       </div>
-    </div>`).join('') || '<p class="empty-note">No routines extracted.</p>';
+    </div>`;
+  }).join('') || '<p class="empty-note">No routines extracted.</p>';
 
   $('issues').innerHTML = job.issues.map((i) => `
     <div class="issue ${i.severity}"><span class="pill ${i.severity}">${esc(i.severity)}</span>
@@ -492,17 +514,27 @@ function collectEdits() {
   const tables = [...document.querySelectorAll('[data-table]')].map((card, ti) => {
     const orig = state.job.tables[ti];
     const headers = [...card.querySelectorAll('[data-h]')].map((el) => el.value);
-    const rowCount = orig.rows.length;
-    const colCount = orig.rows[0] ? orig.rows[0].length : 0;
-    const rows = [];
-    for (let r = 0; r < rowCount; r += 1) {
+    const rows = (orig.rows || []).map((origRow, r) => {
       const row = [];
+      const colCount = (origRow || []).length;
       for (let c = 0; c < colCount; c += 1) {
-        row.push(card.querySelector(`[data-r="${r}"][data-c="${c}"]`).value);
+        const el = card.querySelector(`[data-r="${r}"][data-c="${c}"]`);
+        row.push(el ? el.value : String((origRow || [])[c] ?? ''));
       }
-      rows.push(row);
-    }
-    return { ...orig, name: card.querySelector('[data-f="name"]').value, headers, rows };
+      return row;
+    });
+    const footnotes = card.querySelector('[data-f="footnotes"]').value.split('\n').map((s) => s.trim()).filter(Boolean);
+    return {
+      ...orig,
+      name: card.querySelector('[data-f="name"]').value,
+      purpose: card.querySelector('[data-f="purpose"]').value,
+      applicability: card.querySelector('[data-f="applicability"]').value,
+      effective_period: card.querySelector('[data-f="effective_period"]').value,
+      notes: card.querySelector('[data-f="notes"]').value,
+      footnotes,
+      headers,
+      rows,
+    };
   });
   const routines = [...document.querySelectorAll('[data-routine]')].map((card, ri) => {
     const orig = state.job.routines[ri];
@@ -511,6 +543,11 @@ function collectEdits() {
       ...orig,
       name: card.querySelector('[data-f="name"]').value,
       kind: card.querySelector('[data-f="kind"]').value,
+      purpose: card.querySelector('[data-f="purpose"]').value,
+      applicability: card.querySelector('[data-f="applicability"]').value,
+      execution_context: card.querySelector('[data-f="execution_context"]').value,
+      inputs: lines('inputs'),
+      outputs: lines('outputs'),
       expression_text: card.querySelector('[data-f="expression_text"]').value,
       conditions: lines('conditions'),
       steps: lines('steps'),

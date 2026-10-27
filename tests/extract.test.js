@@ -67,6 +67,16 @@ test('extract: prompt requires source pages and evidence text', () => {
   assert.match(prompt, /PAGE 2/);
 });
 
+test('extract: prompt is generic and requires exact preservation', () => {
+  const prompt = buildExtractionPrompt([{ page: 1, text: 'sample' }]);
+  for (const term of ['leading zeros', 'numeric precision', 'source order', 'Do not invent', 'Do not assume']) {
+    assert.ok(prompt.includes(term), `prompt missing: ${term}`);
+  }
+  for (const sample of ['Base Rate by Driver Class', 'Territory Factor', 'territory_factor', 'policy_fee']) {
+    assert.ok(!prompt.includes(sample), `prompt must not hardcode sample value: ${sample}`);
+  }
+});
+
 test('extract: parseModelJson strips code fences, rejects bad shapes', () => {
   assert.deepEqual(parseModelJson('```json\n{"tables": [], "routines": []}\n```'), {
     tables: [],

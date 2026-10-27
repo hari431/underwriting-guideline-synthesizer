@@ -1,6 +1,11 @@
 // Deterministic .xlsx workbook builder (zero dependencies).
-// Sheets: Cover, Tables, Routines, Issues. Every data row carries source pages.
-// Fixed ZIP timestamps keep builds byte-deterministic for the same input.
+// Sheets: Cover, Table Summary, Routine Summary, Table Columns, one sheet
+// per rating table, one sheet per routine, Issues.
+// Rating-table sheets hold only the title, headers, and factor rows.
+// Routine sheets hold the name, details, ordered steps, conditions,
+// dependencies, lookups, unresolved items, and source evidence.
+// Cover and the summaries link each asset name to its detail worksheet.
+// Fixed ZIP timestamps keep builds byte-deterministic.
 import { deflateRawSync } from 'node:zlib';
 
 // ---------- CRC32 + minimal ZIP writer ----------
@@ -133,9 +138,11 @@ class SharedStrings {
   }
 }
 
-function sheetXml(rows, shared, widths = []) {
+function sheetXml(rows, shared, widths = [], links = [], boldRows = []) {
   const colCount = Math.max(1, ...rows.map((r) => r.length));
   const lastRef = `${colName(colCount - 1)}${Math.max(rows.length, 1)}`;
+  const linkByCell = new Map(links.map((l) => [`${l.r},${l.c}`, l.location]));
+  const boldRowSet = new Set(boldRows);
   const parts = [
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
     '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
@@ -155,63 +162,448 @@ function sheetXml(rows, shared, widths = []) {
     parts.push(`<row r="${r + 1}">`);
     row.forEach((value, c) => {
       const ref = `${colName(c)}${r + 1}`;
-      const style = r === 0 ? ' s="1"' : '';
+      const link = linkByCell.get(`${r},${c}`);
+      const style = link ? ' s="2"' : (r === 0 || boldRowSet.has(r) ? ' s="1"' : '');
       parts.push(`<c r="${ref}" t="s"${style}><v>${shared.idOf(value)}</v></c>`);
     });
     parts.push('</row>');
   });
-  parts.push('</sheetData></worksheet>');
+  parts.push('</sheetData>');
+  if (links.length > 0) {
+    parts.push('<hyperlinks>');
+    for (const l of links) {
+      parts.push(`<hyperlink ref="${colName(l.c)}${l.r + 1}" location="${escapeXml(l.location)}"/>`);
+    }
+    parts.push('</hyperlinks>');
+  }
+  parts.push('</worksheet>');
   return parts.join('');
+}
+
+// Internal link target for a detail worksheet's top cell.
+function sheetLocation(sheetName) {
+  return `'${String(sheetName ?? '').replace(/'/g, "''")}'!A1`;
 }
 
 // ---------- workbook assembly ----------
 
-const SHEET_NAMES = ['Cover', 'Tables', 'Routines', 'Issues'];
+// Fixed sheet names reserved so detail sheets can never collide with them.
+// Assembly order is defined explicitly in buildWorkbookXlsx.
+const FIXED_PREFIX_SHEETS = ['Cover', 'Table Summary', 'Table Columns'];
+// Retained for reserved-name stability (keeps table sheet naming unchanged);
+// the workbook now uses per-routine sheets instead of these shared sheets.
+const FIXED_SUFFIX_SHEETS = ['Routine Summary', 'Routine Steps', 'Dependencies', 'Conditions', 'Issues'];
+const RESERVED_SHEET_NAMES = new Set(
+  [...FIXED_PREFIX_SHEETS, ...FIXED_SUFFIX_SHEETS, 'History'].map((s) => s.toLowerCase())
+);
+
+/**
+ * Safe, unique worksheet names for rating tables, derived from table titles.
+ * Generic: sanitizes forbidden characters, truncates to 31 chars, and
+ * de-duplicates case-insensitively. Never hardcodes table names.
+ * @param {Array} tables normalized tables in order
+ * @returns {string[]} one sheet name per table
+ */
+export function tableSheetNames(tables) {
+  const used = new Set(RESERVED_SHEET_NAMES);
+  const out = [];
+  (tables ?? []).forEach((t, idx) => {
+    const fallback = `Table ${t?.id ?? idx + 1}`;
+    const raw = String(t?.name ?? '').trim() || fallback;
+    let base = raw.replace(/[:\\/?*[\]]/g, '-').replace(/[\u0000-\u001f]/g, '?').trim();
+    if (!base) base = fallback;
+    base = base.slice(0, 31).trim() || fallback.slice(0, 31);
+    let candidate = base;
+    let n = 2;
+    while (used.has(candidate.toLowerCase())) {
+      const suffix = ` (${n})`;
+      candidate = `${base.slice(0, 31 - suffix.length).trimEnd()}${suffix}`;
+      if (!candidate.trim()) candidate = `${fallback} (${n})`.slice(0, 31);
+      n += 1;
+    }
+    used.add(candidate.toLowerCase());
+    out.push(candidate);
+  });
+  return out;
+}
+
+/**
+ * Safe, unique worksheet names for routines, derived from routine names.
+ * Generic: same sanitizing rules as tables. `existingNames` avoids collisions
+ * with already-assigned sheets (e.g. per-table sheets).
+ * @param {Array} routines normalized routines in order
+ * @param {string[]} existingNames sheet names already taken
+ * @returns {string[]} one sheet name per routine
+ */
+export function routineSheetNames(routines, existingNames = []) {
+  const used = new Set([
+    ...RESERVED_SHEET_NAMES,
+    ...existingNames.map((n) => String(n ?? '').toLowerCase()),
+  ]);
+  const out = [];
+  (routines ?? []).forEach((r, idx) => {
+    const fallback = `Routine ${r?.id ?? idx + 1}`;
+    const raw = String(r?.name ?? '').trim() || fallback;
+    let base = raw.replace(/[:\\/?*[\]]/g, '-').replace(/[\u0000-\u001f]/g, '?').trim();
+    if (!base) base = fallback;
+    base = base.slice(0, 31).trim() || fallback.slice(0, 31);
+    let candidate = base;
+    let n = 2;
+    while (used.has(candidate.toLowerCase())) {
+      const suffix = ` (${n})`;
+      candidate = `${base.slice(0, 31 - suffix.length).trimEnd()}${suffix}`;
+      if (!candidate.trim()) candidate = `${fallback} (${n})`.slice(0, 31);
+      n += 1;
+    }
+    used.add(candidate.toLowerCase());
+    out.push(candidate);
+  });
+  return out;
+}
+
+function pagesLabel(pages) {
+  return (pages ?? []).join(', ');
+}
+
+function padRow(cells, colCount) {
+  const out = cells.map((c) => String(c ?? ''));
+  while (out.length < colCount) out.push('');
+  return out;
+}
+
+function listJoin(values) {
+  return (values ?? []).map((v) => String(v ?? '')).filter((s) => s !== '').join('; ');
+}
+
+function continuationText(cont) {
+  if (cont === null || cont === undefined || cont === '') return '';
+  if (typeof cont === 'string') return cont;
+  if (typeof cont === 'object' && !Array.isArray(cont)) {
+    return Object.entries(cont)
+      .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : String(v ?? '')}`)
+      .join('; ');
+  }
+  return String(cont);
+}
+
+function parseStepSequence(text, fallbackIndex) {
+  const m = /^\s*(?:step\s*)?(\d+)\s*[:.\)\-]/i.exec(String(text ?? ''));
+  if (m) return m[1];
+  return String(fallbackIndex + 1);
+}
+
+// One worksheet body per routine: name in A1, available details, ordered
+// step table, then clearly labelled Conditions, Dependencies, Lookups,
+// Unresolved items, and Source evidence sections. Only available content is
+// included; missing fields stay blank and empty sections are omitted.
+function routineSheetRows(r, routineIssues) {
+  const rows = [[String(r.name ?? '')]];
+  const detail = (label, value) => {
+    if (value !== '' && value !== null && value !== undefined) rows.push([label, String(value)]);
+  };
+  detail('Kind', String(r.kind ?? ''));
+  detail('Purpose', String(r.purpose ?? ''));
+  detail('Applicability', String(r.applicability ?? ''));
+  detail('Execution context', String(r.execution_context ?? ''));
+  detail('Expression', String(r.expression_text ?? ''));
+  const inputs = listJoin(r.inputs);
+  if (inputs) rows.push(['Inputs', inputs]);
+  const outputs = listJoin(r.outputs);
+  if (outputs) rows.push(['Outputs', outputs]);
+  detail('Notes', String(r.notes ?? ''));
+
+  const steps = r.steps ?? [];
+  const detailed = r.steps_detailed ?? [];
+  const aligned = detailed.length > 0 && detailed.length === steps.length;
+  const stepEntries = [];
+  if (steps.length > 0) {
+    steps.forEach((stepText, idx) => {
+      const text = String(stepText ?? '');
+      const det = aligned ? detailed[idx] : null;
+      const seq = det?.sequence !== undefined && det?.sequence !== null && String(det.sequence) !== ''
+        ? String(det.sequence)
+        : parseStepSequence(text, idx);
+      stepEntries.push({
+        seq,
+        instruction: text,
+        operation: String(det?.operation ?? ''),
+        expression: String(det?.expression ?? ''),
+        operand: String(det?.operand ?? ''),
+        keys: listJoin(det?.inputs),
+        output: String(det?.output ?? ''),
+        dependsOn: listJoin(det?.depends_on),
+        det,
+      });
+    });
+  } else if (detailed.length > 0) {
+    detailed.forEach((det) => {
+      stepEntries.push({
+        seq: String(det?.sequence ?? ''),
+        instruction: String(det?.instruction ?? det?.original_text ?? ''),
+        operation: String(det?.operation ?? ''),
+        expression: String(det?.expression ?? ''),
+        operand: String(det?.operand ?? ''),
+        keys: listJoin(det?.inputs),
+        output: String(det?.output ?? ''),
+        dependsOn: listJoin(det?.depends_on),
+        det,
+      });
+    });
+  }
+  if (stepEntries.length > 0) {
+    rows.push(['Steps']);
+    rows.push(['Step #', 'Instructions', 'Operation', 'Expression', 'Operand', 'Inputs', 'Output', 'Depends on']);
+    for (const e of stepEntries) {
+      rows.push([e.seq, e.instruction, e.operation, e.expression, e.operand, e.keys, e.output, e.dependsOn]);
+    }
+  }
+
+  const conds = r.conditions ?? [];
+  const condDetailed = r.conditions_detailed ?? [];
+  const condAligned = condDetailed.length > 0 && condDetailed.length === conds.length;
+  const condCount = Math.max(conds.length, condDetailed.length);
+  const condEntries = [];
+  for (let idx = 0; idx < condCount; idx += 1) {
+    const text = idx < conds.length ? String(conds[idx] ?? '') : '';
+    const det = condAligned ? condDetailed[idx] : (idx < condDetailed.length ? condDetailed[idx] : null);
+    if (!text.trim() && !det) continue;
+    condEntries.push({
+      num: String(idx + 1),
+      condition: text || String(det?.condition ?? det?.original_text ?? ''),
+      trueBranch: String(det?.true_branch ?? ''),
+      falseBranch: String(det?.false_branch ?? ''),
+      referral: String(det?.referral_code ?? ''),
+      det,
+    });
+  }
+  if (condEntries.length > 0) {
+    rows.push(['Conditions']);
+    rows.push(['#', 'Condition', 'True branch', 'False branch', 'Referral code']);
+    for (const e of condEntries) {
+      rows.push([e.num, e.condition, e.trueBranch, e.falseBranch, e.referral]);
+    }
+  }
+
+  const dependsOn = r.depends_on ?? [];
+  const depDetailed = r.dependencies ?? [];
+  const detailedTargets = new Set(depDetailed.map((d) => String(d?.target ?? '').trim().toLowerCase()).filter(Boolean));
+  const depEntries = [];
+  for (const dep of depDetailed) {
+    const target = String(dep?.target ?? '');
+    if (!target.trim() && !String(dep?.source ?? '').trim()) continue;
+    depEntries.push({
+      target,
+      type: String(dep?.relationship_type ?? ''),
+      explicit: String(dep?.explicit ?? 'explicit'),
+      det: dep,
+    });
+  }
+  for (const target of dependsOn) {
+    const text = String(target ?? '');
+    if (!text.trim()) continue;
+    if (detailedTargets.has(text.trim().toLowerCase())) continue;
+    depEntries.push({ target: text, type: '', explicit: 'explicit', det: null });
+  }
+  if (depEntries.length > 0) {
+    rows.push(['Dependencies']);
+    rows.push(['Target', 'Type', 'Explicit/Inferred']);
+    for (const e of depEntries) {
+      rows.push([e.target, e.type, e.explicit]);
+    }
+  }
+
+  const lookupEntries = stepEntries.filter((e) => {
+    const op = String(e.det?.operation ?? '').toLowerCase();
+    return op.includes('lookup') || op.includes('look-up');
+  });
+  if (lookupEntries.length > 0) {
+    rows.push(['Lookups']);
+    rows.push(['Step #', 'Instruction', 'Keys', 'Output']);
+    for (const e of lookupEntries) {
+      rows.push([e.seq, e.instruction, e.keys, e.output]);
+    }
+  }
+
+  if ((routineIssues ?? []).length > 0) {
+    rows.push(['Unresolved items']);
+    rows.push(['Issue ID', 'Severity', 'Message']);
+    for (const issue of routineIssues) {
+      rows.push([String(issue.id ?? ''), String(issue.severity ?? ''), String(issue.message ?? '')]);
+    }
+  }
+
+  const evidenceRows = [];
+  const pages = pagesLabel(r.source_pages);
+  if (pages) evidenceRows.push(['Source pages', pages]);
+  if (String(r.source_location ?? '')) evidenceRows.push(['Source location', String(r.source_location)]);
+  if (String(r.evidence_text ?? '')) evidenceRows.push(['Evidence', String(r.evidence_text)]);
+  stepEntries.forEach((e) => {
+    const det = e.det;
+    if (!det) return;
+    const tag = e.seq !== '' ? `Step ${e.seq}` : 'Step';
+    const sp = det.source_pages?.length ? pagesLabel(det.source_pages) : '';
+    const ev = String(det.evidence ?? '');
+    const status = String(det.interpretation_status ?? '');
+    if (sp) evidenceRows.push([`${tag} pages`, sp]);
+    if (ev) evidenceRows.push([`${tag} evidence`, ev]);
+    if (status) evidenceRows.push([`${tag} status`, status]);
+  });
+  condEntries.forEach((e) => {
+    const det = e.det;
+    if (!det) return;
+    const sp = det.source_pages?.length ? pagesLabel(det.source_pages) : '';
+    const ev = String(det.evidence ?? '');
+    const status = String(det.interpretation_status ?? '');
+    if (sp) evidenceRows.push([`Condition ${e.num} pages`, sp]);
+    if (ev) evidenceRows.push([`Condition ${e.num} evidence`, ev]);
+    if (status) evidenceRows.push([`Condition ${e.num} status`, status]);
+  });
+  depEntries.forEach((e) => {
+    const det = e.det;
+    if (!det) return;
+    const sp = det.source_pages?.length ? pagesLabel(det.source_pages) : '';
+    const ev = String(det.evidence ?? '');
+    if (sp) evidenceRows.push([`Dependency ${e.target} pages`, sp]);
+    if (ev) evidenceRows.push([`Dependency ${e.target} evidence`, ev]);
+  });
+  if (evidenceRows.length > 0) {
+    rows.push(['Source evidence']);
+    for (const row of evidenceRows) rows.push(row);
+  }
+
+  return rows;
+}
 
 function jobRows(job, source) {
   const doc = job.document ?? {};
-  const errors = job.issues.filter((i) => i.severity === 'error').length;
-  const warnings = job.issues.filter((i) => i.severity === 'warning').length;
+  const tables = job.tables ?? [];
+  const routines = job.routines ?? [];
+  const issues = job.issues ?? [];
+  const errors = issues.filter((i) => i.severity === 'error').length;
+  const warnings = issues.filter((i) => i.severity === 'warning').length;
+  const tableSheetNameList = tableSheetNames(tables);
+  const routineSheetNameList = routineSheetNames(routines, tableSheetNameList);
   const cover = [
     ['Field', 'Value'],
     ['UnderwriteIQ export (hackathon demo)', ''],
     ['Document', doc.filename ?? ''],
     ['Pages', String(doc.page_count ?? '')],
     ['Extraction source', source],
-    ['Tables', String(job.tables.length)],
-    ['Routines', String(job.routines.length)],
+    ['Tables', String(tables.length)],
+    ['Routines', String(routines.length)],
     ['Errors', String(errors)],
     ['Warnings', String(warnings)],
   ];
+  const coverLinks = [];
+  cover.push(['Included Rate Tables']);
+  tables.forEach((t, idx) => {
+    cover.push([t.id ?? '', t.name ?? '']);
+    coverLinks.push({ r: cover.length - 1, c: 1, location: sheetLocation(tableSheetNameList[idx]) });
+  });
+  cover.push(['Included Rate Routines']);
+  routines.forEach((r, idx) => {
+    cover.push([r.id ?? '', r.name ?? '']);
+    coverLinks.push({ r: cover.length - 1, c: 1, location: sheetLocation(routineSheetNameList[idx]) });
+  });
 
-  const tables = [['Table ID', 'Table name', 'Source pages', 'Evidence text', 'Headers', 'Row values']];
-  for (const t of job.tables) {
-    const pages = t.source_pages.join(', ');
-    const headers = t.headers.join(' | ');
-    if (t.rows.length === 0) {
-      tables.push([t.id, t.name, pages, t.evidence_text, headers, '']);
-    } else {
-      for (const row of t.rows) {
-        tables.push([t.id, t.name, pages, t.evidence_text, headers, row.join(' | ')]);
-      }
-    }
-  }
-
-  const routines = [['Routine ID', 'Name', 'Kind', 'Source pages', 'Evidence text', 'Expression', 'Conditions', 'Steps', 'Depends on', 'Notes']];
-  for (const r of job.routines) {
-    routines.push([
-      r.id, r.name, r.kind, r.source_pages.join(', '), r.evidence_text,
-      r.expression_text, r.conditions.join(' | '), r.steps.join(' | '),
-      r.depends_on.join(' | '), r.notes,
+  const tableSummary = [['Table ID', 'Title', 'Purpose', 'Applicability', 'Effective period', 'Source pages', 'Source location', 'Evidence text', 'Footnotes', 'Notes', 'Continuation', 'Row count', 'Column count', 'Review status']];
+  const tableSummaryLinks = [];
+  tables.forEach((t, idx) => {
+    tableSummary.push([
+      t.id ?? '',
+      t.name ?? '',
+      t.purpose ?? '',
+      t.applicability ?? '',
+      t.effective_period ?? '',
+      pagesLabel(t.source_pages),
+      t.source_location ?? '',
+      t.evidence_text ?? '',
+      listJoin(t.footnotes),
+      t.notes ?? '',
+      continuationText(t.continuation),
+      String((t.rows ?? []).length),
+      String((t.headers ?? []).length),
+      t.review_status ?? '',
     ]);
+    tableSummaryLinks.push({ r: tableSummary.length - 1, c: 1, location: sheetLocation(tableSheetNameList[idx]) });
+  });
+
+  const tableColumns = [['Table ID', 'Table title', 'Column #', 'Original label', 'Display label', 'Inferred type', 'Role', 'Units', 'Evidence']];
+  for (const t of tables) {
+    const cols = (t.columns && t.columns.length > 0)
+      ? t.columns
+      : (t.headers ?? []).map((h, i) => ({ label: String(h ?? ''), original_label: String(h ?? ''), order: i + 1 }));
+    cols.forEach((col, idx) => {
+      tableColumns.push([
+        t.id ?? '',
+        t.name ?? '',
+        String(col?.order ?? idx + 1),
+        String(col?.original_label ?? col?.label ?? ''),
+        String(col?.display_label ?? col?.label ?? ''),
+        String(col?.data_type ?? ''),
+        String(col?.role ?? ''),
+        String(col?.units ?? ''),
+        String(col?.evidence ?? ''),
+      ]);
+    });
   }
 
-  const issues = [['Issue ID', 'Severity', 'Target type', 'Target ID', 'Message', 'Source pages']];
-  for (const issue of job.issues) {
-    issues.push([issue.id, issue.severity, issue.target_type, issue.target_id, issue.message, issue.source_pages.join(', ')]);
+  const tableSheets = tables.map((t, idx) => {
+    const headers = (t.headers ?? []).map((h) => String(h ?? ''));
+    const rows = (t.rows ?? []).map((r) => (r ?? []).map((c) => String(c ?? '')));
+    const colCount = Math.max(headers.length, 0, ...rows.map((r) => r.length));
+    const sheetRows = [[String(t.name ?? '')]];
+    if (headers.length > 0) {
+      sheetRows.push(padRow(headers, colCount));
+    }
+    for (const row of rows) {
+      sheetRows.push(padRow(row, colCount));
+    }
+    return { name: tableSheetNameList[idx], rows: sheetRows, colCount: Math.max(colCount, 1) };
+  });
+
+  const routineSummary = [['Routine ID', 'Name', 'Kind', 'Purpose', 'Applicability', 'Execution context', 'Inputs', 'Outputs', 'Expression', 'Source pages', 'Source location', 'Evidence text', 'Notes', 'Review status']];
+  const routineSummaryLinks = [];
+  routines.forEach((r, idx) => {
+    routineSummary.push([
+      r.id ?? '',
+      r.name ?? '',
+      r.kind ?? '',
+      r.purpose ?? '',
+      r.applicability ?? '',
+      r.execution_context ?? '',
+      listJoin(r.inputs),
+      listJoin(r.outputs),
+      r.expression_text ?? '',
+      pagesLabel(r.source_pages),
+      r.source_location ?? '',
+      r.evidence_text ?? '',
+      r.notes ?? '',
+      r.review_status ?? '',
+    ]);
+    routineSummaryLinks.push({ r: routineSummary.length - 1, c: 1, location: sheetLocation(routineSheetNameList[idx]) });
+  });
+
+  const routineSheets = routines.map((r, idx) => {
+    const routineIssues = issues.filter(
+      (i) => i.target_type === 'routine' && String(i.target_id ?? '') === String(r.id ?? '')
+    );
+    const sheetRows = routineSheetRows(r, routineIssues);
+    const colCount = Math.max(1, ...sheetRows.map((row) => row.length));
+    // Bold only the Steps heading and its column headers; step contents,
+    // overview, and evidence keep their existing styling.
+    const boldRows = [];
+    const stepsLabel = sheetRows.findIndex((row) => row.length === 1 && row[0] === 'Steps');
+    if (stepsLabel >= 0) boldRows.push(stepsLabel, stepsLabel + 1);
+    return { name: routineSheetNameList[idx], rows: sheetRows, colCount, boldRows };
+  });
+
+  const issuesRows = [['Issue ID', 'Severity', 'Target type', 'Target ID', 'Message', 'Source pages']];
+  for (const issue of issues) {
+    issuesRows.push([issue.id ?? '', issue.severity ?? '', issue.target_type ?? '', issue.target_id ?? '', issue.message ?? '', pagesLabel(issue.source_pages)]);
   }
 
-  return { cover, tables, routines, issues };
+  return { cover, coverLinks, tableSummary, tableSummaryLinks, tableColumns, tableSheets, routineSummary, routineSummaryLinks, routineSheets, issues: issuesRows };
 }
 
 /**
@@ -221,12 +613,24 @@ function jobRows(job, source) {
  */
 export function buildWorkbookXlsx(job, { source = 'recorded', compress = true } = {}) {
   const shared = new SharedStrings();
-  const { cover, tables, routines, issues } = jobRows(job, source);
+  const { cover, coverLinks, tableSummary, tableSummaryLinks, tableColumns, tableSheets, routineSummary, routineSummaryLinks, routineSheets, issues } = jobRows(job, source);
+  const sheetNames = [
+    'Cover',
+    'Table Summary',
+    'Routine Summary',
+    'Table Columns',
+    ...tableSheets.map((s) => s.name),
+    ...routineSheets.map((s) => s.name),
+    'Issues',
+  ];
   // Register shared strings in sheet order for deterministic indexes.
   const sheets = [
-    sheetXml(cover, shared, [32, 60]),
-    sheetXml(tables, shared, [10, 34, 12, 60, 30, 50]),
-    sheetXml(routines, shared, [11, 34, 18, 12, 60, 40, 40, 50, 30, 30]),
+    sheetXml(cover, shared, [32, 60], coverLinks),
+    sheetXml(tableSummary, shared, [10, 34, 24, 24, 18, 12, 18, 60, 30, 30, 24, 10, 12, 14], tableSummaryLinks),
+    sheetXml(routineSummary, shared, [11, 34, 18, 24, 24, 20, 30, 30, 40, 12, 18, 60, 30, 14], routineSummaryLinks),
+    sheetXml(tableColumns, shared, [10, 34, 10, 28, 28, 16, 16, 16, 40]),
+    ...tableSheets.map((s) => sheetXml(s.rows, shared, Array(Math.max(s.colCount, 1)).fill(28))),
+    ...routineSheets.map((s) => sheetXml(s.rows, shared, Array(Math.max(s.colCount, 1)).fill(28), [], s.boldRows ?? [])),
     sheetXml(issues, shared, [10, 10, 12, 11, 80, 12]),
   ];
 
@@ -234,16 +638,16 @@ export function buildWorkbookXlsx(job, { source = 'recorded', compress = true } 
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
     '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">',
     '<sheets>',
-    ...SHEET_NAMES.map((name, i) => `<sheet name="${name}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`),
+    ...sheetNames.map((name, i) => `<sheet name="${escapeXml(name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`),
     '</sheets></workbook>',
   ].join('');
 
   const workbookRels = [
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
     '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">',
-    ...SHEET_NAMES.map((_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`),
-    `<Relationship Id="rId${SHEET_NAMES.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>`,
-    `<Relationship Id="rId${SHEET_NAMES.length + 2}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>`,
+    ...sheetNames.map((_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`),
+    `<Relationship Id="rId${sheetNames.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>`,
+    `<Relationship Id="rId${sheetNames.length + 2}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>`,
     '</Relationships>',
   ].join('');
 
@@ -253,7 +657,7 @@ export function buildWorkbookXlsx(job, { source = 'recorded', compress = true } 
     '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>',
     '<Default Extension="xml" ContentType="application/xml"/>',
     '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>',
-    ...SHEET_NAMES.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`),
+    ...sheetNames.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`),
     '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>',
     '<Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>',
     '</Types>',
@@ -269,11 +673,11 @@ export function buildWorkbookXlsx(job, { source = 'recorded', compress = true } 
   const styles = [
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
     '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
-    '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><sz val="11"/><b/><name val="Calibri"/></font></fonts>',
+    '<fonts count="3"><font><sz val="11"/><name val="Calibri"/></font><font><sz val="11"/><b/><name val="Calibri"/></font><font><sz val="11"/><color rgb="FF0563C1"/><name val="Calibri"/><u/></font></fonts>',
     '<fills count="1"><fill><patternFill patternType="none"/></fill></fills>',
     '<borders count="1"><border/></borders>',
     '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>',
-    '<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0"/></cellXfs>',
+    '<cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0"/></cellXfs>',
     '</styleSheet>',
   ].join('');
 
