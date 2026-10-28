@@ -169,6 +169,21 @@
   #status:empty { display: none; }
   #status:not(:empty) { background: var(--info-bg); color: var(--info-ink); padding: 0.55rem 0.8rem; }
   #status.error { background: var(--error-bg); color: var(--error-ink); padding: 0.55rem 0.8rem; }
+  #status.loading:not(:empty) { display: flex; align-items: center; gap: 0.6rem; }
+  #status.loading::before {
+    content: "";
+    width: 1rem;
+    height: 1rem;
+    flex-shrink: 0;
+    border-radius: 50%;
+    border: 2px solid #9db8cf;
+    border-top-color: var(--info-ink);
+    animation: rcSpin 0.8s linear infinite;
+  }
+  @keyframes rcSpin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) {
+    #status.loading::before { animation: none; }
+  }
 
   /* ---- Job facts ---- */
   .facts { display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: stretch; }
@@ -404,6 +419,18 @@
   .issue .msg { flex: 1; min-width: 0; }
   .issue code { font-size: 0.78rem; color: var(--muted); }
   .empty-note { color: var(--muted); font-size: 0.87rem; }
+  .subhead { font-size: 0.86rem; margin: 1rem 0 0.2rem; }
+  .review-item {
+    background: var(--white);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 0.55rem 0.75rem;
+    margin-top: 0.45rem;
+    font-size: 0.86rem;
+  }
+  .review-item .top { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+  .review-item .nm { flex: 1; min-width: 10rem; font-weight: 650; }
+  .review-item .ev { color: var(--muted); font-size: 0.82rem; margin: 0.3rem 0 0; }
   .actions { display: flex; gap: 0.7rem; margin-top: 0.9rem; flex-wrap: wrap; }
   .review-bar {
     display: flex;
@@ -452,7 +479,8 @@
         <a class="step" data-step="2" href="#jobSection"><span class="num"><span>2</span></span><span><strong>Extract</strong><small>Tables &amp; routines</small></span></a>
         <a class="step" data-step="3" href="#browseSection"><span class="num"><span>3</span></span><span><strong>Tables</strong><small>Rating tables</small></span></a>
         <a class="step" data-step="4" href="#browseSection"><span class="num"><span>4</span></span><span><strong>Routines</strong><small>Formulas &amp; steps</small></span></a>
-        <a class="step" data-step="5" href="#reviewSection"><span class="num"><span>5</span></span><span><strong>Validate &amp; export</strong><small>Issues &amp; Excel</small></span></a>
+        <a class="step" data-step="5" href="#reviewSection"><span class="num"><span>5</span></span><span><strong>Review</strong><small>Warnings &amp; evidence</small></span></a>
+        <a class="step" data-step="6" href="#exportSection"><span class="num"><span>6</span></span><span><strong>Export</strong><small>Excel download</small></span></a>
       </div>
     </nav>
     <div class="side-foot">
@@ -506,12 +534,23 @@
         </section>
 
         <section id="reviewSection" hidden>
-          <h2><span class="step-no">5</span> Review &amp; export <span class="hint">Deterministic validation — no model calls</span></h2>
+          <h2><span class="step-no">5</span> Review <span class="hint">Deterministic validation — no model calls</span></h2>
           <div id="issues"></div>
+          <h3 class="subhead">Unresolved items</h3>
+          <div id="unresolved"></div>
           <div class="actions">
             <button id="saveBtn" class="primary">Save edits &amp; re-validate</button>
-            <button id="exportBtn">Export Excel</button>
           </div>
+        </section>
+
+        <section id="exportSection" hidden>
+          <h2><span class="step-no">6</span> Export <span class="hint">Warnings allowed — errors block the download</span></h2>
+          <div id="exportStatus"></div>
+          <div class="actions">
+            <button id="exportBtn" class="primary">Export Excel</button>
+          </div>
+          <h3 class="subhead">Unresolved REVIEW steps</h3>
+          <div id="exportReview"></div>
         </section>
       </div>
     </main>
@@ -523,6 +562,7 @@
 let state = null; // { id, job, source }
 let draft = null; // { tables, routines }: unsaved reviewer edits across all items
 let detailCtx = null; // { kind, index } for the visible detail editor, if any
+let isBusy = false; // shared upload/sample loading flag: drives spinner + control locks
 const PAGE_SIZE = 20;
 let ui = freshUi();
 
@@ -541,7 +581,18 @@ const $ = (id) => document.getElementById(id);
 function setStatus(msg, isError = false) {
   const el = $('status');
   el.textContent = msg;
-  el.className = isError ? 'error' : '';
+  let cls = isError ? 'error' : '';
+  if (isBusy) cls = cls ? `${cls} loading` : 'loading';
+  el.className = cls;
+}
+function setBusy(on) {
+  isBusy = on;
+  updateUploadLocks();
+  const el = $('status');
+  if (!el) return;
+  const parts = String(el.className || '').split(/\s+/).filter(Boolean).filter((c) => c !== 'loading');
+  if (on && el.textContent) parts.push('loading');
+  el.className = parts.join(' ');
 }
 function esc(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -605,10 +656,11 @@ function hasUnsavedEdits() {
     || JSON.stringify(draft.routines) !== JSON.stringify(state.job.routines);
 }
 function computeStepDone() {
-  if (!state) return { 1: false, 2: false, 3: false, 4: false, 5: false };
+  if (!state) return { 1: false, 2: false, 3: false, 4: false, 5: false, 6: false };
   const tablesDone = isKindComplete('tables');
   const routinesDone = isKindComplete('routines');
-  return { 1: true, 2: true, 3: tablesDone, 4: routinesDone, 5: tablesDone && routinesDone && !hasUnsavedEdits() };
+  const reviewDone = tablesDone && routinesDone;
+  return { 1: true, 2: true, 3: tablesDone, 4: routinesDone, 5: reviewDone, 6: reviewDone && !hasUnsavedEdits() };
 }
 
 function knownNamesSet() {
@@ -1541,7 +1593,7 @@ function updateSteps() {
 }
 
 function updateUploadLocks() {
-  const locked = !!state;
+  const locked = !!state || isBusy;
   const file = $('file');
   const uploadBtn = $('uploadBtn');
   const sampleBtn = $('sampleBtn');
@@ -1549,7 +1601,7 @@ function updateUploadLocks() {
   if (file) file.disabled = locked;
   if (uploadBtn) uploadBtn.disabled = locked;
   if (sampleBtn) sampleBtn.disabled = locked;
-  if (clearBtn) clearBtn.disabled = !locked;
+  if (clearBtn) clearBtn.disabled = !state || isBusy;
 }
 
 // Client-only reset: clears the active document, draft edits, validation
@@ -1563,9 +1615,14 @@ function clearSessionState() {
   $('jobSection').hidden = true;
   $('browseSection').hidden = true;
   $('reviewSection').hidden = true;
+  $('exportSection').hidden = true;
   $('jobSummary').innerHTML = '';
   $('browser').innerHTML = '';
   $('issues').innerHTML = '';
+  $('unresolved').innerHTML = '';
+  $('exportStatus').innerHTML = '';
+  $('exportReview').innerHTML = '';
+  $('exportBtn').disabled = false;
   $('sideJob').textContent = '';
   $('resultMeta').textContent = '';
   const file = $('file');
@@ -1607,16 +1664,104 @@ function renderIssues() {
     || '<p class="empty-note">No validation issues.</p>';
 }
 
+function evidenceExcerpt(item) {
+  const text = String(item?.evidence_text ?? '').trim() || '—';
+  return text.length > 160 ? `${text.slice(0, 160)}…` : text;
+}
+
+function unresolvedItems() {
+  const out = [];
+  if (!state || !draft) return out;
+  for (const kind of ['tables', 'routines']) {
+    for (const item of draft[kind] || []) {
+      if (itemNeedsReview(kind, item)) out.push({ kind, item });
+    }
+  }
+  return out;
+}
+
+// Review view: validation issues plus every unresolved item with its source
+// evidence. Reuses the existing review model (issues, REVIEW steps,
+// review_status) — no new state.
+function renderReview() {
+  renderIssues();
+  const list = unresolvedItems();
+  $('unresolved').innerHTML = list.map(({ kind, item }) => {
+    const iss = issuesFor(kind, item.id);
+    const reviewSteps = kind === 'routines' ? countReviewSteps(item) : 0;
+    const bits = [];
+    if (iss.length) bits.push(`${iss.length} issue${iss.length === 1 ? '' : 's'}`);
+    if (reviewSteps) bits.push(`${reviewSteps} REVIEW step${reviewSteps === 1 ? '' : 's'}`);
+    return `<div class="review-item"><div class="top"><span class="id-chip">${esc(item.id)}</span>` +
+      `<span class="pill neutral">${esc(singular(kind))}</span>` +
+      `<span class="nm">${esc(item.name || '(untitled)')}</span>` +
+      `<span class="page-chip">${esc(pagesLabel(item.source_pages))}</span>` +
+      `<button type="button" data-open-kind="${kind}" data-open-id="${esc(item.id)}">Open</button></div>` +
+      `<p class="ev">${esc(bits.join(' · '))} — ${esc(evidenceExcerpt(item))}</p></div>`;
+  }).join('') || '<p class="empty-note">No unresolved items — everything is reviewed.</p>';
+}
+
+function unresolvedReviewRoutines() {
+  if (!state || !draft) return [];
+  return (draft.routines || []).filter((r) => !isAcknowledged(r) && countReviewSteps(r) > 0);
+}
+
+// Export view: validation status with the Excel download near the top.
+// Warnings never block the download; errors do. Unresolved REVIEW steps stay
+// visible so nothing ships unnoticed.
+function renderExport() {
+  const job = state.job;
+  const errors = job.issues.filter((i) => i.severity === 'error').length;
+  const warnings = job.issues.filter((i) => i.severity === 'warning').length;
+  const reviewRoutines = unresolvedReviewRoutines();
+  const reviewSteps = reviewRoutines.reduce((n, r) => n + countReviewSteps(r), 0);
+  const unsaved = hasUnsavedEdits();
+  const statusBar = errors > 0
+    ? `<span class="pill error">Blocked</span><span class="msg">${errors} error${errors === 1 ? '' : 's'} must be fixed before export.</span>`
+    : (warnings > 0 || reviewSteps > 0)
+      ? `<span class="pill warning">Ready with warnings</span><span class="msg">No blocking errors — warnings and REVIEW steps export as flagged.</span>`
+      : `<span class="pill ok">Ready to export</span><span class="msg">No validation issues.</span>`;
+  $('exportStatus').innerHTML = `<div class="review-bar" id="exportBar">${statusBar}</div>` +
+    `<p class="empty-note">${errors} error${errors === 1 ? '' : 's'} · ${warnings} warning${warnings === 1 ? '' : 's'} · ` +
+    `${reviewSteps} unresolved REVIEW step${reviewSteps === 1 ? '' : 's'}` +
+    (unsaved ? ' · unsaved edits — save before export so the workbook matches your review' : '') + `.</p>`;
+  $('exportBtn').disabled = errors > 0;
+  $('exportReview').innerHTML = reviewRoutines.map((r) => {
+    const rows = rcRoutineStepRows(r, draft.routines, draft.tables)
+      .filter((row) => String(row[2] ?? '').toUpperCase() === 'REVIEW');
+    return `<div class="review-item"><div class="top"><span class="id-chip">${esc(r.id)}</span>` +
+      `<span class="nm">${esc(r.name || '(untitled)')}</span>` +
+      `<span class="page-chip">${esc(pagesLabel(r.source_pages))}</span>` +
+      `<span class="pill warning">${rows.length} REVIEW</span></div>` +
+      rows.map((row) => `<p class="ev">Step ${esc(row[0])}: ${esc(row[1])} — ${esc(row[6])}</p>`).join('') + `</div>`;
+  }).join('') || '<p class="empty-note">No unresolved REVIEW steps.</p>';
+}
+
+function openReviewItem(kind, id) {
+  if (ui.tab !== kind) {
+    syncDetailToDraft();
+    ui.tab = kind;
+    ui.mode = 'list';
+    ui.selectedId = null;
+    detailCtx = null;
+    clampPage(kind);
+  }
+  openDetail(id);
+  updateSteps();
+}
+
 function render() {
   if (!state) return;
   $('jobSection').hidden = false;
   $('browseSection').hidden = false;
   $('reviewSection').hidden = false;
+  $('exportSection').hidden = false;
   updateSteps();
   updateUploadLocks();
   renderJobSummary();
   renderBrowser();
-  renderIssues();
+  renderReview();
+  renderExport();
 }
 
 // Copy the visible detail editor back into the draft so edits survive
@@ -1863,17 +2008,22 @@ function adoptJob(payload) {
 }
 
 $('sampleBtn').addEventListener('click', async () => {
+  if (isBusy) return;
+  setBusy(true);
   setStatus('Loading sample guideline…');
   try {
     const res = await fetch('/api/demo/sample', { method: 'POST' });
     adoptJob(await loadJobPayload(res));
     setStatus('Sample loaded. Review below, then export.');
   } catch (err) { setStatus(err.message, true); }
+  finally { setBusy(false); }
 });
 
 $('uploadBtn').addEventListener('click', async () => {
+  if (isBusy) return;
   const file = $('file').files[0];
   if (!file) { setStatus('Choose a PDF first.', true); return; }
+  setBusy(true);
   setStatus('Uploading and extracting…');
   try {
     const res = await fetch('/api/jobs', {
@@ -1884,6 +2034,7 @@ $('uploadBtn').addEventListener('click', async () => {
     adoptJob(await loadJobPayload(res));
     setStatus('Extraction complete. Review below, then export.');
   } catch (err) { setStatus(err.message, true); }
+  finally { setBusy(false); }
 });
 
 $('saveBtn').addEventListener('click', async () => {
@@ -1935,6 +2086,7 @@ $('filterSelect').addEventListener('change', (ev) => {
 });
 
 $('clearBtn').addEventListener('click', () => {
+  if (isBusy) return;
   if (!state) return;
   syncDetailToDraft();
   const unsaved = hasUnsavedEdits();
@@ -1954,6 +2106,11 @@ $('browser').addEventListener('click', (ev) => {
 
 $('browser').addEventListener('input', handleDetailInput);
 $('browser').addEventListener('change', handleDetailInput);
+
+$('reviewSection').addEventListener('click', (ev) => {
+  const btn = ev.target.closest('[data-open-kind]');
+  if (btn) openReviewItem(btn.dataset.openKind, btn.dataset.openId);
+});
 
 $('bottomBar').addEventListener('click', (ev) => {
   const btn = ev.target.closest('[data-act]');

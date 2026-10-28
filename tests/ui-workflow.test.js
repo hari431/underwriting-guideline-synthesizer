@@ -54,7 +54,7 @@ class MockEl {
 
 function makeDocument() {
   const els = new Map();
-  const steps = [1, 2, 3, 4, 5].map((n) => {
+  const steps = [1, 2, 3, 4, 5, 6].map((n) => {
     const el = new MockEl(`step${n}`);
     el.dataset.step = String(n);
     return el;
@@ -158,7 +158,7 @@ test('ui: table detail editor syncs (DetailCard id consistent)', async () => {
 test('ui: completion reflects reviews, not visits; ack counts as reviewed', async () => {
   const { T, stepDone } = await makeUI();
   T.fn.adoptJob(fixturePayload());
-  assert.deepEqual({ ...T.fn.computeStepDone() }, { 1: true, 2: true, 3: false, 4: false, 5: false });
+  assert.deepEqual({ ...T.fn.computeStepDone() }, { 1: true, 2: true, 3: false, 4: false, 5: false, 6: false });
   assert.equal(T.fn.isKindComplete('tables'), false);
   assert.equal(T.fn.isKindComplete('routines'), false);
   assert.equal(T.fn.countReviewSteps(T.draft.routines[1]) > 0, true);
@@ -176,6 +176,7 @@ test('ui: completion reflects reviews, not visits; ack counts as reviewed', asyn
   T.fn.updateSteps();
   assert.equal(stepDone(3), true);
   assert.equal(stepDone(5), false);
+  assert.equal(stepDone(6), false);
 
   for (const v of ['acknowledged', 'accepted', 'verified', ' Reviewed ']) {
     T.draft.routines[1].review_status = v;
@@ -185,20 +186,23 @@ test('ui: completion reflects reviews, not visits; ack counts as reviewed', asyn
   assert.equal(T.fn.isKindComplete('routines'), true);
   T.fn.updateSteps();
   assert.equal(stepDone(4), true);
-  assert.equal(stepDone(5), false);
+  assert.equal(stepDone(5), true);
+  assert.equal(stepDone(6), false);
 
   T.state.job.tables = structuredClone(T.draft.tables);
   T.state.job.routines = structuredClone(T.draft.routines);
   assert.equal(T.fn.hasUnsavedEdits(), false);
-  assert.deepEqual({ ...T.fn.computeStepDone() }, { 1: true, 2: true, 3: true, 4: true, 5: true });
+  assert.deepEqual({ ...T.fn.computeStepDone() }, { 1: true, 2: true, 3: true, 4: true, 5: true, 6: true });
   T.fn.updateSteps();
   assert.equal(stepDone(5), true);
+  assert.equal(stepDone(6), true);
 
   T.draft.tables[1].review_status = '';
   assert.equal(T.fn.isKindComplete('tables'), false);
   T.fn.updateSteps();
   assert.equal(stepDone(3), false);
   assert.equal(stepDone(5), false);
+  assert.equal(stepDone(6), false);
 });
 
 test('ui: editing clears acknowledgement and updates completion', async () => {
@@ -273,9 +277,13 @@ test('ui: clearing resets session state without server deletes', async () => {
   assert.equal(el('jobSection').hidden, true);
   assert.equal(el('browseSection').hidden, true);
   assert.equal(el('reviewSection').hidden, true);
+  assert.equal(el('exportSection').hidden, true);
   assert.equal(el('jobSummary').innerHTML, '');
   assert.equal(el('browser').innerHTML, '');
   assert.equal(el('issues').innerHTML, '');
+  assert.equal(el('unresolved').innerHTML, '');
+  assert.equal(el('exportStatus').innerHTML, '');
+  assert.equal(el('exportReview').innerHTML, '');
   assert.equal(el('sideJob').textContent, '');
   assert.equal(el('resultMeta').textContent, '');
   assert.equal(el('file').value, '');
@@ -284,7 +292,7 @@ test('ui: clearing resets session state without server deletes', async () => {
   assert.equal(el('bottomBar').hidden, true);
   assert.equal(el('tablesCount').textContent, '0');
   assert.equal(el('routinesCount').textContent, '0');
-  for (let n = 1; n <= 5; n += 1) assert.equal(stepDone(n), false);
+  for (let n = 1; n <= 6; n += 1) assert.equal(stepDone(n), false);
   assert.equal(el('file').disabled, false);
   assert.equal(el('uploadBtn').disabled, false);
   assert.equal(el('sampleBtn').disabled, false);
@@ -310,6 +318,7 @@ test('ui: clear cancellation preserves the session', async () => {
   assert.equal(el('jobSection').hidden, false);
   assert.equal(el('browseSection').hidden, false);
   assert.equal(el('reviewSection').hidden, false);
+  assert.equal(el('exportSection').hidden, false);
   assert.equal(el('file').disabled, true);
   assert.equal(el('clearBtn').disabled, false);
 });
