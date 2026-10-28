@@ -2,6 +2,7 @@
 // Policy: structural/traceability breaks are errors; anything interpretive —
 // including unfamiliar formula syntax — is a warning flagged for review.
 import { ROUTINE_KINDS, createValidationIssue, definedConstantTerms, normalizeVariableKey, resolveRoutineReference, resolveTableReference, tableReferenceTerms } from './models.js';
+import { tableHasRecordColumn } from './table-split.js';
 
 export { ROUTINE_KINDS };
 
@@ -90,6 +91,7 @@ export function validateJob(job) {
     checkInconsistentColumnValues(table, warn);
     checkSuspectedBreakdown(table, warn);
     checkSuspectedMerge(table, warn);
+    checkSuspectedRecordMerge(table, warn);
     checkConfidence('table', table, warn);
   }
   checkSuspectedContinuations(tables, warn);
@@ -124,6 +126,7 @@ export function validateJob(job) {
     checkConditionFallback(routine, warn);
     checkStepFormulas(routine, warn);
     checkStepsWithoutOperations(routine, warn);
+    checkIncompleteStepLogic(routine, warn);
     checkLookupKeys(routine, warn);
     checkStructuredDependencies(routine, warn, refCtx);
     checkConfidence('routine', routine, warn);
@@ -452,6 +455,24 @@ function checkSuspectedMerge(table, warn) {
   }
 }
 
+// A column whose every value embeds its own key ("label: value") is a
+// self-contained record: the signature of an independent grid flattened into
+// one column. When such a column still sits beside other columns, adjacent
+// grids may have been merged into one table. A single record column that
+// survived expansion is ambiguous flattened text, not a confident split, so
+// it is flagged on its own terms. Times, ratios, and schemes never count as
+// embedded keys (see table-split.js).
+function checkSuspectedRecordMerge(table, warn) {
+  const rows = table.rows ?? [];
+  const width = Math.max(table.headers?.length ?? 0, ...rows.map((r) => r?.length ?? 0));
+  if (!tableHasRecordColumn(table)) return;
+  if (width < 2) {
+    warn('table', table.id, `Table "${table.name || table.id}" is a single column of "label: value" text that could not be confidently split into key/value columns; verify against the source.`, table.source_pages);
+    return;
+  }
+  warn('table', table.id, `Table "${table.name || table.id}" has column(s) whose values each embed their own key (e.g., "label: value"); verify adjacent tables were not merged into one.`, table.source_pages);
+}
+
 function checkConditionFallback(routine, warn) {
   if (routine.kind !== 'condition') return;
   const conds = routine.conditions ?? [];
@@ -471,6 +492,10 @@ function checkStepFormulas(routine, warn) {
     if (!text) return;
     if (!FORMULA_OPERATORS.test(text)) return;
     if (CONDITIONAL_KEYWORDS.test(text) && !text.includes('=')) return;
+    // Structured steps already carry their interpretation (and get specific
+    // incomplete-logic flags when a target is missing); only unparsed text
+    // is "syntax the validator cannot reliably interpret".
+    if (hasOperationEvidence(stepDetailForStep(routine, idx, String(step ?? '')))) return;
     const verdict = classifyFormula(text);
     if (verdict === 'review') {
       warn('routine', routine.id, `Step ${idx + 1} ("${truncate(text, 60)}") uses syntax the validator cannot reliably interpret; flagged for analyst review (not treated as invalid).`, routine.source_pages);
@@ -517,6 +542,33 @@ function checkStepsWithoutOperations(routine, warn) {
   const plural = missing.length === 1 ? '' : 's';
   const reads = missing.length === 1 ? 'it reads' : 'they read';
   warn('routine', routine.id, `Routine "${routine.name || routine.id}" has ${missing.length} step${plural} without an evidenced operation (step ${missing.join(', step ')}); ${reads} as descriptive text — verify the source states executable logic.`, routine.source_pages);
+}
+
+// Calculations and rounding that state no target variable are incomplete
+// logic, not descriptive prose: worked fragments ("LX-01 + LX-02") and
+// summary rounding ("Rounded ... to nearest ...") keep their evidenced
+// operation but warn so an analyst verifies the intended target.
+function checkIncompleteStepLogic(routine, warn) {
+  if (routine.kind !== 'calculation_steps') return;
+  const detailed = routine.steps_detailed ?? [];
+  if (detailed.length === 0) return;
+  detailed.forEach((step, idx) => {
+    const op = String(step?.operation ?? '').toLowerCase();
+    const text = String(step?.instruction ?? step?.original_text ?? '');
+    if (!text.trim()) return;
+    const seq = step?.sequence !== undefined && step?.sequence !== null && String(step.sequence) !== ''
+      ? String(step.sequence)
+      : String(idx + 1);
+    const pages = step?.source_pages?.length ? step.source_pages : routine.source_pages;
+    if ((op === 'expression' || op === 'assignment') && !String(step?.output ?? '').trim()) {
+      const evidenced = String(step?.expression ?? '').trim() || String(step?.operand ?? '').trim()
+        || (step?.inputs ?? []).some((v) => String(v ?? '').trim() !== '');
+      if (!evidenced) return;
+      warn('routine', routine.id, `Step ${seq} ("${truncate(text, 60)}") states a calculation without a target variable; flagged as incomplete — verify the intended output against the source.`, pages);
+    } else if (op === 'rounding' && !String(step?.output ?? '').trim() && !String(step?.operand ?? '').trim()) {
+      warn('routine', routine.id, `Rounding step ${seq} ("${truncate(text, 60)}") has no target variable; flagged as incomplete — verify what is rounded against the source.`, pages);
+    }
+  });
 }
 
 function checkLookupKeys(routine, warn) {

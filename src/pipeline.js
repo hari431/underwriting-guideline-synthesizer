@@ -1,7 +1,8 @@
-// End-to-end pipeline: ingest PDF -> extract -> normalize -> validate.
+// End-to-end pipeline: ingest PDF -> extract -> normalize -> separate -> validate.
 import { extractPdfText } from './pdf-extract.js';
 import { ModelDisabledError, runExtraction } from './extract.js';
-import { createDocument, createJob, normalizeJob } from './models.js';
+import { createDocument, createJob, createValidationIssue, normalizeJob } from './models.js';
+import { expandRecordTables, splitMergedTables } from './table-split.js';
 import { validateJob } from './validate.js';
 
 /**
@@ -31,7 +32,39 @@ export async function processPdf(
       status: 'review',
     })
   );
+  // Deterministic separation of side-by-side grids the extractor merged into
+  // one table. Strong structural evidence only; ambiguous layouts pass through
+  // untouched and the validator flags them for review instead.
+  const { tables: separated, splits } = splitMergedTables(job.tables);
+  // Deterministic expansion of single-column "label: value" lookup grids
+  // into key/value (or minimum/maximum/value) columns. Same policy: strong
+  // structural evidence only; ambiguous text passes through untouched and
+  // the validator flags it for review instead.
+  const { tables: expanded, expansions } = expandRecordTables(separated);
+  job.tables = expanded;
   job.issues = validateJob(job);
+  for (const split of splits) {
+    job.issues.push(
+      createValidationIssue({
+        severity: 'warning',
+        targetType: 'table',
+        targetId: split.originalId,
+        message: `Table "${split.originalName || split.originalId}" was separated into ${split.partNames.length} independent grids (${split.partNames.map((n) => `"${n}"`).join(', ')}); verify the boundaries against the source.`,
+        sourcePages: split.sourcePages,
+      })
+    );
+  }
+  for (const expansion of expansions) {
+    job.issues.push(
+      createValidationIssue({
+        severity: 'warning',
+        targetType: 'table',
+        targetId: expansion.tableId,
+        message: expansion.message,
+        sourcePages: expansion.sourcePages,
+      })
+    );
+  }
   job = normalizeJob(job);
   return { job, source: recordingPath ? 'recorded' : 'live' };
 }

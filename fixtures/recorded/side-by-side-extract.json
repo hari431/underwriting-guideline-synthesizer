@@ -1,0 +1,21 @@
+{
+  "comment": "Synthetic recording: three independent side-by-side grids merged into one five-column table. Abstract labels only; exercises generic structural separation with no domain titles or column names.",
+  "tables": [
+    {
+      "name": "Synthetic master grid",
+      "source_pages": [2],
+      "source_location": "page 2, upper half",
+      "evidence_text": "SYNTHETIC MASTER GRID\nItem Rate P Rate Q Alpha Factor Beta Credit\nItem 1 10 20 Class A: 1.00 Tier 1: 5%\nItem 2 11 21 Class B: 1.25 Tier 2: 10%\nItem 3 12 22 Class C: 1.05 Tier 3: 15%\nItem 4 13 23 Class D: 1.20 Tier 4: 20%",
+      "headers": ["Item", "Rate P", "Rate Q", "Alpha Factor", "Beta Credit"],
+      "rows": [
+        ["Item 1", "10", "20", "Class A: 1.00", "Tier 1: 5%"],
+        ["Item 2", "11", "21", "Class B: 1.25", "Tier 2: 10%"],
+        ["Item 3", "12", "22", "Class C: 1.05", "Tier 3: 15%"],
+        ["Item 4", "13", "23", "Class D: 1.20", "Tier 4: 20%"]
+      ],
+      "footnotes": ["Synthetic footnote carried on every part."],
+      "notes": "Synthetic note."
+    }
+  ],
+  "routines": []
+}

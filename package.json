@@ -4,7 +4,7 @@
   "description": "Hackathon demo: extract rating tables and routines from underwriting guideline PDFs into traceable Excel.",
   "type": "module",
   "scripts": {
-    "test": "node --test tests/models.test.js tests/ingest.test.js tests/extract.test.js tests/validate.test.js tests/excel.test.js tests/pipeline.test.js tests/server.test.js tests/dotenv.test.js tests/rating-analyser.test.js",
+    "test": "node --test tests/models.test.js tests/ingest.test.js tests/extract.test.js tests/validate.test.js tests/excel.test.js tests/pipeline.test.js tests/server.test.js tests/dotenv.test.js tests/rating-analyser.test.js tests/table-split.test.js tests/step-extraction.test.js tests/table-normalize.test.js",
     "verify:model": "node scripts/verify-model.js",
     "start": "node src/server.js",
     "sample": "node scripts/make-sample-pdf.js"

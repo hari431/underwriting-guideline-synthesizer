@@ -41,6 +41,67 @@ test('ingest: rejects non-PDF input', () => {
   assert.throws(() => extractPdfText(Buffer.from('not a pdf')), /Not a PDF/);
 });
 
+// Minimal one-page PDF with explicitly positioned text runs (no helpers from
+// pdf-write, which only emits whole lines at a fixed x). Run texts must avoid
+// PDF string escapes; the layout values below are plain synthetic tokens.
+function buildPositionedPdf(runs) {
+  const streamText = runs
+    .map((r) => `BT /F1 12 Tf 1 0 0 1 ${r.x} ${r.y} Tm (${r.text}) Tj ET\n`)
+    .join('');
+  const streamData = Buffer.from(streamText, 'latin1');
+  const objects = [
+    null,
+    Buffer.from('<< /Type /Catalog /Pages 2 0 R >>', 'latin1'),
+    Buffer.from('<< /Type /Pages /Kids [3 0 R] /Count 1 >>', 'latin1'),
+    Buffer.from(
+      '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] ' +
+        '/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>',
+      'latin1'
+    ),
+    {
+      stream: true,
+      dict: Buffer.from(`<< /Length ${streamData.length} >>`, 'latin1'),
+      data: streamData,
+    },
+    Buffer.from(
+      '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>',
+      'latin1'
+    ),
+  ];
+  const chunks = [Buffer.from('%PDF-1.4\n%\xe2\xe3\xcf\xd3\n', 'latin1')];
+  const offsets = [0];
+  for (let id = 1; id < objects.length; id += 1) {
+    offsets[id] = chunks.reduce((n, c) => n + c.length, 0);
+    chunks.push(Buffer.from(`${id} 0 obj\n`, 'latin1'));
+    const obj = objects[id];
+    if (obj.stream) {
+      chunks.push(obj.dict, Buffer.from('\nstream\n', 'latin1'), obj.data, Buffer.from('\nendstream\nendobj\n', 'latin1'));
+    } else {
+      chunks.push(obj, Buffer.from('\nendobj\n', 'latin1'));
+    }
+  }
+  const xrefOffset = chunks.reduce((n, c) => n + c.length, 0);
+  let xref = `xref\n0 ${objects.length}\n0000000000 65535 f \n`;
+  for (let id = 1; id < objects.length; id += 1) {
+    xref += `${String(offsets[id]).padStart(10, '0')} 00000 n \n`;
+  }
+  xref += `trailer\n<< /Size ${objects.length} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
+  return Buffer.concat([...chunks, Buffer.from(xref, 'latin1')]);
+}
+
+test('ingest: wide same-line gutters survive as tabs; word gaps stay spaces', () => {
+  const pdf = buildPositionedPdf([
+    { x: 72, y: 720, text: 'GridA-Item' },
+    { x: 400, y: 720, text: 'GridB-Item' },
+    { x: 72, y: 700, text: 'North' },
+    { x: 140, y: 700, text: 'South' },
+  ]);
+  const { pages } = extractPdfText(pdf);
+  const lines = pages[0].text.split('\n');
+  assert.equal(lines[0], 'GridA-Item\tGridB-Item');
+  assert.equal(lines[1], 'North South');
+});
+
 // Build a valid multi-page PDF with an incremental update appended (the way
 // tools resave an edited PDF): a revised catalog plus a revised page-2
 // content stream, with a new xref section chained via /Prev. Objects that

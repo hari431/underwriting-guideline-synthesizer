@@ -1031,6 +1031,316 @@ function conditionInputVars(condition, branchText, output) {
   return out;
 }
 
+// A numeric literal for operand purposes: digits with optional thousands
+// separators, decimals, sign, percent, currency, or one layer of
+// parentheses (accounting style). Such fragments are values, never variable
+// references, so they never become step inputs.
+const NUMERIC_PAREN_WRAPPER = /^\(\s*(.+?)\s*\)$/;
+function isNumericFragment(text) {
+  let s = String(text ?? '').trim();
+  const paren = NUMERIC_PAREN_WRAPPER.exec(s);
+  if (paren) s = paren[1].trim();
+  s = s.replace(/^[₹$€£¥\s]+|[₹$€£¥\s]+$/g, '').replace(/%$/, '').replace(/,/g, '').trim();
+  return /^[-+]?(\d+(\.\d*)?|\.\d+)$/.test(s);
+}
+
+// A parenthetical group holding only a value ("(2,000)", "(4.50%)") is
+// instance data, not part of the operand name: strip it for the input term.
+// The full fragment stays verbatim in the step expression.
+function cleanArithmeticOperand(fragment) {
+  const cleaned = String(fragment ?? '')
+    .replace(/\(\s*[₹$€£¥\d,.\s%+-]+\s*\)/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned || String(fragment ?? '').trim();
+}
+
+function balancedParensLocal(text) {
+  let depth = 0;
+  for (const ch of String(text ?? '')) {
+    if (ch === '(') depth += 1;
+    if (ch === ')') {
+      depth -= 1;
+      if (depth < 0) return false;
+    }
+  }
+  return depth === 0;
+}
+
+// Clause punctuation that turns a line into labelled prose rather than a
+// bare calculation: key/value separators, pipes, sentence marks, and
+// bracket groups. En/em dashes are prose separators too, never arithmetic,
+// so ranges ("2–10") and result tails ("— 1,240.00") never parse as minus.
+const BARE_REJECT_CHARS = /[;:|?!=\[\]{}–—−]/;
+
+// A whole-expression operand: a code, variable, number, or short phrase —
+// never a labelled clause, quantity prose ("50 split"), or a computed
+// amount tail ("CPA ₹100").
+function operandLikeWhole(fragment) {
+  const frag = String(fragment ?? '').trim();
+  if (!frag || BARE_REJECT_CHARS.test(frag)) return false;
+  const withoutParens = frag.replace(/\([^()]*\)/g, ' ');
+  if (withoutParens.includes(',') && !/^\d[\d,]*(\.\d+)?%?$/.test(frag)) return false;
+  // A digit-led fragment carrying letters is a measured amount, not an
+  // arithmetic operand ("1,000cc"); letter-led codes ("LX-01") pass.
+  if (/[-+]?\d[\d,.\s%]*[A-Za-z]/.test(withoutParens)) return false;
+  // Bare currency outside parentheses is a computed amount tail; values in
+  // parentheses ("Base (2,000)") are legitimate operand detail.
+  if (/[₹$€£¥]/.test(withoutParens)) return false;
+  const tokens = frag.split(/\s+/).filter(Boolean);
+  if (tokens.length === 0 || tokens.length > 5) return false;
+  if (tokens.length === 1) return true;
+  // Multi-word operands need a value group or a uniformly capitalized term;
+  // mixed-case phrases ("Apply discount") are surrounding prose.
+  if (/\([^()]*\)/.test(frag)) return true;
+  return tokens.every((t) => /^[A-Z0-9]/.test(t));
+}
+
+// Strict operands for minus-only lines, where a spaced hyphen is as likely
+// editorial ("risk - adjusted") as arithmetic: single codes, capitalized
+// terms, or numbers — never plain lowercase words or phrases.
+function strictMinusOperand(fragment) {
+  const frag = String(fragment ?? '').trim();
+  if (!frag || /\s/.test(frag) || BARE_REJECT_CHARS.test(frag)) return false;
+  if (frag.length < 2) return false;
+  if (/^\d[\d,]*(\.\d+)?%?$/.test(frag)) return true;
+  if (/^[A-Z]/.test(frag)) return true;
+  return /^[A-Za-z_]/.test(frag) && /[0-9_.-]/.test(frag);
+}
+
+// Split a bare calculation on explicit binary operators: + * / × ÷ anywhere,
+// ASCII hyphen only when spaced on both sides (hyphenated codes and unary
+// signs never split). Returns {operands, ops} or null when no operator joins
+// two sides.
+function splitArithmeticOperands(text) {
+  const s = String(text ?? '');
+  const operands = [];
+  const ops = [];
+  let start = 0;
+  for (let i = 0; i < s.length; i += 1) {
+    const ch = s[i];
+    let op = null;
+    if (ch === '+' || ch === '*' || ch === '/' || ch === '×' || ch === '÷') {
+      op = ch;
+    } else if (ch === '-' && (s[i - 1] === ' ' || s[i - 1] === '\t') && (s[i + 1] === ' ' || s[i + 1] === '\t')) {
+      op = '-';
+    }
+    if (op) {
+      operands.push(s.slice(start, i));
+      ops.push(op);
+      start = i + 1;
+    }
+  }
+  operands.push(s.slice(start));
+  if (ops.length === 0) return null;
+  return { operands, ops };
+}
+
+function dedupeInputs(terms) {
+  const seen = new Set();
+  const out = [];
+  for (const term of terms) {
+    const key = String(term ?? '').toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(term);
+  }
+  return out;
+}
+
+// Parse a whole step line as one arithmetic expression. Returns
+// {expression, inputs} or null when the line is not safely readable as bare
+// arithmetic.
+function tryWholeArithmetic(text) {
+  const split = splitArithmeticOperands(text);
+  if (!split) return null;
+  const operands = split.operands.map((o) => String(o ?? '').trim());
+  if (operands.some((o) => !o)) return null;
+  if (split.ops.every((o) => o === '-')) {
+    if (!operands.every(strictMinusOperand)) return null;
+  } else {
+    if (!operands.every(operandLikeWhole)) return null;
+    // A lone single character beside a phrase or a slash is an abbreviation
+    // ("P/C guidelines", "a/b testing"), not a variable in arithmetic.
+    if (operands.some((o) => o.length === 1)
+      && (operands.some((o) => /\s/.test(o)) || split.ops.includes('/'))) {
+      return null;
+    }
+  }
+  const inputs = [];
+  for (const o of operands) {
+    const cleaned = cleanArithmeticOperand(o);
+    if (!cleaned || isNumericFragment(cleaned)) continue;
+    inputs.push(cleaned);
+  }
+  return { expression: String(text ?? '').trim(), inputs: dedupeInputs(inputs) };
+}
+
+function matchEmbeddedToken(s, at) {
+  const rest = s.slice(at);
+  const word = /^[A-Za-z_][A-Za-z0-9_]*(?:-[A-Za-z0-9_]+)*(?:\.[A-Za-z0-9_]+)*/.exec(rest);
+  if (word) return word[0];
+  const num = /^\d[\d,]*(?:\.\d+)?%?/.exec(rest);
+  if (num) return num[0];
+  return null;
+}
+
+// Strict single-token operands for arithmetic embedded in labelled prose:
+// codes, capitalized terms, dotted keys, underscored variables, or numbers —
+// each at least two characters so abbreviations ("P/C") and bare letters
+// never seed a run. Returns false for connective words ("and", "or").
+function embeddedTokenOk(token) {
+  if (!token || token.length < 2) return false;
+  if (NON_CAPTURE_WORDS.has(String(token).toLowerCase())) return false;
+  return true;
+}
+
+// Code-like tokens (capitals, digits, underscores, dots, hyphens)
+// self-delimit against adjacent prose; plain lowercase words need signal
+// boundaries and never join a minus run.
+function embeddedTokenStrict(token) {
+  return /[A-Z0-9_.-]/.test(String(token ?? ''));
+}
+
+// Find one maximal run of strict single-token operands joined by explicit
+// operators inside a labelled line ("Subtotal LX-01 + LX-02 — 1,240.00").
+// Phrase operands with fuzzy boundaries are rejected: only the operator core
+// with clean token edges is extracted. Returns {expression, inputs} or null.
+function tryEmbeddedArithmetic(text) {
+  const s = String(text ?? '');
+  let i = 0;
+  while (i < s.length) {
+    const token = matchEmbeddedToken(s, i);
+    if (!token || !embeddedTokenOk(token)) {
+      i += 1;
+      continue;
+    }
+    const prev = s.slice(0, i);
+    if (!embeddedTokenStrict(token) && /[A-Za-z0-9]\s+$/.test(prev)) {
+      i += 1;
+      continue;
+    }
+    if (/[A-Za-z0-9_.-]$/.test(prev)) {
+      i += 1;
+      continue;
+    }
+    const operands = [token];
+    const ops = [];
+    let j = i + token.length;
+    for (;;) {
+      const gap = /^\s*/.exec(s.slice(j))[0];
+      let k = j + gap.length;
+      const ch = s[k];
+      let op = null;
+      if (ch === '+' || ch === '*' || ch === '/' || ch === '×' || ch === '÷') op = ch;
+      else if (ch === '-' && gap.length > 0 && /^\s/.test(s.slice(k + 1, k + 2))) op = '-';
+      if (!op) break;
+      k += 1;
+      k += /^\s*/.exec(s.slice(k))[0].length;
+      const next = matchEmbeddedToken(s, k);
+      if (!next || !embeddedTokenOk(next)) break;
+      operands.push(next);
+      ops.push(op);
+      j = k + next.length;
+    }
+    if (operands.length < 2) {
+      i += 1;
+      continue;
+    }
+    // The run must not continue the arithmetic chain on either side: a
+    // longer chain with a fuzzy edge is prose, not an extractable core.
+    if (/[+*/×÷]\s*$/.test(prev) || /(?:^|\s)-\s*$/.test(prev)) {
+      i = j;
+      continue;
+    }
+    const after = s.slice(j);
+    if (/^\s*[+*/×÷]/.test(after) || /^\s*-\s/.test(after)) {
+      i = j;
+      continue;
+    }
+    // Minus runs need strict operands throughout ("risk - adjusted" is
+    // prose); plus-style runs may join plain words ("cost + tax" reads as
+    // arithmetic).
+    if (ops.includes('-') && !operands.every(embeddedTokenStrict)) {
+      i = j;
+      continue;
+    }
+    // No partial token on the right, and a non-code final operand must not
+    // continue into prose.
+    if (/^[A-Za-z0-9_.-]/.test(after)) {
+      i = j;
+      continue;
+    }
+    if (/^\s+[A-Za-z0-9]/.test(after) && !embeddedTokenStrict(operands[operands.length - 1])) {
+      i = j;
+      continue;
+    }
+    const inputs = [];
+    for (const o of operands) {
+      const cleaned = cleanArithmeticOperand(o);
+      if (!cleaned || isNumericFragment(cleaned)) continue;
+      inputs.push(cleaned);
+    }
+    return { expression: s.slice(i, j), inputs: dedupeInputs(inputs) };
+  }
+  return null;
+}
+
+// Parse explicit arithmetic without a leading assignment: result form
+// ("A + B = C", "A + B = 1.00"), a whole-line expression, or an embedded
+// operator core. Returns {expression, inputs, output?} or null. No output,
+// operand, or execution order is invented: targetless calculations keep
+// their verbatim line and are flagged incomplete by validation.
+function tryParseBareArithmetic(body) {
+  const text = String(body ?? '').trim().replace(/\.\s*$/, '');
+  if (!text || !balancedParensLocal(text)) return null;
+  // Labelled, piped, questioned, or multi-clause lines are prose, not bare
+  // calculations.
+  if (/[;:|?!]/.test(text)) return null;
+  if (/,\s*[A-Za-z]/.test(text)) return null;
+  const eq = /^(.*)\s*=\s*(.+?)\s*$/.exec(text);
+  if (eq && !eq[1].includes('=')) {
+    const lhs = eq[1].trim();
+    const rhs = eq[2].trim();
+    const parsed = tryWholeArithmetic(lhs) ?? tryEmbeddedArithmetic(lhs);
+    if (!parsed) return null;
+    if (/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(rhs) && acceptableCapture(rhs)) {
+      return { expression: parsed.expression, inputs: parsed.inputs, output: rhs };
+    }
+    if (isNumericFragment(rhs)) return { expression: parsed.expression, inputs: parsed.inputs };
+    return null;
+  }
+  if (text.includes('=')) return null;
+  return tryWholeArithmetic(text) ?? tryEmbeddedArithmetic(text);
+}
+
+// Rounding stated outside the directive position ("Rounded Half-Up to ...",
+// "..., rounded to nearest ..."). The target is captured only in the strict
+// "round <variable> to ..." shape so rounding modes ("Half-Up") never become
+// variables; anything else yields the operation without an invented target.
+function tryParseRoundingAnywhere(body) {
+  const s = String(body ?? '');
+  const m = /\bround(?:ed|ing|s)?\b/i.exec(s);
+  if (!m) return null;
+  const after = s.slice(m.index + m[0].length);
+  const out = { operation: 'rounding' };
+  const target = /^\s*(?:the\s+)?([A-Za-z_]\w*)\s+to\b/i.exec(after);
+  let operand = '';
+  if (target && acceptableCapture(target[1])) operand = target[1];
+  const stored = /\bstore\b.*?as\s+([A-Za-z_]\w*)/i.exec(s);
+  const storedOutput = stored && acceptableCapture(stored[1]) ? stored[1] : '';
+  if (operand) out.operand = operand;
+  if (storedOutput) {
+    out.output = storedOutput;
+    if (operand && normalizeVariableKey(storedOutput) !== normalizeVariableKey(operand)) {
+      out.inputs = [operand];
+    }
+  } else if (operand) {
+    out.output = operand;
+  }
+  return out;
+}
+
 // Derive step operation/expression/operand/inputs/output from explicit
 // wording. Only confident syntactic patterns produce fields; anything else
 // yields a minimal entry so the source text is never embellished.
@@ -1104,6 +1414,26 @@ function deriveStepDetail(text) {
         entry.output = assign[1];
         entry.inputs = identifiersOf(assign[2]);
         derived = true;
+      }
+      if (!derived) {
+        const rounded = tryParseRoundingAnywhere(body);
+        if (rounded) {
+          entry.operation = rounded.operation;
+          if (rounded.operand) entry.operand = rounded.operand;
+          if (rounded.output) entry.output = rounded.output;
+          if (rounded.inputs) entry.inputs = rounded.inputs;
+          derived = true;
+        }
+      }
+      if (!derived && !isLookupVerbStart(body)) {
+        const bare = tryParseBareArithmetic(body);
+        if (bare) {
+          entry.operation = 'expression';
+          entry.expression = bare.expression;
+          if (bare.inputs.length > 0) entry.inputs = bare.inputs;
+          if (bare.output) entry.output = bare.output;
+          derived = true;
+        }
       }
     }
   }

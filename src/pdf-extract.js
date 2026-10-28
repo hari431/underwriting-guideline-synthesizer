@@ -3,8 +3,10 @@
 // ASCIIHex / ASCII85 content streams, WinAnsi / MacRoman / Differences /
 // ToUnicode font decoding, per-page text with rough line breaks.
 // Scope: text-based PDFs. Scanned-image PDFs and /Encrypt are out of scope.
-// No geometry or layout analysis: text order is the only signal, so adjacent
-// grids may arrive merged or split and downstream separation is best-effort.
+// Layout use is minimal but genuine: text-matrix positions drive line breaks,
+// word spaces, and tab markers for wide same-line gutters (column gaps), so
+// side-by-side grids stay distinguishable in the flattened text. No table
+// geometry: downstream separation of merged grids is still best-effort.
 
 import { inflateSync } from 'node:zlib';
 
@@ -778,6 +780,11 @@ function interpretContent(bytes, resolveFont, resolveForm, depth = 0) {
       out += str;
     } else if (Math.abs(y - lastY) > 2) {
       out += `\n${str}`;
+    } else if (x > lastX + unit * 2.5) {
+      // Wide same-line gap (a column gutter, not a word space): preserve the
+      // layout evidence with a tab so side-by-side grids stay distinguishable
+      // in the flattened text instead of merging into one space-joined row.
+      out += `\t${str}`;
     } else if (x > lastX + unit * 0.25) {
       out += ` ${str}`;
     } else {

@@ -929,6 +929,44 @@ function extractRoundingDetail(text) {
   return rest;
 }
 
+// Rounding wording after the keyword for targetless rounding statements
+// ("Rounded Half-Up to Nearest Coin | Valid via Core API"): the step label,
+// the round/rounded/rounding keyword, trailing store-as and pipe clauses,
+// and sentence-final punctuation are stripped. Generic wording, never
+// variable or routine names. Returns '' when no wording is evidenced.
+function extractRoundingWording(text) {
+  let body = String(text ?? '').trim();
+  if (!body) return '';
+  body = body.replace(/^\s*step\s+\d+\s*[:.)\-]?\s*/i, '').replace(/^\s*\(?\d{1,3}\)?[\s:.)\-]+\s*/, '');
+  const m = /\bround(?:ed|ing|s)?\b\s*([\s\S]+?)\s*$/i.exec(body);
+  if (!m || !m[1].trim()) return '';
+  let rest = m[1].trim().split('|')[0].trim();
+  rest = rest.split(/\s*\.\s*store\b/i)[0].split(/\s*;\s*store\b/i)[0].split(/\s*,\s*store\s+the\s+result\s+as\b/i)[0].trim();
+  rest = rest.replace(/[.;]+\s*$/, '').trim();
+  if (!rest || /^store\b/i.test(rest)) return '';
+  return rest;
+}
+
+// Distinct operator lexemes in source order from a bare calculation, for the
+// Op column of a targetless expression row. Hyphens count only when spaced
+// (hyphenated codes are operands); en/em dashes are prose, never operators.
+function bareExpressionLexemes(expression) {
+  const out = [];
+  const seen = new Set();
+  const s = String(expression ?? '');
+  for (let i = 0; i < s.length; i += 1) {
+    const ch = s[i];
+    let op = null;
+    if (ch === '+' || ch === '*' || ch === '/' || ch === '×' || ch === '÷') op = ch;
+    else if (ch === '-' && (s[i - 1] === ' ' || s[i - 1] === '\t') && (s[i + 1] === ' ' || s[i + 1] === '\t')) op = ch;
+    if (op && !seen.has(op)) {
+      seen.add(op);
+      out.push(op);
+    }
+  }
+  return out;
+}
+
 // Conditional step operations handled generically in rating-routine Steps:
 // the model 'condition' operation plus explicit conditional keywords, so a
 // structured 'IF'/'ELSEIF'/'ELSE' step renders the same as parsed wording.
@@ -955,6 +993,14 @@ function renderRatingStep(text, det, tables) {
   if (det && (word === 'expression' || word === 'assignment')) {
     const split = splitAssignment(det);
     if (split) return { instruction: split.output, operation: '<--', operand: split.rhs, output: split.output, det };
+    // Targetless but evidenced calculation ("LX-01 + LX-02"): one honest row
+    // carrying the source operators and the verbatim expression. Nothing is
+    // expanded or assigned without a stated output.
+    const expr = String(det.expression ?? '').trim() || fallbackOperand(det);
+    if (expr) {
+      const lexemes = bareExpressionLexemes(det.expression ?? '');
+      return { instruction, operation: lexemes.join(' ') || 'expression', operand: expr, output: String(det.output ?? ''), det };
+    }
     return { instruction, operation: '', operand: fallbackOperand(det), output: String(det.output ?? ''), det };
   }
   if (det && word === 'rounding') {
@@ -970,7 +1016,8 @@ function renderRatingStep(text, det, tables) {
     const detail = extractRoundingDetail(instruction);
     const resolvedTarget = target || source;
     if (!resolvedTarget) {
-      return { instruction, operation: 'R', operand: operandRaw || fallbackOperand(det), output: target, det };
+      const wording = extractRoundingWording(instruction);
+      return { instruction, operation: 'R', operand: wording || operandRaw || fallbackOperand(det), output: target, det };
     }
     const sameVariable = Boolean(target && source)
       && normalizeVariableKey(target) === normalizeVariableKey(source);
@@ -1375,6 +1422,19 @@ function expandOneRatingEntry(entry) {
       det,
     }];
   }
+  if (det && (word === 'expression' || word === 'assignment') && entry.operation && entry.operation !== '<--') {
+    return [{
+      instruction: entry.instruction,
+      op: entry.operation,
+      open: '',
+      operand: entry.operand,
+      close: '',
+      output: entry.output,
+      kind: 'arithmetic-bare',
+      commentInputs: det.inputs ?? [],
+      det,
+    }];
+  }
   if (entry.operation === '<--' && entry.output && String(entry.operand ?? '').trim()
     && (!det || !String(det.operation ?? '').trim())) {
     const expanded = expandArithmetic(entry.output, entry.operand);
@@ -1478,6 +1538,11 @@ function fallbackRatingComment(spec, tables) {
       if (output && operand) return `Assign ${operand} to ${output} (${orig})`;
       if (output) return `Assign ${output} (${orig})`;
       return `Assignment (${orig})`;
+    case 'arithmetic-bare': {
+      const core = operand || 'source expression';
+      if (output) return `Calculate ${core} for ${output} (${orig})`;
+      return `Calculate ${core} (${orig}; output not stated — verify)`;
+    }
     case 'if':
       return operand ? `IF ${operand} (${orig})` : `Conditional check (${orig})`;
     case 'elseif':
