@@ -1572,3 +1572,32 @@ test('excel: legacy layout marks steps without operations for review', () => {
   assert.deepEqual(steps.header, ['Step #', 'Instruction', 'Operation', 'Operand', 'Comment']);
   assert.deepEqual(steps.body, [['1', 'Review the outcome with the team.', 'REVIEW', '', 'Needs review — no evidenced operation']]);
 });
+
+test('excel: legacy layout shows code-only Instruction for REVIEW steps with evidenced codes', () => {
+  const line = 'LX-R1 Ledger rule review Standard bracket Flat Factor 1.000000';
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'g.pdf', pageCount: 1 }),
+      routines: [{
+        name: 'Rules', kind: 'condition', sourcePages: [1], evidenceText: 'ev',
+        conditions: ['IF alpha_value is high THEN apply factor ELSE refer for review'],
+        steps: [{
+          sequence: 1,
+          instruction: line,
+          cells: { code: 'LX-R1', formula: 'Ledger rule review Standard bracket' },
+        }],
+      }],
+    })
+  );
+  assert.equal(job.routines[0].steps_detailed[0].operation, undefined);
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Rules'), strings);
+  const steps = sectionRows(values, 'Steps');
+  assert.deepEqual(steps.body, [['1', 'LX-R1', 'REVIEW', '', 'Needs review — no evidenced operation']]);
+  assert.ok(!steps.body.flat().includes(line));
+  const evidence = blockRows(values, 'Source evidence');
+  assert.ok(evidence.some((row) => row[0] === 'Step 1 text' && row[1] === line));
+});

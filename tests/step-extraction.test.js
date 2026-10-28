@@ -1050,3 +1050,74 @@ test('steps: trailing value phrase stays REVIEW without a delimiter', () => {
   // applied-on shape above — so positional extraction would guess.
   assertStaysReview('LX-P1 Ledger cover (Owner, 15 Lakhs SI) Fixed Annual Standard 375.00');
 });
+
+// ---------- code-evidenced REVIEW display ----------
+// A REVIEW step whose source grid row evidences a `code` cell shows the code
+// alone under Instruction with Operand left blank: a description in Operand
+// would read as a calculation operand, which a flagged row must never imply.
+// Op stays REVIEW and the complete verbatim text is kept in Source evidence.
+// No operation is inferred — the model data is untouched. Steps without a
+// code cell keep the full text under Instruction.
+
+function evidenceBlock(values) {
+  const idx = values.findIndex((row) => row.length === 1 && row[0] === 'Source evidence');
+  if (idx < 0) return null;
+  const body = [];
+  for (let i = idx + 1; i < values.length; i += 1) {
+    if (values[i].length === 1) break;
+    body.push(values[i]);
+  }
+  return body;
+}
+
+test('steps: REVIEW with evidenced code shows code-only Instruction and description Operand', () => {
+  const line = 'LX-F1 Ledger factor loading Standard bracket Flat Factor 1.000000';
+  const plain = { sequence: 3, instruction: 'Step 3: Fixed annual standard.' };
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'ledger-guideline.pdf', pageCount: 2 }),
+      routines: [{
+        name: 'LX — Ledger Fee Calc',
+        kind: 'calculation_steps',
+        sourcePages: [2],
+        evidenceText: 'synthetic ledger calculation steps',
+        steps: [
+          {
+            sequence: 2,
+            instruction: line,
+            cells: {
+              code: 'LX-F1',
+              formula: 'Ledger factor loading Standard bracket',
+              basis: 'Flat Factor',
+              factor: '1.000000',
+              amount: '0.00',
+            },
+          },
+          plain,
+        ],
+      }],
+    })
+  );
+  // Model data is untouched: no operation, output, or table link invented.
+  const det = job.routines[0].steps_detailed[0];
+  assert.equal(det.operation, undefined);
+  assert.equal(det.output, undefined);
+  assert.equal(det.depends_on, undefined);
+  assert.equal(det.instruction, line);
+  assert.equal(job.routines[0].steps[0], line);
+  job.issues = validateJob(job);
+  assert.ok(job.issues.some((i) => /without an evidenced operation/.test(i.message)));
+  const values = routineSheetValues(job, 'LX — Ledger Fee Calc');
+  const steps = sectionRows(values, 'Steps');
+  assert.deepEqual(steps.body, [
+    ['2', 'LX-F1', 'REVIEW', '', '', '', 'Needs review — no evidenced operation (source step 2)'],
+    ['3', 'Step 3: Fixed annual standard.', 'REVIEW', '', '', '', 'Needs review — no evidenced operation (source step 3)'],
+  ]);
+  // Operand stays blank: no structured operand is evidenced, and the prose
+  // description must not pose as one. The full phrase appears nowhere in Steps.
+  assert.equal(steps.body[0][4], '');
+  assert.ok(!steps.body.flat().includes(line));
+  // The complete original text survives in Source evidence.
+  const evidence = evidenceBlock(values);
+  assert.ok(evidence.some((row) => row[0] === 'Step 2 text' && row[1] === line));
+});

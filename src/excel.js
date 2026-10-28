@@ -828,6 +828,10 @@ function pushRoutineEvidence(rows, r, stepEntries, condEntries, depEntries) {
     if (sp) evidenceRows.push([`${tag} pages`, sp]);
     if (ev) evidenceRows.push([`${tag} evidence`, ev]);
     if (status) evidenceRows.push([`${tag} status`, status]);
+    const fullText = String(e.instruction ?? det.instruction ?? det.original_text ?? '');
+    if (!String(det.operation ?? '').trim() && splitCodeInstruction(fullText, det)) {
+      evidenceRows.push([`${tag} text`, fullText]);
+    }
   });
   (condEntries ?? []).forEach((e) => {
     const det = e.det;
@@ -1006,8 +1010,9 @@ function displayDet(det) {
 // expression) read as `output <-- operand`; rounding reads as
 // `output R source wording`; conditions expand with their keywords under
 // Instruction. Anything without a mappable output (targetless
-// calculations, unparsed lines) keeps the verbatim source text flagged for
-// review so no detail is lost and no expression poses as an Instruction.
+// calculations, unparsed lines) keeps its source text flagged for review
+// so no detail is lost and no expression poses as an Instruction
+// (code-led rows show the evidenced code alone on export, Operand blank).
 function renderRatingStep(text, origDet, tables) {
   const det = displayDet(origDet);
   const instruction = String(text ?? '');
@@ -1757,8 +1762,9 @@ function expandOneRatingEntry(entry) {
       det,
     }];
   }
+  const split = splitCodeInstruction(entry.instruction, det);
   return [{
-    instruction: entry.instruction,
+    instruction: split?.instruction ?? entry.instruction,
     op: '',
     open: '',
     operand: entry.operand,
@@ -1770,13 +1776,36 @@ function expandOneRatingEntry(entry) {
   }];
 }
 
+// Show the evidenced grid code alone under Instruction for a code-led
+// REVIEW row: the `code` cell identifies the source row, so the full
+// descriptive phrase moves out of Instruction. Operand is deliberately left
+// to structured evidence only (blank for unparsed rows): prose must never
+// pose as a calculation operand. Display-only: the stored step keeps the
+// complete text, and Source evidence retains it verbatim (see
+// pushRoutineEvidence). Returns null when no code display is evidenced —
+// no code cell, or the instruction does not open with the code as a whole
+// token — leaving the row unchanged.
+function splitCodeInstruction(instruction, det) {
+  const code = String(det?.cells?.code ?? '').trim();
+  const text = String(instruction ?? '').trim();
+  if (!code || !text) return null;
+  if (text === code) return { instruction: code };
+  if (!text.startsWith(code)) return null;
+  const next = text[code.length];
+  if (next !== ' ' && next !== '\t') return null;
+  return { instruction: code };
+}
+
 // Op-column marker for steps with no evidenced operation. Shared by the
 // rating-routine and legacy layouts so unparsed steps read the same
 // everywhere; the source text itself is never altered.
 const UNPARSED_OP_MARK = 'REVIEW';
 
 // Unparsed steps are never presented as executable logic: the comment names
-// the gap while the source text stays verbatim under Instruction.
+// the gap while the source text stays recoverable — code-led rows show the
+// evidenced code under Instruction with a blank Operand (the complete text
+// lives in Source evidence); anything else keeps the verbatim text under
+// Instruction.
 function unparsedReviewComment(spec) {
   const orig = spec.origSeq !== '' && spec.origSeq !== null && spec.origSeq !== undefined ? `source step ${spec.origSeq}` : 'source step';
   return `Needs review — no evidenced operation (${orig})`;
@@ -2014,7 +2043,8 @@ function legacyRoutineSheetRows(r, routineIssues, ctx = {}) {
       const needsReview = !String(e.operation ?? '').trim() && String(e.instruction ?? '').trim() !== '';
       const traced = stepComment(e, r, routines, tables, tableTerms, priorOutputs);
       const comment = traced || (needsReview ? 'Needs review — no evidenced operation' : '');
-      rows.push([e.seq, e.instruction, needsReview ? UNPARSED_OP_MARK : e.operation, stepOperandCell(e), comment]);
+      const split = needsReview ? splitCodeInstruction(e.instruction, e.det) : null;
+      rows.push([e.seq, split?.instruction ?? e.instruction, needsReview ? UNPARSED_OP_MARK : e.operation, stepOperandCell(e), comment]);
       if (e.output) priorOutputs.set(normalizeVariableKey(e.output), { seq: e.seq ?? '', table: priorTableForStep(e.det, tables) });
     }
   }
