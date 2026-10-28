@@ -729,6 +729,85 @@ export function resolveTableReference(tables, mention) {
   return keywordMatches.length === 1 ? keywordMatches[0] : null;
 }
 
+// Whitespace-delimited code tokens of a routine id or name, lowercased with
+// surrounding punctuation stripped, so "HB-1" survives as one token while
+// dashes and commas never glue words together. Tokens shorter than two
+// characters are dropped as too weak to identify a routine.
+function routineNameTokens(name) {
+  return String(name ?? '')
+    .split(/\s+/)
+    .map((t) => t.replace(/^[-—–:;.,()[\]{}"'`]+|[-—–:;.,()[\]{}"'`]+$/g, '').trim().toLowerCase())
+    .filter((t) => t.length >= 2);
+}
+
+// Resolve a routine mention to an extracted routine: exact id/name match
+// first (case-insensitive), else a mention that equals a whitespace-delimited
+// code token in exactly one routine's id or name ("HB-1" in
+// "HB-1 — Harbor Total Fee"). Returns the routine or null when there is no
+// single confident match. Generic: driven by tokens, never by names.
+export function resolveRoutineReference(routines, mention) {
+  const raw = String(mention ?? '').trim();
+  if (!raw) return null;
+  const key = raw.toLowerCase();
+  const list = Array.isArray(routines) ? routines : [];
+  const exact = list.find((r) =>
+    String(r?.id ?? '').trim().toLowerCase() === key
+    || String(r?.name ?? '').trim().toLowerCase() === key);
+  if (exact) return exact;
+  if (key.length < 2) return null;
+  const matches = list.filter((r) =>
+    routineNameTokens(r?.id).includes(key)
+    || routineNameTokens(r?.name).includes(key));
+  return matches.length === 1 ? matches[0] : null;
+}
+
+// A variable assigned to a numeric literal in routine text, e.g. "Fixed
+// value: harbor_fee = 120." or "..., where basis = 1". Only the variable name
+// is collected; values stay in the source text for display.
+const CONSTANT_ASSIGNMENT = /\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*[-+]?\d+(?:\.\d+)?/g;
+
+function constantNamesIn(text, out) {
+  const s = String(text ?? '');
+  if (!s) return;
+  CONSTANT_ASSIGNMENT.lastIndex = 0;
+  let m;
+  while ((m = CONSTANT_ASSIGNMENT.exec(s)) !== null) {
+    out.add(String(m[1]).toLowerCase());
+  }
+}
+
+function constantNamesInStep(step, out) {
+  if (step === null || step === undefined) return;
+  if (typeof step === 'string') {
+    constantNamesIn(step, out);
+    return;
+  }
+  if (typeof step !== 'object' || Array.isArray(step)) return;
+  constantNamesIn(step.instruction ?? step.text, out);
+  constantNamesIn(step.expression, out);
+  constantNamesIn(step.operand, out);
+  constantNamesIn(step.original_text, out);
+}
+
+// Lowercased names assigned numeric literals anywhere in any routine's own
+// text (notes, evidence, expression, steps, conditions). Global like routine
+// outputs: a fixed value evidenced once resolves references to it. Generic:
+// driven by assignment syntax, never by variable names.
+export function definedConstantTerms(routines) {
+  const out = new Set();
+  for (const r of Array.isArray(routines) ? routines : []) {
+    constantNamesIn(r?.notes, out);
+    constantNamesIn(r?.evidence_text, out);
+    constantNamesIn(r?.expression_text, out);
+    for (const s of r?.steps ?? []) constantNamesInStep(s, out);
+    for (const s of r?.steps_detailed ?? []) constantNamesInStep(s, out);
+    for (const c of r?.conditions ?? []) {
+      constantNamesIn(typeof c === 'string' ? c : (c?.condition ?? c?.true_branch ?? c?.false_branch ?? ''), out);
+    }
+  }
+  return out;
+}
+
 // Lowercased id/name/header/label terms identifying extracted tables,
 // for matching references against defined table structure.
 export function tableReferenceTerms(tables) {

@@ -1,7 +1,7 @@
 // Deterministic validation for extracted jobs. Pure functions, no model calls.
 // Policy: structural/traceability breaks are errors; anything interpretive —
 // including unfamiliar formula syntax — is a warning flagged for review.
-import { ROUTINE_KINDS, createValidationIssue, normalizeVariableKey, resolveTableReference, tableReferenceTerms } from './models.js';
+import { ROUTINE_KINDS, createValidationIssue, definedConstantTerms, normalizeVariableKey, resolveRoutineReference, resolveTableReference, tableReferenceTerms } from './models.js';
 
 export { ROUTINE_KINDS };
 
@@ -92,15 +92,7 @@ export function validateJob(job) {
   }
   checkSuspectedContinuations(tables, warn);
 
-  const knownNames = new Set(
-    [...tables, ...routines].flatMap((item) => [item.id, item.name].filter(Boolean).map((s) => s.toLowerCase()))
-  );
-  // Step references may also point at extracted table columns (lookup keys).
-  const knownStepRefs = new Set([...knownNames, ...tableReferenceTerms(tables)]);
-  // Values produced by any routine are defined, including cross-routine flows.
-  const routineOutputs = new Set(
-    routines.flatMap((r) => r.outputs ?? []).map((s) => String(s ?? '').trim().toLowerCase()).filter(Boolean)
-  );
+  const refCtx = buildReferenceContext(tables, routines);
   for (const routine of routines) {
     checkTraceability('routine', routine);
     if (!ROUTINE_KINDS.includes(routine.kind)) {
@@ -123,14 +115,14 @@ export function validateJob(job) {
     }
     for (const dep of routine.depends_on ?? []) {
       const target = String(dep ?? '').trim();
-      if (target && !knownNames.has(target.toLowerCase()) && !resolveTableReference(tables, target)) {
-        warn('routine', routine.id, `Routine "${routine.name || routine.id}" depends on "${dep}", which matches no extracted table or routine.`, routine.source_pages);
+      if (target && !isResolvedReference(routine, target, refCtx)) {
+        warn('routine', routine.id, `Routine "${routine.name || routine.id}" depends on "${dep}", which matches no extracted table, routine, input, or output.`, routine.source_pages);
       }
     }
     checkConditionFallback(routine, warn);
     checkStepFormulas(routine, warn);
     checkLookupKeys(routine, warn);
-    checkStructuredDependencies(routine, warn, knownNames, knownStepRefs, tables, routineOutputs);
+    checkStructuredDependencies(routine, warn, refCtx);
     checkConfidence('routine', routine, warn);
   }
 
@@ -385,33 +377,94 @@ function checkLookupKeys(routine, warn) {
   });
 }
 
-function checkStructuredDependencies(routine, warn, knownNames, knownStepRefs = knownNames, tables = [], routineOutputs = new Set()) {
+// Reference-resolution context for one job: every category of defined name a
+// dependency target or step reference may legitimately point at. Matching is
+// both verbatim (lowercased) and spacing/punctuation-insensitive (normalized),
+// so "Hull Code" matches "hull_code". Generic: built from the job, never from
+// hardcoded names.
+function buildReferenceContext(tables, routines) {
+  const lower = (s) => String(s ?? '').trim().toLowerCase();
+  const lowered = (list) => new Set((list ?? []).map(lower).filter(Boolean));
+  const normalized = (set) => new Set([...set].map((s) => normalizeVariableKey(s)).filter(Boolean));
+  const tableTerms = tableReferenceTerms(tables);
+  const routineOutputs = lowered((routines ?? []).flatMap((r) => r.outputs ?? []));
+  const stepOutputs = lowered((routines ?? []).flatMap((r) => (r.steps_detailed ?? []).map((s) => s?.output)));
+  const constants = definedConstantTerms(routines);
+  const ownInputs = new Map();
+  for (const r of routines ?? []) {
+    const terms = lowered(r.inputs ?? []);
+    ownInputs.set(r, { lower: terms, normalized: normalized(terms) });
+  }
+  return {
+    tables: tables ?? [],
+    routines: routines ?? [],
+    knownNames: new Set(
+      [...(tables ?? []), ...(routines ?? [])].flatMap((item) => [item.id, item.name].filter(Boolean).map((s) => s.toLowerCase()))
+    ),
+    tableTerms,
+    normalizedTableTerms: normalized(tableTerms),
+    routineOutputs,
+    normalizedRoutineOutputs: normalized(routineOutputs),
+    stepOutputs,
+    normalizedStepOutputs: normalized(stepOutputs),
+    constants,
+    normalizedConstants: normalized(constants),
+    ownInputs,
+  };
+}
+
+function isNumericReference(value) {
+  const s = String(value ?? '').trim().replace(/,/g, '');
+  return s !== '' && /^[-+]?(\d+(\.\d*)?|\.\d+)$/.test(s);
+}
+
+// True when a dependency target or step reference names something the job
+// defines: a table or routine (by id, name, code token, or alias), a declared
+// input of this routine, an output of any routine (cross-routine flows),
+// an intermediate step output, a table column or lookup key, a defined
+// constant, or a numeric literal. Anything else is a genuine unresolved
+// reference. A declared input or intermediate output is never flagged merely
+// because it is not a table column.
+function isResolvedReference(routine, target, ctx) {
+  const name = String(target ?? '').trim();
+  if (!name || isNumericReference(name)) return true;
+  const lower = name.toLowerCase();
+  if (ctx.knownNames.has(lower)) return true;
+  if (resolveRoutineReference(ctx.routines, name)) return true;
+  const own = ctx.ownInputs.get(routine);
+  if (own?.lower.has(lower)) return true;
+  if (ctx.routineOutputs.has(lower)) return true;
+  if (ctx.stepOutputs.has(lower)) return true;
+  if (ctx.tableTerms.has(lower)) return true;
+  if (ctx.constants.has(lower)) return true;
+  const key = normalizeVariableKey(name);
+  if (key) {
+    if (own?.normalized.has(key)) return true;
+    if (ctx.normalizedRoutineOutputs.has(key)) return true;
+    if (ctx.normalizedStepOutputs.has(key)) return true;
+    if (ctx.normalizedTableTerms.has(key)) return true;
+    if (ctx.normalizedConstants.has(key)) return true;
+  }
+  if (resolveTableReference(ctx.tables, name)) return true;
+  return false;
+}
+
+function checkStructuredDependencies(routine, warn, refCtx) {
   const deps = routine.dependencies ?? [];
   for (const dep of deps) {
     const target = String(dep?.target ?? '').trim();
-    if (target && !knownNames.has(target.toLowerCase()) && !resolveTableReference(tables, target)) {
-      warn('routine', routine.id, `Routine "${routine.name || routine.id}" depends on "${target}", which matches no extracted table or routine.`, dep?.source_pages?.length ? dep.source_pages : routine.source_pages);
+    if (target && !isResolvedReference(routine, target, refCtx)) {
+      warn('routine', routine.id, `Routine "${routine.name || routine.id}" depends on "${target}", which matches no extracted table, routine, input, or output.`, dep?.source_pages?.length ? dep.source_pages : routine.source_pages);
     }
   }
   const detailed = routine.steps_detailed ?? [];
   if (detailed.length === 0) return;
-  const localTerms = [...(routine.inputs ?? []), ...(routine.outputs ?? []), ...detailed.flatMap((s) => (s?.output ? [String(s.output)] : []))];
-  const localOutputs = new Set(localTerms.map((s) => String(s ?? '').trim().toLowerCase()).filter(Boolean));
-  const normalizedLocal = new Set(localTerms.map((s) => normalizeVariableKey(s)).filter(Boolean));
-  const normalizedStepRefs = new Set([...(knownStepRefs ?? [])].map((s) => normalizeVariableKey(s)).filter(Boolean));
-  const normalizedRoutineOutputs = new Set([...(routineOutputs ?? [])].map((s) => normalizeVariableKey(s)).filter(Boolean));
   for (const step of detailed) {
     const refs = [...(step?.inputs ?? []), ...(step?.depends_on ?? [])];
     for (const ref of refs) {
       const name = String(ref ?? '').trim();
-      if (!name) continue;
-      if (localOutputs.has(name.toLowerCase())) continue;
-      if (knownStepRefs.has(name.toLowerCase())) continue;
-      if (routineOutputs.has(name.toLowerCase())) continue;
-      const key = normalizeVariableKey(name);
-      if (key && (normalizedLocal.has(key) || normalizedStepRefs.has(key) || normalizedRoutineOutputs.has(key))) continue;
-      if (resolveTableReference(tables, name)) continue;
-      warn('routine', routine.id, `Step${step?.sequence !== undefined && step?.sequence !== '' ? ` ${step.sequence}` : ''} references "${name}", which matches no defined input, step output, routine output, table, column, or routine; flagged as unresolved.`, step?.source_pages?.length ? step.source_pages : routine.source_pages);
+      if (!name || isResolvedReference(routine, name, refCtx)) continue;
+      warn('routine', routine.id, `Step${step?.sequence !== undefined && step?.sequence !== '' ? ` ${step.sequence}` : ''} references "${name}", which matches no defined input, step output, routine output, table, column, routine, or constant; flagged as unresolved.`, step?.source_pages?.length ? step.source_pages : routine.source_pages);
     }
   }
 }

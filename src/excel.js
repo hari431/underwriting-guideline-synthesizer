@@ -6,7 +6,11 @@
 // steps (Step #, Instruction, Op, (, Operand, ), Line Comment), followed by
 // conditions, unresolved items, and source evidence. Multi-operator
 // expressions expand into one ordered row per operation with explicit
-// bracket columns; precedence and parentheses are preserved. Condition
+// bracket columns; operators, operands, source order, and parentheses are
+// preserved so reassembling the rows reproduces the source expression.
+// Expanded source steps use hierarchical numbers (5.1, 5.2) so generated
+// rows never collide with source step numbers; single-row steps keep their
+// source number. Condition
 // routines and routines without steps or an expression keep the legacy
 // layout (inputs, final calculation, dependencies) so underwriting rules
 // stay out of scope.
@@ -1520,8 +1524,12 @@ function buildRatingStepEntries(r, tables) {
 // Arithmetic expands to one row per operation with explicit brackets;
 // conditionals expand to IF/ELSEIF/ELSE/ENDIF rows (keywords under
 // Instruction) with a row per branch assignment.
-// Expanded sheets renumber sequentially and retarget dependency comments;
-// unexpanded sheets keep their original numbering. Evidence still reflects
+// A source step expanding to several rows uses hierarchical numbers
+// (5.1, 5.2) embedding its source number; single-row steps keep the source
+// number, gaps included. Dependency comments therefore reference one
+// numbering scheme, and only the definition-start row of an expanded group
+// registers as the producer of its output, so "uses X from step N" points
+// at the assignment rather than a continuation row. Evidence still reflects
 // the source steps.
 function ratingRoutineSheetRows(r, routineIssues, ctx = {}) {
   const rows = [];
@@ -1534,13 +1542,16 @@ function ratingRoutineSheetRows(r, routineIssues, ctx = {}) {
     rows.push([...RATING_STEPS_HEADER]);
     const expanded = [];
     for (const e of stepEntries) {
-      for (const spec of expandOneRatingEntry(e)) {
-        expanded.push({ ...spec, origSeq: e.seq ?? '' });
-      }
+      const specs = expandOneRatingEntry(e);
+      specs.forEach((spec, groupIndex) => {
+        expanded.push({ ...spec, origSeq: e.seq ?? '', groupSize: specs.length, groupIndex });
+      });
     }
-    const didExpand = expanded.length !== stepEntries.length;
     expanded.forEach((spec, idx) => {
-      spec.newSeq = didExpand ? String(idx + 1) : String(spec.origSeq ?? idx + 1);
+      const base = spec.origSeq !== '' && spec.origSeq !== null && spec.origSeq !== undefined
+        ? String(spec.origSeq)
+        : String(idx + 1);
+      spec.newSeq = spec.groupSize > 1 ? `${base}.${spec.groupIndex + 1}` : base;
     });
     const tableTerms = tableReferenceTerms(tables);
     const priorOutputs = new Map();
@@ -1554,7 +1565,7 @@ function ratingRoutineSheetRows(r, routineIssues, ctx = {}) {
       );
       const comment = traced || fallbackRatingComment(spec, tables);
       rows.push([spec.newSeq, spec.instruction, spec.op, spec.open, spec.operand, spec.close, comment]);
-      if (spec.output) {
+      if (spec.output && spec.kind !== 'arithmetic-cont') {
         priorOutputs.set(
           normalizeVariableKey(spec.output),
           { seq: spec.newSeq ?? '', table: priorTableForStep(spec.det ?? null, tables) }
