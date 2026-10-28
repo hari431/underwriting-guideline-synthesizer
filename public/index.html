@@ -405,6 +405,19 @@
   .issue code { font-size: 0.78rem; color: var(--muted); }
   .empty-note { color: var(--muted); font-size: 0.87rem; }
   .actions { display: flex; gap: 0.7rem; margin-top: 0.9rem; flex-wrap: wrap; }
+  .review-bar {
+    display: flex;
+    gap: 0.6rem;
+    align-items: center;
+    flex-wrap: wrap;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 0.5rem 0.7rem;
+    margin-top: 0.6rem;
+    font-size: 0.84rem;
+  }
+  .review-bar .msg { flex: 1; min-width: 10rem; }
 
   @media (max-width: 900px) {
     body { overflow: auto; }
@@ -463,6 +476,7 @@
               <input type="file" id="file" accept="application/pdf">
               <button id="uploadBtn" class="primary">Extract from PDF</button>
               <button id="sampleBtn">Load sample guideline (offline)</button>
+              <button id="clearBtn" disabled>Clear PDF</button>
             </div>
             <div id="status" role="status"></div>
           </div>
@@ -553,6 +567,48 @@ function issuesFor(kind, id) {
   if (!state) return [];
   const t = singular(kind);
   return state.job.issues.filter((i) => i.target_type === t && String(i.target_id) === String(id));
+}
+
+// Sidebar completion reuses the existing review model only: validated issues,
+// the routine Steps REVIEW marks derived from draft records, and the stored
+// review_status acknowledgement. No separate completion state is kept.
+const ACK_REVIEW_VALUES = new Set(['reviewed', 'acknowledged', 'accepted', 'verified']);
+function isAcknowledged(item) {
+  return ACK_REVIEW_VALUES.has(String(item?.review_status ?? '').trim().toLowerCase());
+}
+function countReviewSteps(routine) {
+  if (!routine) return 0;
+  try {
+    const rows = rcRoutineStepRows(routine, draft ? draft.routines : [], draft ? draft.tables : []);
+    return rows.filter((r) => String(r[2] ?? '').toUpperCase() === 'REVIEW').length;
+  } catch {
+    return 0;
+  }
+}
+function itemNeedsReview(kind, item) {
+  if (!item) return false;
+  if (isAcknowledged(item)) return false;
+  if (issuesFor(kind, item.id).length > 0) return true;
+  if (kind === 'routines' && countReviewSteps(item) > 0) return true;
+  return false;
+}
+function isKindComplete(kind) {
+  if (!state || !draft) return false;
+  for (const item of draft[kind] || []) {
+    if (itemNeedsReview(kind, item)) return false;
+  }
+  return true;
+}
+function hasUnsavedEdits() {
+  if (!state || !draft) return false;
+  return JSON.stringify(draft.tables) !== JSON.stringify(state.job.tables)
+    || JSON.stringify(draft.routines) !== JSON.stringify(state.job.routines);
+}
+function computeStepDone() {
+  if (!state) return { 1: false, 2: false, 3: false, 4: false, 5: false };
+  const tablesDone = isKindComplete('tables');
+  const routinesDone = isKindComplete('routines');
+  return { 1: true, 2: true, 3: tablesDone, 4: routinesDone, 5: tablesDone && routinesDone && !hasUnsavedEdits() };
 }
 
 function knownNamesSet() {
@@ -667,6 +723,34 @@ function itemIssuesHtml(kind, item) {
   return `<div class="item-issues"><h3>Validation for ${esc(item.id)} (${iss.length})</h3>${rows}</div>`;
 }
 
+function reviewBarHtml(kind, item) {
+  const iss = issuesFor(kind, item.id);
+  const reviewSteps = kind === 'routines' ? countReviewSteps(item) : 0;
+  if (isAcknowledged(item)) {
+    return `<div class="review-bar" id="reviewBar"><span class="pill ok">Reviewed</span>` +
+      `<span class="msg">Explicitly acknowledged${iss.length || reviewSteps ? ` — ${iss.length} issue${iss.length === 1 ? '' : 's'}${reviewSteps ? `, ${reviewSteps} REVIEW step${reviewSteps === 1 ? '' : 's'}` : ''} accepted` : ''}.</span>` +
+      `<button type="button" data-act="unack">Clear review</button></div>`;
+  }
+  if (iss.length === 0 && reviewSteps === 0) {
+    return `<div class="review-bar" id="reviewBar"><span class="pill ok">No open reviews</span>` +
+      `<span class="msg">Nothing requires review for this item.</span></div>`;
+  }
+  const bits = [];
+  if (iss.length) bits.push(`${iss.length} issue${iss.length === 1 ? '' : 's'}`);
+  if (reviewSteps) bits.push(`${reviewSteps} REVIEW step${reviewSteps === 1 ? '' : 's'}`);
+  return `<div class="review-bar" id="reviewBar"><span class="pill warning">Needs review</span>` +
+    `<span class="msg">${esc(bits.join(' · '))} — fix this item or explicitly acknowledge it.</span>` +
+    `<button type="button" data-act="ack">Mark as reviewed</button></div>`;
+}
+
+function routineStepsHtml(r) {
+  const stepRows = rcRoutineStepRows(r, draft ? draft.routines : [], draft ? draft.tables : []);
+  if (stepRows.length === 0) return `<h3 class="steps-title">Steps</h3><p class="empty-note">No steps extracted.</p>`;
+  return `<h3 class="steps-title">Steps</h3><div class="table-wrap"><table class="grid"><thead><tr><th>Step #</th><th>Instruction</th><th>Op</th><th>(</th><th>Operand</th><th>)</th><th>Line Comment</th></tr></thead><tbody>` +
+    stepRows.map((row) => `<tr>${row.map((cell) => `<td>${esc(cell)}</td>`).join('')}</tr>`).join('') +
+    `</tbody></table></div>`;
+}
+
 function detailNavHtml(pos, total) {
   return `<div class="detail-nav">` +
     `<button type="button" data-act="prev"${pos <= 0 ? ' disabled' : ''}>Previous</button>` +
@@ -678,12 +762,13 @@ function detailNavHtml(pos, total) {
 
 function tableDetailHtml(t, index) {
   return `
-    <div class="card" id="detailCard" data-table-detail="${index}">
+    <div class="card" id="DetailCard" data-table-detail="${index}">
       <div class="card-head">
         <span class="id-chip">${esc(t.id)}</span>
         <input class="title-input" type="text" data-f="name" value="${esc(t.name)}" aria-label="table name">
         <span class="page-chip">${esc(pagesLabel(t.source_pages))}</span>
       </div>
+      ${reviewBarHtml('tables', t)}
       <details class="evidence"><summary>Source evidence</summary><p class="evidence-body">${esc(t.evidence_text || '—')}</p></details>
       <div class="field-grid">
         <label class="field">Purpose <input type="text" data-f="purpose" value="${esc(t.purpose || '')}"></label>
@@ -1349,12 +1434,6 @@ function routineDetailHtml(r, index) {
   const structuredHtml = structured.length > 0
     ? `<ul class="dep-list">${structured.map((d) => `<li>${esc(d.target || d.source || '')}${d.relationship_type ? ` <span class="pill neutral">${esc(d.relationship_type)}</span>` : ''}</li>`).join('')}</ul>`
     : '';
-  const stepRows = rcRoutineStepRows(r, draft ? draft.routines : [], draft ? draft.tables : []);
-  const stepsHtml = stepRows.length > 0
-    ? `<h3 class="steps-title">Steps</h3><div class="table-wrap"><table class="grid"><thead><tr><th>Step #</th><th>Instruction</th><th>Op</th><th>(</th><th>Operand</th><th>)</th><th>Line Comment</th></tr></thead><tbody>` +
-      stepRows.map((row) => `<tr>${row.map((cell) => `<td>${esc(cell)}</td>`).join('')}</tr>`).join('') +
-      `</tbody></table></div>`
-    : `<h3 class="steps-title">Steps</h3><p class="empty-note">No steps extracted.</p>`;
   return `
     <div class="card" id="DetailCard" data-routine-detail="${index}">
       <div class="card-head">
@@ -1362,8 +1441,9 @@ function routineDetailHtml(r, index) {
         <input class="title-input" type="text" data-f="name" value="${esc(r.name)}" aria-label="routine name">
         <span class="page-chip">${esc(pagesLabel(r.source_pages))}</span>
       </div>
+      ${reviewBarHtml('routines', r)}
       <details class="evidence"><summary>Source evidence</summary><p class="evidence-body">${esc(r.evidence_text || '—')}</p></details>
-      ${stepsHtml}
+      <div id="routineSteps">${routineStepsHtml(r)}</div>
       <details class="evidence"><summary>Details</summary>
       <div class="field-grid">
         <label class="field">Kind
@@ -1451,12 +1531,54 @@ function renderBottomBar() {
 }
 
 function updateSteps() {
+  const done = computeStepDone();
   document.querySelectorAll('.step').forEach((el) => {
     const n = Number(el.dataset.step);
-    el.classList.toggle('done', !!state && n <= 2);
+    el.classList.toggle('done', !!done[n]);
     el.classList.toggle('active', (!state && n === 1) ||
       (!!state && ((ui.tab === 'tables' && n === 3) || (ui.tab === 'routines' && n === 4))));
   });
+}
+
+function updateUploadLocks() {
+  const locked = !!state;
+  const file = $('file');
+  const uploadBtn = $('uploadBtn');
+  const sampleBtn = $('sampleBtn');
+  const clearBtn = $('clearBtn');
+  if (file) file.disabled = locked;
+  if (uploadBtn) uploadBtn.disabled = locked;
+  if (sampleBtn) sampleBtn.disabled = locked;
+  if (clearBtn) clearBtn.disabled = !locked;
+}
+
+// Client-only reset: clears the active document, draft edits, validation
+// display, selection, and export UI state. Saved jobs on the server and
+// already-exported files are untouched (no DELETE is ever issued).
+function clearSessionState() {
+  state = null;
+  draft = null;
+  detailCtx = null;
+  ui = freshUi();
+  $('jobSection').hidden = true;
+  $('browseSection').hidden = true;
+  $('reviewSection').hidden = true;
+  $('jobSummary').innerHTML = '';
+  $('browser').innerHTML = '';
+  $('issues').innerHTML = '';
+  $('sideJob').textContent = '';
+  $('resultMeta').textContent = '';
+  const file = $('file');
+  if (file) file.value = '';
+  if ($('searchInput')) $('searchInput').value = '';
+  if ($('filterSelect')) $('filterSelect').value = 'all';
+  const bar = $('bottomBar');
+  if (bar) { bar.hidden = true; bar.innerHTML = ''; }
+  renderTabs();
+  syncToolbar();
+  updateSteps();
+  updateUploadLocks();
+  setStatus('Session cleared. Load a PDF or the offline sample to start a new session.');
 }
 
 function renderJobSummary() {
@@ -1491,6 +1613,7 @@ function render() {
   $('browseSection').hidden = false;
   $('reviewSection').hidden = false;
   updateSteps();
+  updateUploadLocks();
   renderJobSummary();
   renderBrowser();
   renderIssues();
@@ -1631,6 +1754,59 @@ function clearSearchAndFilter() {
   renderBrowser();
 }
 
+function acknowledgeCurrent(ack) {
+  if (!detailCtx || !draft) return;
+  syncDetailToDraft();
+  const { kind, index } = detailCtx;
+  const item = draft[kind][index];
+  if (!item) return;
+  item.review_status = ack ? 'reviewed' : '';
+  renderBrowser();
+  updateSteps();
+}
+
+// Refresh the review bar and (for routines) the derived Steps display without
+// re-rendering the editable inputs, so typing never loses focus.
+function refreshDetailReviewUi() {
+  if (!detailCtx || !draft || ui.mode !== 'detail') return;
+  const { kind, index } = detailCtx;
+  const item = draft[kind][index];
+  if (!item) return;
+  const bar = $('reviewBar');
+  if (bar) {
+    // Skip replacement when the markup is identical: swapping the bar on a
+    // blur-change would detach the button under the cursor and swallow an
+    // in-flight click (e.g. edit a field, then directly click Mark as reviewed).
+    const nextHtml = reviewBarHtml(kind, item);
+    if (bar.outerHTML !== nextHtml) {
+      const tmp = document.createElement('div');
+      tmp.innerHTML = nextHtml;
+      const next = tmp.firstElementChild;
+      if (next) bar.replaceWith(next);
+    }
+  }
+  if (kind === 'routines') {
+    const stepsEl = $('routineSteps');
+    if (stepsEl) {
+      const stepsHtml = routineStepsHtml(item);
+      if (stepsEl.innerHTML !== stepsHtml) stepsEl.innerHTML = stepsHtml;
+    }
+  }
+}
+
+function handleDetailInput() {
+  if (!detailCtx || !draft || ui.mode !== 'detail') return;
+  const { kind, index } = detailCtx;
+  const wasAcked = isAcknowledged(draft[kind][index]);
+  syncDetailToDraft();
+  const item = draft[kind][index];
+  // Editing clears an explicit acknowledgement: the edited content requires
+  // re-review. Completion then recomputes from the current draft.
+  if (wasAcked && item) item.review_status = '';
+  refreshDetailReviewUi();
+  updateSteps();
+}
+
 function handleAction(act, target) {
   if (act === 'prev') stepDetail(-1);
   else if (act === 'next') stepDetail(1);
@@ -1638,6 +1814,8 @@ function handleAction(act, target) {
   else if (act === 'pagePrev') stepPage(-1);
   else if (act === 'pageNext') stepPage(1);
   else if (act === 'clear') clearSearchAndFilter();
+  else if (act === 'ack') acknowledgeCurrent(true);
+  else if (act === 'unack') acknowledgeCurrent(false);
   else if (act === 'open' && target) openDetail(target);
 }
 
@@ -1653,6 +1831,7 @@ async function init() {
     }
   } catch { $('modelBadge').textContent = ''; }
   updateSteps();
+  updateUploadLocks();
 }
 
 async function loadJobPayload(res) {
@@ -1679,6 +1858,7 @@ function adoptJob(payload) {
   ui = freshUi();
   detailCtx = null;
   render();
+  updateUploadLocks();
   scrollTop();
 }
 
@@ -1754,12 +1934,26 @@ $('filterSelect').addEventListener('change', (ev) => {
   renderBrowser();
 });
 
+$('clearBtn').addEventListener('click', () => {
+  if (!state) return;
+  syncDetailToDraft();
+  const unsaved = hasUnsavedEdits();
+  const msg = unsaved
+    ? 'You have unsaved edits that will be lost. Clear the current PDF and discard this session? Saved jobs and exported files will be kept.'
+    : 'Clear the current PDF and discard this session? Saved jobs and exported files will be kept.';
+  if (!window.confirm(msg)) return;
+  clearSessionState();
+});
+
 $('browser').addEventListener('click', (ev) => {
   const actEl = ev.target.closest('[data-act]');
   if (actEl) { handleAction(actEl.dataset.act, null); return; }
   const card = ev.target.closest('.item-card');
   if (card) handleAction('open', card.dataset.id);
 });
+
+$('browser').addEventListener('input', handleDetailInput);
+$('browser').addEventListener('change', handleDetailInput);
 
 $('bottomBar').addEventListener('click', (ev) => {
   const btn = ev.target.closest('[data-act]');
