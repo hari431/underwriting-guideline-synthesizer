@@ -257,7 +257,7 @@ test('excel: sample routine sheets populate fields supported by the source', asy
 
   // G1: unfamiliar wording kept verbatim with nothing invented, flagged instead.
   const g1 = byIndex(3);
-  assert.deepEqual(sectionRows(g1, 'Steps').body, [['1', 'APPLY legacy_matrix_v2 surcharge curve', '', '', '', '', 'Source instruction (source step 1)']]);
+  assert.deepEqual(sectionRows(g1, 'Steps').body, [['1', 'APPLY legacy_matrix_v2 surcharge curve', 'REVIEW', '', '', '', 'Needs review — no evidenced operation (source step 1)']]);
   assert.equal(sectionRows(g1, 'Final calculation'), null);
   const g1issues = sectionRows(g1, 'Unresolved items');
   assert.ok(g1issues !== null && g1issues.body.length >= 1);
@@ -341,8 +341,8 @@ test('excel: rating routine sheet keeps steps and conditions as separate rows', 
   const steps = sectionRows(values, 'Steps');
   assert.deepEqual(steps.header, ['Step #', 'Instruction', 'Op', '(', 'Operand', ')', 'Line Comment']);
   assert.deepEqual(steps.body, [
-    ['1', 'Step 1: first', '', '', '', '', 'Source instruction (source step 1)'],
-    ['3', 'Step 3: third', '', '', '', '', 'Source instruction (source step 3)'], // gaps preserved without expansion
+    ['1', 'Step 1: first', 'REVIEW', '', '', '', 'Needs review — no evidenced operation (source step 1)'],
+    ['3', 'Step 3: third', 'REVIEW', '', '', '', 'Needs review — no evidenced operation (source step 3)'], // gaps preserved without expansion
   ]);
   assert.ok(steps.body.every((row) => row.length === 7));
   const conditions = sectionRows(values, 'Conditions');
@@ -549,8 +549,10 @@ test('excel: each routine sheet carries only its own details and unresolved item
   const firstUnresolved = sectionRows(first, 'Unresolved items');
   assert.ok(firstUnresolved !== null && firstUnresolved.body.length >= 1);
   assert.ok(firstUnresolved.body.some((row) => row[2].includes('Missing Asset')));
-  assert.equal(sectionRows(second, 'Unresolved items'), null);
-  assert.deepEqual(sectionRows(second, 'Steps').body, [['1', 'Do something', '', '', '', '', 'Source instruction (source step 1)']]);
+  const secondUnresolved = sectionRows(second, 'Unresolved items');
+  assert.ok(secondUnresolved !== null && secondUnresolved.body.length === 1);
+  assert.ok(secondUnresolved.body[0][2].includes('without an evidenced operation'));
+  assert.deepEqual(sectionRows(second, 'Steps').body, [['1', 'Do something', 'REVIEW', '', '', '', 'Needs review — no evidenced operation (source step 1)']]);
 });
 
 test('excel: routine sheet names are safe, unique, and avoid table sheets', () => {
@@ -695,7 +697,9 @@ test('excel: routine titles, section headings, and column headers are styled, da
   assert.equal(sectionRows(calcValues, 'Inputs'), null);
   assert.equal(sectionRows(calcValues, 'Dependencies'), null);
   assert.equal(sectionRows(calcValues, 'Final calculation'), null);
-  assert.equal(sectionRows(calcValues, 'Unresolved items'), null);
+  const calcUnresolved = sectionRows(calcValues, 'Unresolved items');
+  assert.ok(calcUnresolved !== null && calcUnresolved.body.length === 1);
+  assert.ok(calcUnresolved.body[0][2].includes('without an evidenced operation'));
 
   // Formula-only routine: the expression expands to one row per operation
   // with the same title/heading/header styling.
@@ -1360,8 +1364,8 @@ test('excel: bare step numbers preserve gaps in the step column', () => {
   assert.deepEqual(stepsSection.header, ['Step #', 'Instruction', 'Op', '(', 'Operand', ')', 'Line Comment']);
   assert.deepEqual(stepsSection.body.map((row) => row[0]), ['1', '3']);
   assert.deepEqual(stepsSection.body, [
-    ['1', '1 First action here.', '', '', '', '', 'Source instruction (source step 1)'],
-    ['3', '3 Third action here.', '', '', '', '', 'Source instruction (source step 3)'],
+    ['1', '1 First action here.', 'REVIEW', '', '', '', 'Needs review — no evidenced operation (source step 1)'],
+    ['3', '3 Third action here.', 'REVIEW', '', '', '', 'Needs review — no evidenced operation (source step 3)'],
   ]);
 });
 
@@ -1518,4 +1522,53 @@ test('excel: condition routines keep the legacy sheet layout with all sections',
   const deps = sectionRows(values, 'Dependencies');
   assert.deepEqual(deps.body, [['Schedule Q', 'table', 'explicit', 'widget_rate (keys: widget_class)']]);
   assert.ok(blockRows(values, 'Source evidence') !== null);
+});
+
+test('excel: unparsed steps are marked for review while parsed steps render normally', () => {
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'g.pdf', pageCount: 1 }),
+      tables: [{ name: 'Lookup One', sourcePages: [1], evidenceText: 'ev', headers: ['Key', 'Value'], rows: [['a', '1']] }],
+      routines: [{
+        name: 'Mixed', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'ev',
+        steps: [
+          'Look up alpha_value from Lookup One using alpha_key.',
+          'Review the outcome with the team before proceeding.',
+        ],
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  assert.ok(job.issues.some((i) => /without an evidenced operation/.test(i.message)));
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Mixed'), strings);
+  assert.deepEqual(sectionRows(values, 'Steps').body, [
+    ['1', 'alpha_value', '<--', '', 'table:Lookup One (alpha_key)', '', 'Lookup alpha_value from Lookup One'],
+    ['2', 'Review the outcome with the team before proceeding.', 'REVIEW', '', '', '', 'Needs review — no evidenced operation (source step 2)'],
+  ]);
+  // Review marking is deterministic.
+  assert.ok(buildWorkbookXlsx(job, { source: 'recorded' }).equals(buildWorkbookXlsx(job, { source: 'recorded' })));
+});
+
+test('excel: legacy layout marks steps without operations for review', () => {
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'g.pdf', pageCount: 1 }),
+      routines: [{
+        name: 'Rules', kind: 'condition', sourcePages: [1], evidenceText: 'ev',
+        conditions: ['IF alpha_value is high THEN apply factor ELSE refer for review'],
+        steps: ['Review the outcome with the team.'],
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Rules'), strings);
+  const steps = sectionRows(values, 'Steps');
+  assert.deepEqual(steps.header, ['Step #', 'Instruction', 'Operation', 'Operand', 'Comment']);
+  assert.deepEqual(steps.body, [['1', 'Review the outcome with the team.', 'REVIEW', '', 'Needs review — no evidenced operation']]);
 });

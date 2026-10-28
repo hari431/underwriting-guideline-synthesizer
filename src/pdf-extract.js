@@ -3,6 +3,8 @@
 // ASCIIHex / ASCII85 content streams, WinAnsi / MacRoman / Differences /
 // ToUnicode font decoding, per-page text with rough line breaks.
 // Scope: text-based PDFs. Scanned-image PDFs and /Encrypt are out of scope.
+// No geometry or layout analysis: text order is the only signal, so adjacent
+// grids may arrive merged or split and downstream separation is best-effort.
 
 import { inflateSync } from 'node:zlib';
 

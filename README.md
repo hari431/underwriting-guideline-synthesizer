@@ -42,3 +42,15 @@ npm start
 - `src/pipeline.js`, `src/server.js`, `public/` — pipeline, local server, review UI
 - `fixtures/` — synthetic sample PDF + recorded extraction
 - `scripts/make-sample-pdf.js` — regenerates the sample PDF (`npm run sample`)
+
+## Known limitations
+
+- Text-based PDF ingest only: `src/pdf-extract.js` reads embedded text in
+  content-stream order and performs no geometry or layout analysis, so it
+  cannot tell from cell positions whether two adjacent grids are one table
+  or two. The extraction prompt asks the model to keep independently
+  titled/labelled grids separate, and validation flags suspected merges —
+  but both are best-effort heuristics over text order, not layout fixes.
+  Adjacent-table separation is not claimed fixed until a fresh PDF run
+  confirms it.
+- Scanned-image PDFs and encrypted PDFs are out of scope.

@@ -88,6 +88,8 @@ export function validateJob(job) {
     checkUnclearUnits(table, warn);
     checkMissingKeyOutputValues(table, warn);
     checkInconsistentColumnValues(table, warn);
+    checkSuspectedBreakdown(table, warn);
+    checkSuspectedMerge(table, warn);
     checkConfidence('table', table, warn);
   }
   checkSuspectedContinuations(tables, warn);
@@ -121,6 +123,7 @@ export function validateJob(job) {
     }
     checkConditionFallback(routine, warn);
     checkStepFormulas(routine, warn);
+    checkStepsWithoutOperations(routine, warn);
     checkLookupKeys(routine, warn);
     checkStructuredDependencies(routine, warn, refCtx);
     checkConfidence('routine', routine, warn);
@@ -337,6 +340,118 @@ function checkSuspectedContinuations(tables, warn) {
   }
 }
 
+// A row labeled as a total whose value equals the sum of the same column
+// over the other rows is the signature of a worked illustration computed
+// for one instance, not reusable lookup data. Conservative: the warning
+// requires both the generic total label and the arithmetic confirmation,
+// so ordinary multi-key tables and coded lists never match.
+const TOTAL_ROW_LABEL = /^\s*(grand\s+)?(sub\s*)?totals?\s*$/i;
+
+function firstNonBlankCell(row) {
+  for (const cell of row ?? []) {
+    const s = String(cell ?? '').trim();
+    if (s) return s;
+  }
+  return '';
+}
+
+function checkSuspectedBreakdown(table, warn) {
+  const rows = table.rows ?? [];
+  if (rows.length < 2) return;
+  rows.forEach((row, idx) => {
+    const label = firstNonBlankCell(row);
+    if (!TOTAL_ROW_LABEL.test(label)) return;
+    const width = Math.max(table.headers?.length ?? 0, ...rows.map((r) => (Array.isArray(r) ? r.length : 0)));
+    for (let c = 0; c < width; c += 1) {
+      const total = parseGenericNumber(row?.[c]);
+      if (total === null) continue;
+      let sum = 0;
+      let count = 0;
+      let clean = true;
+      for (let i = 0; i < rows.length; i += 1) {
+        if (i === idx) continue;
+        const cell = c < (rows[i]?.length ?? 0) ? String(rows[i][c] ?? '') : '';
+        const n = parseGenericNumber(cell);
+        if (cell.trim() === '' || n === null) {
+          clean = false;
+          break;
+        }
+        sum += n;
+        count += 1;
+      }
+      if (!clean || count < 2) continue;
+      const tolerance = 0.005 * count + 1e-9 * Math.abs(total);
+      if (Math.abs(sum - total) <= tolerance) {
+        warn('table', table.id, `Table "${table.name || table.id}" looks like an instance-specific computed breakdown rather than a reusable rating table (data row ${idx + 1} "${label}" matches the column sum); verify before reuse.`, table.source_pages);
+        return;
+      }
+    }
+  });
+}
+
+function isBlankRow(row) {
+  return (row ?? []).every((c) => !String(c ?? '').trim());
+}
+
+// Structural signatures of two adjacent independent grids merged into one
+// table: a blank row or column with data on both sides, a repeated header
+// row, or an embedded single-value row. Each warns at most once per table.
+// Conservative: edge blanks never warn, and the repeated-header signal needs
+// at least two matching labels, so ordinary tables never match.
+function checkSuspectedMerge(table, warn) {
+  const rows = table.rows ?? [];
+  if (rows.length === 0) return;
+  const name = `"${table.name || table.id}"`;
+  const nonBlank = rows.map((r) => !isBlankRow(r));
+  const first = nonBlank.indexOf(true);
+  const last = nonBlank.lastIndexOf(true);
+  for (let i = first + 1; i < last; i += 1) {
+    if (!nonBlank[i]) {
+      warn('table', table.id, `Table ${name} has a blank data row (${i + 1}) separating data on both sides; verify adjacent tables were not merged into one.`, table.source_pages);
+      break;
+    }
+  }
+  const width = Math.max(table.headers?.length ?? 0, ...rows.map((r) => r?.length ?? 0));
+  const colHasData = [];
+  for (let c = 0; c < width; c += 1) {
+    const headerFilled = String(table.headers?.[c] ?? '').trim() !== '';
+    const cellFilled = rows.some((r) => String(r?.[c] ?? '').trim() !== '');
+    colHasData.push(headerFilled || cellFilled);
+  }
+  const cFirst = colHasData.indexOf(true);
+  const cLast = colHasData.lastIndexOf(true);
+  for (let c = cFirst + 1; c < cLast; c += 1) {
+    if (!colHasData[c]) {
+      warn('table', table.id, `Table ${name} has a blank column (column ${c + 1}) separating data on both sides; verify adjacent tables were not merged into one.`, table.source_pages);
+      break;
+    }
+  }
+  const headerKeys = (table.headers ?? []).map((h) => String(h ?? '').trim().toLowerCase());
+  if (headerKeys.filter(Boolean).length >= 2) {
+    const repeated = rows.findIndex((row) => {
+      if (isBlankRow(row)) return false;
+      const w = Math.max(headerKeys.length, row?.length ?? 0);
+      for (let c = 0; c < w; c += 1) {
+        if (String(row?.[c] ?? '').trim().toLowerCase() !== (headerKeys[c] ?? '')) return false;
+      }
+      return true;
+    });
+    if (repeated >= 0) {
+      warn('table', table.id, `Table ${name} repeats its column labels in data row ${repeated + 1}; verify adjacent tables were not merged into one.`, table.source_pages);
+    }
+  }
+  if (width >= 2) {
+    for (let i = first + 1; i < last; i += 1) {
+      if (isBlankRow(rows[i])) continue;
+      const filled = (rows[i] ?? []).filter((c) => String(c ?? '').trim() !== '');
+      if (filled.length === 1) {
+        warn('table', table.id, `Table ${name} has an embedded single-value data row (${i + 1}, "${truncate(String(filled[0]), 40)}") with data on both sides; verify adjacent tables or sections were not merged into one.`, table.source_pages);
+        break;
+      }
+    }
+  }
+}
+
 function checkConditionFallback(routine, warn) {
   if (routine.kind !== 'condition') return;
   const conds = routine.conditions ?? [];
@@ -361,6 +476,47 @@ function checkStepFormulas(routine, warn) {
       warn('routine', routine.id, `Step ${idx + 1} ("${truncate(text, 60)}") uses syntax the validator cannot reliably interpret; flagged for analyst review (not treated as invalid).`, routine.source_pages);
     }
   });
+}
+
+// Steps in a calculation routine that carry no structured operation
+// evidence at all (no operation, expression, operand, inputs, output, or
+// table reference) read as descriptive text, not executable logic. Scoped
+// to calculation routines only, and conservative: any evidenced field
+// counts, so genuine lookups, assignments, rounding, and conditionals —
+// including explicitly structured steps whose verb is vague — never match.
+function stepDetailForStep(routine, index, text) {
+  const detailed = routine.steps_detailed ?? [];
+  const steps = routine.steps ?? [];
+  if (detailed.length > 0 && detailed.length === steps.length) return detailed[index] ?? null;
+  return detailed.find((d) => String(d?.instruction ?? d?.original_text ?? '') === text) ?? null;
+}
+
+function hasOperationEvidence(det) {
+  if (!det) return false;
+  if ([det.operation, det.expression, det.operand, det.output].some((v) => String(v ?? '').trim() !== '')) return true;
+  if ((det.inputs ?? []).some((v) => String(v ?? '').trim() !== '')) return true;
+  return (det.depends_on ?? []).some((v) => String(v ?? '').trim() !== '');
+}
+
+function checkStepsWithoutOperations(routine, warn) {
+  if (routine.kind !== 'calculation_steps') return;
+  const steps = routine.steps ?? [];
+  if (steps.length === 0) return;
+  const missing = [];
+  steps.forEach((step, idx) => {
+    const text = String(step ?? '');
+    if (!text.trim()) return;
+    const det = stepDetailForStep(routine, idx, text);
+    if (hasOperationEvidence(det)) return;
+    const seq = det?.sequence !== undefined && det?.sequence !== null && String(det.sequence) !== ''
+      ? String(det.sequence)
+      : String(idx + 1);
+    missing.push(seq);
+  });
+  if (missing.length === 0) return;
+  const plural = missing.length === 1 ? '' : 's';
+  const reads = missing.length === 1 ? 'it reads' : 'they read';
+  warn('routine', routine.id, `Routine "${routine.name || routine.id}" has ${missing.length} step${plural} without an evidenced operation (step ${missing.join(', step ')}); ${reads} as descriptive text — verify the source states executable logic.`, routine.source_pages);
 }
 
 function checkLookupKeys(routine, warn) {

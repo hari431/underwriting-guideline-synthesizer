@@ -215,3 +215,98 @@ test('validate: step refs matching table columns resolve; unknown refs still fla
   assert.ok(issues.some((i) => /nowhere_defined/.test(i.message) && /flagged as unresolved/.test(i.message)));
   assert.ok(issues.every((i) => i.severity === 'warning'));
 });
+
+test('validate: computed breakdowns warn; real rating tables and unmatched totals do not', () => {
+  const job = jobWith({
+    tables: [
+      { name: 'Breakdown', sourcePages: [1], evidenceText: 'e', headers: ['Item', 'Amount'], rows: [['Alpha', '10.00'], ['Beta', '20.00'], ['Total', '30.00']] },
+      { name: 'Rounded Breakdown', sourcePages: [2], evidenceText: 'e', headers: ['Item', 'Amount'], rows: [['Alpha', '0.10'], ['Beta', '0.20'], ['Subtotal', '0.30']] },
+      {
+        name: 'Multi Key', sourcePages: [1], evidenceText: 'e', headers: ['Region', 'Band', 'Group', 'Modifier'],
+        rows: [['R-A', '750', 'Group 1', '0.037'], ['R-A', '750', 'Group 2', '0.029'], ['R-B', '1500', 'Group 1', '0.041']],
+      },
+      { name: 'Codes', sourcePages: [1], evidenceText: 'e', headers: ['Code', 'Cost'], rows: [['0012', '1.10'], ['0045', '1.20']] },
+      { name: 'Unmatched Total Row', sourcePages: [1], evidenceText: 'e', headers: ['Item', 'Amount'], rows: [['Alpha', '10.00'], ['Beta', '20.00'], ['Total', '99.99']] },
+    ],
+  });
+  const issues = validateJob(job);
+  const breakdown = (id) => issues.filter((i) => i.target_id === id && /computed breakdown/.test(i.message));
+  assert.equal(breakdown('T1').length, 1);
+  assert.equal(breakdown('T2').length, 1);
+  assert.equal(breakdown('T1')[0].severity, 'warning');
+  assert.deepEqual(breakdown('T1')[0].source_pages, [1]);
+  for (const id of ['T3', 'T4', 'T5']) {
+    assert.deepEqual(breakdown(id), [], `${id} must not warn as a breakdown`);
+  }
+});
+
+test('validate: suspected merged grids warn; clean and edge-blank tables do not', () => {
+  const job = jobWith({
+    tables: [
+      { name: 'Blank Row', sourcePages: [1], evidenceText: 'e', headers: ['Key', 'Value'], rows: [['a', '1'], ['', ''], ['b', '2']] },
+      { name: 'Blank Column', sourcePages: [1], evidenceText: 'e', headers: ['Key', '', 'Value'], rows: [['a', '', '1'], ['b', '', '2']] },
+      { name: 'Repeated Header', sourcePages: [1], evidenceText: 'e', headers: ['Key', 'Value'], rows: [['a', '1'], ['Key', 'Value'], ['b', '2']] },
+      { name: 'Embedded Note', sourcePages: [1], evidenceText: 'e', headers: ['Key', 'Value'], rows: [['a', '1'], ['continued below', ''], ['b', '2']] },
+      { name: 'Clean', sourcePages: [1], evidenceText: 'e', headers: ['Key', 'Value'], rows: [['a', '1'], ['b', '2']] },
+      { name: 'Trailing Blank', sourcePages: [1], evidenceText: 'e', headers: ['Key', 'Value'], rows: [['a', '1'], ['', '']] },
+      { name: 'Leading Blank', sourcePages: [1], evidenceText: 'e', headers: ['Key', 'Value'], rows: [['', ''], ['a', '1']] },
+    ],
+  });
+  const issues = validateJob(job);
+  const merged = (id) => issues.filter((i) => i.target_id === id && /merged into one/.test(i.message));
+  assert.ok(merged('T1').some((i) => /blank data row/.test(i.message)));
+  assert.ok(merged('T2').some((i) => /blank column/.test(i.message)));
+  assert.ok(merged('T3').some((i) => /repeats its column labels/.test(i.message)));
+  assert.ok(merged('T4').some((i) => /single-value/.test(i.message)));
+  assert.equal(merged('T1')[0].severity, 'warning');
+  assert.deepEqual(merged('T1')[0].source_pages, [1]);
+  for (const id of ['T5', 'T6', 'T7']) {
+    assert.deepEqual(merged(id), [], `${id} must not warn as merged`);
+  }
+});
+
+test('validate: calculation steps without operations warn; genuine steps do not', () => {
+  const job = jobWith({
+    tables: [{ name: 'Lookup One', sourcePages: [1], evidenceText: 'e', headers: ['Key', 'Value'], rows: [['a', '1']] }],
+    routines: [
+      {
+        name: 'Prose Steps', kind: 'calculation_steps', sourcePages: [2], evidenceText: 'e',
+        steps: [
+          'Look up alpha_value from Lookup One using alpha_key.',
+          'Review the outcome with the team before proceeding.',
+          'Contact the office for further guidance.',
+        ],
+      },
+      {
+        name: 'Genuine Strings', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'e',
+        steps: [
+          'Look up alpha_value from Lookup One using alpha_key.',
+          'total_value = alpha_value + beta_value.',
+          'Round total_value to the nearest whole unit.',
+          'If total_value is below 100, set final_total to 100; otherwise final_total equals total_value.',
+        ],
+        inputs: ['alpha_key', 'beta_value'],
+        outputs: ['final_total'],
+      },
+      {
+        name: 'Genuine Objects', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'e',
+        steps: [
+          { sequence: 1, instruction: 'Look up factor', operation: 'lookup', inputs: ['alpha_key'], output: 'alpha_value', depends_on: ['Lookup One'] },
+          { sequence: 2, instruction: 'Add margin', operation: 'expression', expression: 'total_value = alpha_value + 5', inputs: ['alpha_value'], output: 'total_value' },
+        ],
+      },
+      { name: 'Prose Formula', kind: 'formula', sourcePages: [1], evidenceText: 'e', expressionText: 'APPLY legacy curve' },
+    ],
+  });
+  const issues = validateJob(job);
+  const noOps = (id) => issues.filter((i) => i.target_id === id && /without an evidenced operation/.test(i.message));
+  const prose = noOps('R1');
+  assert.equal(prose.length, 1);
+  assert.match(prose[0].message, /2 steps/);
+  assert.match(prose[0].message, /step 2, step 3/);
+  assert.equal(prose[0].severity, 'warning');
+  assert.deepEqual(prose[0].source_pages, [2]);
+  for (const id of ['R2', 'R3', 'R4']) {
+    assert.deepEqual(noOps(id), [], `${id} must not warn about missing operations`);
+  }
+});

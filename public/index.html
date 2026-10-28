@@ -1332,8 +1332,9 @@ function rcRoutineStepRows(r, routines, tables) {
       ? (spec.det ?? { inputs: spec.commentInputs ?? [] })
       : { inputs: spec.commentInputs ?? [], output: spec.output };
     const traced = rcTraceComment({ ...spec, det: traceDet }, r, routines, tables, priorOutputs);
-    const comment = traced || rcFallbackComment(spec, tables);
-    out.push([spec.newSeq, spec.instruction, spec.op, spec.open, spec.operand, spec.close, comment]);
+    const needsReview = spec.kind === 'unparsed';
+    const comment = needsReview ? `Needs review — no evidenced operation (${spec.srcLabel || 'source step'})` : (traced || rcFallbackComment(spec, tables));
+    out.push([spec.newSeq, spec.instruction, needsReview ? 'REVIEW' : spec.op, spec.open, spec.operand, spec.close, comment]);
     if (spec.output) {
       priorOutputs.set(rcNormKey(spec.output), { seq: spec.newSeq ?? '', table: rcPriorTable(spec.det ?? null, tables) });
     }

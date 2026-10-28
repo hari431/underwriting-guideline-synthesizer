@@ -1440,6 +1440,18 @@ function expandOneRatingEntry(entry) {
   }];
 }
 
+// Op-column marker for steps with no evidenced operation. Shared by the
+// rating-routine and legacy layouts so unparsed steps read the same
+// everywhere; the source text itself is never altered.
+const UNPARSED_OP_MARK = 'REVIEW';
+
+// Unparsed steps are never presented as executable logic: the comment names
+// the gap while the source text stays verbatim under Instruction.
+function unparsedReviewComment(spec) {
+  const orig = spec.origSeq !== '' && spec.origSeq !== null && spec.origSeq !== undefined ? `source step ${spec.origSeq}` : 'source step';
+  return `Needs review — no evidenced operation (${orig})`;
+}
+
 // Fallback line comment when no dependency is traceable. Every generated
 // row keeps a purpose comment; arithmetic rows always name their variable
 // or prior step.
@@ -1556,6 +1568,7 @@ function ratingRoutineSheetRows(r, routineIssues, ctx = {}) {
     const tableTerms = tableReferenceTerms(tables);
     const priorOutputs = new Map();
     for (const spec of expanded) {
+      const needsReview = spec.kind === 'unparsed';
       const traceDet = (spec.kind === 'lookup' || spec.kind === 'rounding')
         ? (spec.det ?? { inputs: spec.commentInputs ?? [] })
         : { inputs: spec.commentInputs ?? [], output: spec.output };
@@ -1563,8 +1576,9 @@ function ratingRoutineSheetRows(r, routineIssues, ctx = {}) {
         { det: traceDet, output: spec.output },
         r, routines, tables, tableTerms, priorOutputs, { lookupPrefix: false }
       );
-      const comment = traced || fallbackRatingComment(spec, tables);
-      rows.push([spec.newSeq, spec.instruction, spec.op, spec.open, spec.operand, spec.close, comment]);
+      const comment = needsReview ? unparsedReviewComment(spec) : (traced || fallbackRatingComment(spec, tables));
+      const op = needsReview ? UNPARSED_OP_MARK : spec.op;
+      rows.push([spec.newSeq, spec.instruction, op, spec.open, spec.operand, spec.close, comment]);
       if (spec.output && spec.kind !== 'arithmetic-cont') {
         priorOutputs.set(
           normalizeVariableKey(spec.output),
@@ -1662,7 +1676,10 @@ function legacyRoutineSheetRows(r, routineIssues, ctx = {}) {
     const tableTerms = tableReferenceTerms(tables);
     const priorOutputs = new Map();
     for (const e of stepEntries) {
-      rows.push([e.seq, e.instruction, e.operation, stepOperandCell(e), stepComment(e, r, routines, tables, tableTerms, priorOutputs)]);
+      const needsReview = !String(e.operation ?? '').trim() && String(e.instruction ?? '').trim() !== '';
+      const traced = stepComment(e, r, routines, tables, tableTerms, priorOutputs);
+      const comment = traced || (needsReview ? 'Needs review — no evidenced operation' : '');
+      rows.push([e.seq, e.instruction, needsReview ? UNPARSED_OP_MARK : e.operation, stepOperandCell(e), comment]);
       if (e.output) priorOutputs.set(normalizeVariableKey(e.output), { seq: e.seq ?? '', table: priorTableForStep(e.det, tables) });
     }
   }

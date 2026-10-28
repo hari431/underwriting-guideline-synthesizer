@@ -99,3 +99,13 @@ test('extract: runExtraction prefers recording, else enforces disabled error', a
   assert.equal(viaRecording.tables.length, 2);
   await assert.rejects(runExtraction([{ page: 1, text: 'x' }], { modelOptions: { env: {} } }), ModelDisabledError);
 });
+
+test('extract: prompt separates reusable tables, adjacent grids, and genuine steps', () => {
+  const prompt = buildExtractionPrompt([{ page: 1, text: 'sample' }]);
+  for (const term of ['reusable', 'computed total', 'adjacent', 'never merge', 'explicit operation', 'descriptive']) {
+    assert.ok(prompt.includes(term), `prompt missing guidance: ${term}`);
+  }
+  for (const sample of ['Table 1 - Base Rate by Driver Class', 'Table 2 - Territory Factor', 'policy_fee', 'territory_factor']) {
+    assert.ok(!prompt.includes(sample), `prompt must not hardcode sample value: ${sample}`);
+  }
+});
