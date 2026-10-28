@@ -1,14 +1,16 @@
 // Deterministic validation for extracted jobs. Pure functions, no model calls.
 // Policy: structural/traceability breaks are errors; anything interpretive —
 // including unfamiliar formula syntax — is a warning flagged for review.
-import { ROUTINE_KINDS, createValidationIssue, definedConstantTerms, normalizeVariableKey, resolveRoutineReference, resolveTableReference, tableReferenceTerms } from './models.js';
+import { ROUTINE_KINDS, createValidationIssue, definedConstantTerms, normalizeVariableKey, resolveRoutineReference, resolveTableReference, splitTopLevel, tableReferenceTerms } from './models.js';
 import { tableHasRecordColumn } from './table-split.js';
 
 export { ROUTINE_KINDS };
 
 const CONDITIONAL_KEYWORDS = /\b(if|then|else|case|when|and|or|not|in)\b/i;
-const FORMULA_OPERATORS = /=|[+\-*/%()<>?]/;
-const FORMULA_ALLOWED_CHARS = /^[A-Za-z0-9_+\-*/().<>=!% \t,?]+$/;
+const FORMULA_OPERATORS = /=|[+\-*/%()<>?×÷−]/;
+const FORMULA_ALLOWED_CHARS = /^[A-Za-z0-9_+\-*/().<>=!% \t,?×÷−]+$/;
+const FALLBACK_WORDS = /\b(else|otherwise|fallback|refer|decline|exception|default)\b/i;
+const BARE_FALLBACK_CLAUSE = /^\s*(else|otherwise|fallback)\b/i;
 
 // Classify a formula expression without ever calling it "invalid":
 // 'ok' (reliably interpretable), 'conditional', or 'review' (flag for analyst).
@@ -123,14 +125,18 @@ export function validateJob(job) {
         warn('routine', routine.id, `Routine "${routine.name || routine.id}" depends on "${dep}", which matches no extracted table, routine, input, or output.`, routine.source_pages);
       }
     }
-    checkConditionFallback(routine, warn);
+    checkConditionBranches(routine, warn);
     checkStepFormulas(routine, warn);
+    checkStepExpressionSyntax(routine, warn);
     checkStepsWithoutOperations(routine, warn);
     checkIncompleteStepLogic(routine, warn);
     checkLookupKeys(routine, warn);
+    checkConflictingStepDefinitions(routine, warn);
+    checkUnusedInputs(routine, warn);
     checkStructuredDependencies(routine, warn, refCtx);
     checkConfidence('routine', routine, warn);
   }
+  checkConflictingRoutineFormulas(routines, warn);
 
   return issues;
 }
@@ -473,16 +479,36 @@ function checkSuspectedRecordMerge(table, warn) {
   warn('table', table.id, `Table "${table.name || table.id}" has column(s) whose values each embed their own key (e.g., "label: value"); verify adjacent tables were not merged into one.`, table.source_pages);
 }
 
-function checkConditionFallback(routine, warn) {
-  if (routine.kind !== 'condition') return;
-  const conds = routine.conditions ?? [];
+function checkConditionBranches(routine, warn) {
+  const texts = (routine.conditions ?? []).map((c) => String(c ?? '').trim()).filter(Boolean);
   const detailed = routine.conditions_detailed ?? [];
-  if (conds.filter((c) => String(c ?? '').trim()).length === 0 && detailed.length === 0) return;
-  const hasStructuredFallback = detailed.some((d) => String(d?.false_branch ?? '').trim() || String(d?.referral_code ?? '').trim());
-  if (hasStructuredFallback) return;
-  const joined = conds.join('\n');
-  if (/\b(else|otherwise|fallback|refer|decline|exception|default)\b/i.test(joined)) return;
-  warn('routine', routine.id, `Condition routine "${routine.name || routine.id}" has no explicit fallback or ELSE branch; verify the fallback behavior against the source.`, routine.source_pages);
+  if (texts.length === 0 && detailed.length === 0) return;
+  if (texts.length === 0) {
+    const hasStructuredFallback = detailed.some((d) => String(d?.false_branch ?? '').trim() || String(d?.referral_code ?? '').trim());
+    if (!hasStructuredFallback) {
+      warn('routine', routine.id, `Condition routine "${routine.name || routine.id}" has no explicit fallback or ELSE branch; verify the fallback behavior against the source.`, routine.source_pages);
+    }
+    return;
+  }
+  // Each condition needs its own fallback evidence: an inline fallback word,
+  // a structured false branch or referral, or a sibling bare ELSE/OTHERWISE
+  // clause (split IF/ELSE pairs). One condition's fallback never shields an
+  // unrelated condition. Applies to every routine kind: a condition without
+  // a fallback is ambiguous wherever it appears.
+  const detailByText = new Map();
+  for (const d of detailed) {
+    const key = String(d?.original_text ?? d?.condition ?? '').trim();
+    if (key && !detailByText.has(key)) detailByText.set(key, d);
+  }
+  const hasBareFallback = texts.some((t) => BARE_FALLBACK_CLAUSE.test(t));
+  texts.forEach((text, idx) => {
+    const det = detailByText.get(text) ?? (detailed.length === texts.length ? detailed[idx] : null);
+    if (det && (String(det?.false_branch ?? '').trim() || String(det?.referral_code ?? '').trim())) return;
+    if (FALLBACK_WORDS.test(text)) return;
+    if (hasBareFallback) return;
+    const which = texts.length > 1 ? `Condition ${idx + 1} ` : 'Condition ';
+    warn('routine', routine.id, `${which}("${truncate(text, 60)}") states no explicit fallback or ELSE branch; verify the fallback behavior against the source.`, routine.source_pages);
+  });
 }
 
 function checkStepFormulas(routine, warn) {
@@ -509,6 +535,26 @@ function checkStepFormulas(routine, warn) {
 // to calculation routines only, and conservative: any evidenced field
 // counts, so genuine lookups, assignments, rounding, and conditionals —
 // including explicitly structured steps whose verb is vague — never match.
+function stepSeq(step, index) {
+  const seq = step?.sequence;
+  return seq !== undefined && seq !== null && String(seq) !== '' ? String(seq) : String(index + 1);
+}
+
+// Step-level formula syntax review: evidenced calculations (expression or
+// assignment steps) whose formula the validator cannot reliably interpret
+// warn with step attribution, mirroring the routine-level expression check.
+// Descriptive prose without an operation stays with the aggregate checks.
+function checkStepExpressionSyntax(routine, warn) {
+  (routine.steps_detailed ?? []).forEach((step, idx) => {
+    const op = String(step?.operation ?? '').toLowerCase();
+    if (op !== 'expression' && op !== 'assignment') return;
+    const expr = String(step?.expression ?? '').trim();
+    if (!expr || classifyFormula(expr) !== 'review') return;
+    const pages = step?.source_pages?.length ? step.source_pages : routine.source_pages;
+    warn('routine', routine.id, `Step ${stepSeq(step, idx)} expression "${truncate(expr)}" uses syntax the validator cannot reliably interpret; flagged for analyst review (not treated as invalid).`, pages);
+  });
+}
+
 function stepDetailForStep(routine, index, text) {
   const detailed = routine.steps_detailed ?? [];
   const steps = routine.steps ?? [];
@@ -585,6 +631,128 @@ function checkLookupKeys(routine, warn) {
   });
 }
 
+// Right-hand side of an `output = rhs` assignment form, or '' when the text
+// states no assignment.
+function assignmentRhs(text) {
+  const idx = String(text ?? '').indexOf('=');
+  if (idx < 0) return '';
+  return String(text).slice(idx + 1).replace(/\.\s*$/, '').trim();
+}
+
+// A bare literal or single identifier: initialization and aliasing, not a
+// computed definition. Such pairs (for example `x = 0` then `x = input`)
+// never count as conflicting formulas.
+function isTrivialRhs(rhs) {
+  const s = String(rhs ?? '').trim();
+  if (!s) return true;
+  if (isNumericReference(s)) return true;
+  return /^[A-Za-z_]\w*$/.test(s);
+}
+
+function formulaKey(text) {
+  return String(text ?? '').replace(/\s+/g, '').toLowerCase();
+}
+
+// Two computed definitions of one output with different formulas read as a
+// possible source contradiction: flag for review, never silently pick one.
+function checkConflictingStepDefinitions(routine, warn) {
+  const byOutput = new Map();
+  (routine.steps_detailed ?? []).forEach((step, idx) => {
+    const output = String(step?.output ?? '').trim();
+    const expr = String(step?.expression ?? '').trim();
+    if (!output || !expr) return;
+    const key = normalizeVariableKey(output);
+    if (!key) return;
+    if (!byOutput.has(key)) byOutput.set(key, []);
+    byOutput.get(key).push({ seq: stepSeq(step, idx), name: output, expr });
+  });
+  for (const defs of byOutput.values()) {
+    if (defs.length < 2) continue;
+    const computed = defs.filter((d) => !isTrivialRhs(assignmentRhs(d.expr)));
+    const distinct = [...new Set(computed.map((d) => formulaKey(d.expr)))];
+    if (distinct.length < 2) continue;
+    const first = computed.find((d) => formulaKey(d.expr) === distinct[0]);
+    const second = computed.find((d) => formulaKey(d.expr) === distinct[1]);
+    warn('routine', routine.id, `Steps ${first.seq} and ${second.seq} both assign "${first.name}" with different formulas ("${truncate(first.expr, 60)}" vs "${truncate(second.expr, 60)}"); verify which definition applies — flagged as a possible contradiction (not treated as invalid).`, routine.source_pages);
+  }
+}
+
+// Declared inputs used nowhere in the routine's own steps, conditions,
+// expression, or dependencies: possible drift or a mistyped name. Inputs
+// the routine actually reads stay silent.
+const IDENT_TOKEN = /[A-Za-z_][A-Za-z0-9_]*(?:[-.][A-Za-z0-9_]+)*/g;
+
+function singleAssignmentTarget(expr) {
+  const segments = splitTopLevel(String(expr ?? ''), ';').map((s) => String(s ?? '').trim()).filter(Boolean);
+  if (segments.length !== 1) return null;
+  const m = /^\s*([A-Za-z_]\w*)\s*=\s*([\s\S]+)$/.exec(segments[0].replace(/\.\s*$/, ''));
+  if (!m || !m[2].trim()) return null;
+  return { output: m[1], rhs: m[2].trim(), expr: segments[0] };
+}
+
+// Two routines computing one output with different formulas: same
+// contradiction policy as within-routine steps, reported on the later
+// routine. Multi-statement expressions stay with the step-level check.
+function checkConflictingRoutineFormulas(routines, warn) {
+  const seen = new Map();
+  for (const r of routines ?? []) {
+    const parsed = singleAssignmentTarget(r?.expression_text);
+    if (!parsed) continue;
+    const key = normalizeVariableKey(parsed.output);
+    if (!key) continue;
+    const prior = seen.get(key);
+    if (!prior) {
+      seen.set(key, { routine: r, ...parsed });
+      continue;
+    }
+    if (formulaKey(prior.expr) === formulaKey(parsed.expr)) continue;
+    if (isTrivialRhs(prior.rhs) || isTrivialRhs(parsed.rhs)) continue;
+    warn('routine', r.id, `Routines "${prior.routine.name || prior.routine.id}" and "${r.name || r.id}" both assign "${parsed.output}" with different formulas ("${truncate(prior.expr, 60)}" vs "${truncate(parsed.expr, 60)}"); verify which definition applies — flagged as a possible contradiction (not treated as invalid).`, r.source_pages);
+  }
+}
+
+function checkUnusedInputs(routine, warn) {
+  const inputs = (routine.inputs ?? []).map((v) => String(v ?? '').trim()).filter(Boolean);
+  if (inputs.length === 0) return;
+  const used = new Set();
+  const addName = (value) => {
+    const s = String(value ?? '').trim();
+    if (!s) return;
+    used.add(s.toLowerCase());
+    const key = normalizeVariableKey(s);
+    if (key) used.add(key);
+  };
+  const addTokens = (text) => {
+    for (const m of String(text ?? '').matchAll(IDENT_TOKEN)) addName(m[0]);
+  };
+  addTokens(routine.expression_text);
+  for (const s of routine.steps ?? []) addTokens(typeof s === 'string' ? s : (s?.instruction ?? s?.text ?? ''));
+  for (const d of routine.steps_detailed ?? []) {
+    addTokens(d?.instruction);
+    addTokens(d?.expression);
+    addTokens(d?.operand);
+    addTokens(d?.original_text);
+    for (const v of d?.inputs ?? []) addName(v);
+  }
+  for (const c of routine.conditions ?? []) {
+    addTokens(typeof c === 'string' ? c : (c?.condition ?? c?.true_branch ?? c?.false_branch ?? ''));
+  }
+  for (const d of routine.conditions_detailed ?? []) {
+    addTokens(d?.condition);
+    addTokens(d?.true_branch);
+    addTokens(d?.false_branch);
+  }
+  for (const dep of [...(routine.depends_on ?? []), ...((routine.dependencies ?? []).map((d) => d?.target))]) {
+    addTokens(dep);
+  }
+  for (const name of inputs) {
+    if (isNumericReference(name)) continue;
+    const key = normalizeVariableKey(name);
+    if (used.has(name.toLowerCase()) || (key && used.has(key))) continue;
+    warn('routine', routine.id, `Routine "${routine.name || routine.id}" declares input "${name}", which is used nowhere in its steps, conditions, expression, or dependencies; verify the name against the source.`, routine.source_pages);
+  }
+}
+
 // Reference-resolution context for one job: every category of defined name a
 // dependency target or step reference may legitimately point at. Matching is
 // both verbatim (lowercased) and spacing/punctuation-insensitive (normalized),
@@ -607,7 +775,7 @@ function buildReferenceContext(tables, routines) {
     tables: tables ?? [],
     routines: routines ?? [],
     knownNames: new Set(
-      [...(tables ?? []), ...(routines ?? [])].flatMap((item) => [item.id, item.name].filter(Boolean).map((s) => s.toLowerCase()))
+      [...(tables ?? []), ...(routines ?? [])].flatMap((item) => [item.id, item.name, ...(item.aliases ?? [])].filter(Boolean).map((s) => s.toLowerCase()))
     ),
     tableTerms,
     normalizedTableTerms: normalized(tableTerms),

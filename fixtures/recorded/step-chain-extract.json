@@ -1,0 +1,35 @@
+{
+  "tables": [],
+  "routines": [
+    {
+      "name": "PIPE-STEP-01: Synthetic base stage",
+      "kind": "formula",
+      "source_pages": [1],
+      "evidence_text": "Synthetic step 1: rate1 = base_rate",
+      "expression_text": "rate1 = base_rate",
+      "depends_on": [],
+      "inputs": ["base_rate"],
+      "outputs": ["rate1"]
+    },
+    {
+      "name": "PIPE-STEP-02: Synthetic factor stage",
+      "kind": "formula",
+      "source_pages": [1],
+      "evidence_text": "Synthetic step 2: rate2 = rate1 * zone_factor",
+      "expression_text": "rate2 = rate1 * zone_factor",
+      "depends_on": ["PIPE-STEP-01"],
+      "inputs": ["rate1", "zone_factor"],
+      "outputs": ["rate2"]
+    },
+    {
+      "name": "PIPE-STEP-03: Synthetic total stage",
+      "kind": "formula",
+      "source_pages": [2],
+      "evidence_text": "Synthetic step 3: total = rate2 + flat_fee",
+      "expression_text": "total = rate2 + flat_fee",
+      "depends_on": ["PIPE-STEP-02"],
+      "inputs": ["rate2", "flat_fee"],
+      "outputs": ["total"]
+    }
+  ]
+}

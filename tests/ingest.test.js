@@ -4,7 +4,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildPdf } from '../src/pdf-write.js';
-import { extractPdfText } from '../src/pdf-extract.js';
+import { extractPdfText, parseType1BuiltInEncoding } from '../src/pdf-extract.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const fixture = path.join(here, '..', 'fixtures', 'sample-guideline.pdf');
@@ -149,6 +149,111 @@ test('ingest: incremental-update PDF resolves the full xref chain with newest re
   assert.match(result.pages[0].text, /Incremental sample page one/);
   assert.match(result.pages[1].text, /REVISED/);
   assert.doesNotMatch(result.pages[1].text, /ORIGINAL/);
+});
+
+// Minimal one-page PDF whose math font has no /Encoding, /Differences, or
+// /ToUnicode: decoding must fall back to the embedded Type1 program's own
+// /Encoding (per the PDF spec for simple fonts). Codes and glyph names are
+// synthetic and abstract.
+function buildBuiltInEncodingPdf() {
+  const fontProgram = Buffer.from(
+    '%!FontType1-1.0: SYNTH TestMath\n' +
+      '/FontName /SYNTH+TestMath def\n' +
+      '/Encoding 256 array 0 1 255 {1 index exch /.notdef put} readonly def\n' +
+      'dup 58 /period put\n' +
+      'dup 59 /comma put\n' +
+      'dup 2 /multiply put\n' +
+      'dup 20 /lessequal put\n' +
+      'dup 21 /greaterequal put\n' +
+      'readonly def\n',
+    'latin1'
+  );
+  const streamText =
+    'BT /F1 12 Tf 1 0 0 1 72 720 Tm <413A3042> Tj ET\n' + // bytes A 0x3A 0 B
+    'BT /F1 12 Tf 1 0 0 1 72 700 Tm <021415> Tj ET\n' + // bytes 0x02 0x14 0x15
+    'BT /F2 12 Tf 1 0 0 1 72 680 Tm (A1:0B) Tj ET\n'; // WinAnsi control font
+  const streamData = Buffer.from(streamText, 'latin1');
+  const objects = [
+    null,
+    Buffer.from('<< /Type /Catalog /Pages 2 0 R >>', 'latin1'),
+    Buffer.from('<< /Type /Pages /Kids [3 0 R] /Count 1 >>', 'latin1'),
+    Buffer.from(
+      '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] ' +
+        '/Resources << /Font << /F1 5 0 R /F2 8 0 R >> >> /Contents 4 0 R >>',
+      'latin1'
+    ),
+    {
+      stream: true,
+      dict: Buffer.from(`<< /Length ${streamData.length} >>`, 'latin1'),
+      data: streamData,
+    },
+    Buffer.from(
+      '<< /Type /Font /Subtype /Type1 /BaseFont /SYNTH+TestMath /FontDescriptor 6 0 R >>',
+      'latin1'
+    ),
+    Buffer.from(
+      '<< /Type /FontDescriptor /FontName /SYNTH+TestMath /Flags 4 /FontFile 7 0 R >>',
+      'latin1'
+    ),
+    {
+      stream: true,
+      dict: Buffer.from(`<< /Length ${fontProgram.length} >>`, 'latin1'),
+      data: fontProgram,
+    },
+    Buffer.from(
+      '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>',
+      'latin1'
+    ),
+  ];
+  const chunks = [Buffer.from('%PDF-1.4\n%\xe2\xe3\xcf\xd3\n', 'latin1')];
+  const offsets = [0];
+  for (let id = 1; id < objects.length; id += 1) {
+    offsets[id] = chunks.reduce((n, c) => n + c.length, 0);
+    chunks.push(Buffer.from(`${id} 0 obj\n`, 'latin1'));
+    const obj = objects[id];
+    if (obj.stream) {
+      chunks.push(obj.dict, Buffer.from('\nstream\n', 'latin1'), obj.data, Buffer.from('\nendstream\nendobj\n', 'latin1'));
+    } else {
+      chunks.push(obj, Buffer.from('\nendobj\n', 'latin1'));
+    }
+  }
+  const xrefOffset = chunks.reduce((n, c) => n + c.length, 0);
+  let xref = `xref\n0 ${objects.length}\n0000000000 65535 f \n`;
+  for (let id = 1; id < objects.length; id += 1) {
+    xref += `${String(offsets[id]).padStart(10, '0')} 00000 n \n`;
+  }
+  xref += `trailer\n<< /Size ${objects.length} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
+  return Buffer.concat([...chunks, Buffer.from(xref, 'latin1')]);
+}
+
+test('ingest: simple font without Encoding decodes via its embedded Type1 program', () => {
+  const { pages } = extractPdfText(buildBuiltInEncodingPdf());
+  const lines = pages[0].text.split('\n');
+  assert.equal(lines[0], 'A.0B');
+  assert.equal(lines[1], '×≤≥');
+  assert.equal(lines[2], 'A1:0B');
+});
+
+test('ingest: Type1 built-in encoding parser reads cleartext and PFB programs', () => {
+  const ascii = Buffer.from(
+    '/Encoding 256 array 0 1 255 {1 index exch /.notdef put} readonly def\n' +
+      'dup 58 /period put\ndup 2 /multiply put\nreadonly def\n',
+    'latin1'
+  );
+  const clear = parseType1BuiltInEncoding(ascii);
+  assert.ok(clear);
+  assert.equal(clear[58], 'period');
+  assert.equal(clear[2], 'multiply');
+  assert.equal(clear[65], null);
+  const header = Buffer.from([0x80, 0x01]);
+  const len = Buffer.alloc(4);
+  len.writeUInt32LE(ascii.length, 0);
+  const pfb = Buffer.concat([header, len, ascii, Buffer.from([0x80, 0x03])]);
+  const wrapped = parseType1BuiltInEncoding(pfb);
+  assert.ok(wrapped);
+  assert.equal(wrapped[58], 'period');
+  assert.equal(parseType1BuiltInEncoding(Buffer.from('no encoding here', 'latin1')), null);
+  assert.equal(parseType1BuiltInEncoding(Buffer.from('/Encoding 256 array readonly def\n', 'latin1')), null);
 });
 
 test('ingest: commercial property PDF exposes varied lookup phrasings and staged premium wording', async () => {

@@ -47,6 +47,8 @@ test('validate: missing evidence text is a warning', () => {
 test('validate: unfamiliar formula syntax is flagged for review, not invalid', () => {
   assert.equal(classifyFormula('base_premium = base_rate * territory_factor'), 'ok');
   assert.equal(classifyFormula('final_premium = base_premium + policy_fee'), 'ok');
+  assert.equal(classifyFormula('rate2 = rate1 × fconst'), 'ok');
+  assert.equal(classifyFormula('rate5 = rate4 × (1.0 − cspk)'), 'ok');
   assert.equal(classifyFormula('IF x THEN y ELSE z'), 'conditional');
   assert.equal(classifyFormula('APPLY legacy_matrix_v2 surcharge curve'), 'review');
   assert.equal(classifyFormula('a = (b + 1'), 'review');
@@ -331,4 +333,106 @@ test('validate: calculation steps without operations warn; genuine steps do not'
   for (const id of ['R2', 'R3', 'R4']) {
     assert.deepEqual(noOps(id), [], `${id} must not warn about missing operations`);
   }
+});
+
+test('validate: dependency on a table alias resolves without warning', () => {
+  const job = jobWith({
+    tables: [{ name: 'SYN-CODE Part A', title: 'Synthetic Widget Multipliers', sourcePages: [1], evidenceText: 'e', headers: ['K'], rows: [['1']] }],
+    routines: [{ name: 'R', kind: 'formula', sourcePages: [1], evidenceText: 'e', expressionText: 'a = b * 2', dependsOn: ['SYN-CODE Part A'] }],
+  });
+  const issues = validateJob(job);
+  assert.ok(!issues.some((i) => /matches no extracted table/.test(i.message)));
+});
+
+test('validate: step expressions with uninterpretable syntax warn with step attribution', () => {
+  const job = jobWith({
+    routines: [{
+      name: 'R', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'e',
+      steps: [
+        { sequence: 1, instruction: 'x = a * (1:0 - b)', operation: 'assignment', expression: 'x = a * (1:0 - b)', output: 'x' },
+        { sequence: 2, instruction: 'y = a + b', operation: 'assignment', expression: 'y = a + b', output: 'y' },
+      ],
+    }],
+  });
+  const issues = validateJob(job);
+  const syntax = issues.filter((i) => /cannot reliably interpret/.test(i.message));
+  assert.equal(syntax.length, 1);
+  assert.match(syntax[0].message, /Step 1/);
+});
+
+test('validate: fallback check covers every condition on any routine kind', () => {
+  const job = jobWith({
+    routines: [
+      {
+        name: 'R1', kind: 'formula', sourcePages: [1], evidenceText: 'e', expressionText: 'a = b * 2',
+        conditions: ['Where factor = 0.05 for ZONE_A; 0 otherwise.'],
+      },
+      {
+        name: 'R2', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'e',
+        steps: [{ sequence: 1, instruction: 'a = b * 2', operation: 'assignment', expression: 'a = b * 2', output: 'a' }],
+        conditions: ['This adjustment applies strictly to ZONE_A risks.'],
+      },
+      {
+        name: 'R3', kind: 'condition', sourcePages: [1], evidenceText: 'e',
+        conditions: ['IF widget_count is high THEN apply widget credit', 'ELSE refer for review'],
+      },
+    ],
+  });
+  const issues = validateJob(job);
+  assert.ok(!issues.some((i) => i.target_id === 'R1' && /no explicit fallback/.test(i.message)));
+  assert.ok(issues.some((i) => i.target_id === 'R2' && /no explicit fallback/.test(i.message)));
+  assert.ok(!issues.some((i) => i.target_id === 'R3' && /no explicit fallback/.test(i.message)));
+});
+
+test('validate: conflicting definitions of one output warn; init-then-assign stays silent', () => {
+  const job = jobWith({
+    routines: [{
+      name: 'R', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'e',
+      steps: [
+        { sequence: 1, instruction: 'total = a + b', operation: 'assignment', expression: 'total = a + b', output: 'total' },
+        { sequence: 2, instruction: 'total = a * b', operation: 'assignment', expression: 'total = a * b', output: 'total' },
+        { sequence: 3, instruction: 'x = 0', operation: 'assignment', expression: 'x = 0', output: 'x' },
+        { sequence: 4, instruction: 'x = coverage_limit', operation: 'assignment', expression: 'x = coverage_limit', output: 'x' },
+      ],
+    }],
+  });
+  const issues = validateJob(job);
+  const conflicts = issues.filter((i) => /different formulas/.test(i.message));
+  assert.equal(conflicts.length, 1);
+  assert.match(conflicts[0].message, /"total"/);
+  assert.match(conflicts[0].message, /not treated as invalid/);
+});
+
+test('validate: cross-routine conflicting formulas warn', () => {
+  const job = jobWith({
+    routines: [
+      { name: 'R1', kind: 'formula', sourcePages: [1], evidenceText: 'e', expressionText: 'total = a + b' },
+      { name: 'R2', kind: 'formula', sourcePages: [2], evidenceText: 'e', expressionText: 'total = a * b' },
+      { name: 'R3', kind: 'formula', sourcePages: [2], evidenceText: 'e', expressionText: 'other = a + b' },
+    ],
+  });
+  const issues = validateJob(job);
+  const conflicts = issues.filter((i) => /different formulas/.test(i.message));
+  assert.equal(conflicts.length, 1);
+  assert.match(conflicts[0].message, /"total"/);
+});
+
+test('validate: declared inputs used nowhere warn as possible drift', () => {
+  const job = jobWith({
+    routines: [
+      {
+        name: 'R1', kind: 'formula', sourcePages: [1], evidenceText: 'e',
+        expressionText: 'a = used_var * 2', inputs: ['used_var', 'orphan_var'], outputs: ['a'],
+      },
+      {
+        name: 'R2', kind: 'formula', sourcePages: [1], evidenceText: 'e',
+        expressionText: 'b = c * 2', inputs: ['c'], outputs: ['b'],
+        conditions: ['Where c = 1 for ZONE_A; 0 otherwise.'],
+      },
+    ],
+  });
+  const issues = validateJob(job);
+  assert.ok(issues.some((i) => i.target_id === 'R1' && /"orphan_var"/.test(i.message) && /used nowhere/.test(i.message)));
+  assert.ok(!issues.some((i) => i.target_id === 'R1' && /"used_var"/.test(i.message) && /used nowhere/.test(i.message)));
+  assert.ok(!issues.some((i) => i.target_id === 'R2' && /used nowhere/.test(i.message)));
 });

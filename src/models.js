@@ -25,6 +25,7 @@ export function createRatingTable({
   table_id,
   name = '',
   title,
+  aliases = [],
   sourcePages,
   source_pages,
   source_type,
@@ -49,9 +50,23 @@ export function createRatingTable({
   confidence = null,
 } = {}) {
   const { headers: normHeaders, columns: normColumns } = normalizeHeadersAndColumns({ headers, columns });
+  // Display name plus every distinct source label (asset code, title) as
+  // aliases, so dependency references to any of them resolve. The display
+  // name itself is never duplicated into aliases.
+  const displayName = String(title ?? name ?? '');
+  const seenLabels = new Set([displayName.trim().toLowerCase()]);
+  const normAliases = [];
+  const aliasInputs = [name, title, ...(Array.isArray(aliases) ? aliases : [aliases])];
+  for (const entry of aliasInputs) {
+    const label = String(entry ?? '').trim();
+    if (!label || seenLabels.has(label.toLowerCase())) continue;
+    seenLabels.add(label.toLowerCase());
+    normAliases.push(label);
+  }
   return {
     id: id ?? table_id ?? null,
-    name: String(title ?? name ?? ''),
+    name: displayName,
+    aliases: normAliases,
     source_pages: normalizePages(sourcePages ?? source_pages ?? []),
     source_type: String(source_type ?? sourceType ?? ''),
     source_location: String(source_location ?? sourceLocation ?? ''),
@@ -844,12 +859,19 @@ function tableMentionKeywords(text) {
   return words.filter((w) => w !== 'table' && w !== 'tables');
 }
 
-// Resolve a table mention to an extracted table: exact id/name match first
-// (dash-insensitive), else a unique word-boundary prefix in either direction
-// (short "Table 1" to long "Table 1 - ..." and long mentions to short
-// extracted names), else a unique keyword-subset match for valid aliases
-// ("Base property table" to "Table A - Base property rate"). Returns the table or
-// null when there is no single confident match.
+// Every source label a table answers to: its display name plus aliases
+// (asset codes, alternate titles). Matching runs over all of them.
+function tableMatchNames(table) {
+  const names = [table?.name, ...(table?.aliases ?? [])];
+  return [...new Set(names.map((n) => String(n ?? '').trim()).filter(Boolean))];
+}
+
+// Resolve a table mention to an extracted table: exact id/name/alias match
+// first (dash-insensitive), else a unique word-boundary prefix in either
+// direction (short "Table 1" to long "Table 1 - ..." and long mentions to
+// short extracted names), else a unique keyword-subset match for valid
+// aliases ("Base property table" to "Table A - Base property rate").
+// Returns the table or null when there is no single confident match.
 export function resolveTableReference(tables, mention) {
   const raw = String(mention ?? '').trim();
   if (!raw) return null;
@@ -858,20 +880,19 @@ export function resolveTableReference(tables, mention) {
   const list = Array.isArray(tables) ? tables : [];
   const exact = list.find((t) =>
     String(t?.id ?? '').trim().toLowerCase() === key
-    || String(t?.name ?? '').trim().toLowerCase() === key
-    || normalizeTableText(t?.name ?? '') === keyNorm);
+    || tableMatchNames(t).some((n) => n.toLowerCase() === key || normalizeTableText(n) === keyNorm));
   if (exact) return exact;
-  const prefixCandidates = list.filter((t) => {
-    const nameNorm = normalizeTableText(t?.name ?? '');
+  const prefixCandidates = list.filter((t) => tableMatchNames(t).some((n) => {
+    const nameNorm = normalizeTableText(n);
     if (!nameNorm || !keyNorm || nameNorm === keyNorm) return false;
     return isWordBoundaryPrefix(nameNorm, keyNorm) || isWordBoundaryPrefix(keyNorm, nameNorm);
-  });
+  }));
   if (prefixCandidates.length === 1) return prefixCandidates[0];
   if (prefixCandidates.length > 1) return null;
   const keywords = tableMentionKeywords(raw);
   if (keywords.length === 0) return null;
   const keywordMatches = list.filter((t) => {
-    const words = new Set(normalizeTableText(t?.name ?? '').split(/[^a-z0-9]+/).filter(Boolean));
+    const words = new Set(tableMatchNames(t).flatMap((n) => normalizeTableText(n).split(/[^a-z0-9]+/).filter(Boolean)));
     return keywords.every((k) => words.has(k));
   });
   return keywordMatches.length === 1 ? keywordMatches[0] : null;
@@ -956,14 +977,15 @@ export function definedConstantTerms(routines) {
   return out;
 }
 
-// Lowercased id/name/header/label terms identifying extracted tables,
-// for matching references against defined table structure.
+// Lowercased id/name/alias/header/label terms identifying extracted
+// tables, for matching references against defined table structure.
 export function tableReferenceTerms(tables) {
   return new Set(
     (Array.isArray(tables) ? tables : [])
       .flatMap((t) => [
         t?.id,
         t?.name,
+        ...(t?.aliases ?? []),
         ...(t?.headers ?? []),
         ...(t?.columns ?? []).map((c) => c?.label ?? c?.original_label),
       ])

@@ -3,6 +3,7 @@ import { extractPdfText } from './pdf-extract.js';
 import { ModelDisabledError, runExtraction } from './extract.js';
 import { createDocument, createJob, createValidationIssue, normalizeJob } from './models.js';
 import { expandRecordTables, splitMergedTables } from './table-split.js';
+import { groupStepRoutines } from './routine-group.js';
 import { validateJob } from './validate.js';
 
 /**
@@ -44,6 +45,12 @@ export async function processPdf(
   // the validator flags it for review instead.
   const { tables: expanded, expansions } = expandRecordTables(separated);
   job.tables = expanded;
+  // Deterministic grouping of sequential single-expression routines the
+  // extractor emitted one-per-step for a single source pipeline. Same
+  // policy: strong structural evidence only; anything ambiguous passes
+  // through untouched and the grouping is flagged for review.
+  const { routines: grouped, groupings } = groupStepRoutines(job.routines);
+  job.routines = grouped;
   job.issues = validateJob(job);
   for (const split of splits) {
     job.issues.push(
@@ -64,6 +71,17 @@ export async function processPdf(
         targetId: expansion.tableId,
         message: expansion.message,
         sourcePages: expansion.sourcePages,
+      })
+    );
+  }
+  for (const grouping of groupings) {
+    job.issues.push(
+      createValidationIssue({
+        severity: 'warning',
+        targetType: 'routine',
+        targetId: grouping.routineId,
+        message: `Routines ${grouping.memberNames.map((n) => `"${n}"`).join(', ')} were grouped into one ${grouping.stepNumbers.length}-step routine ("${grouping.routineName}"); verify the steps form a single pipeline against the source.`,
+        sourcePages: grouping.sourcePages,
       })
     );
   }

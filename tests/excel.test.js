@@ -698,8 +698,9 @@ test('excel: routine titles, section headings, and column headers are styled, da
   assert.equal(sectionRows(calcValues, 'Dependencies'), null);
   assert.equal(sectionRows(calcValues, 'Final calculation'), null);
   const calcUnresolved = sectionRows(calcValues, 'Unresolved items');
-  assert.ok(calcUnresolved !== null && calcUnresolved.body.length === 1);
-  assert.ok(calcUnresolved.body[0][2].includes('without an evidenced operation'));
+  assert.ok(calcUnresolved !== null && calcUnresolved.body.length === 2);
+  assert.ok(calcUnresolved.body.some((row) => row[2].includes('without an evidenced operation')));
+  assert.ok(calcUnresolved.body.some((row) => row[2].includes('no explicit fallback')));
 
   // Formula-only routine: the expression expands to one row per operation
   // with the same title/heading/header styling.
@@ -1600,4 +1601,81 @@ test('excel: legacy layout shows code-only Instruction for REVIEW steps with evi
   assert.ok(!steps.body.flat().includes(line));
   const evidence = blockRows(values, 'Source evidence');
   assert.ok(evidence.some((row) => row[0] === 'Step 1 text' && row[1] === line));
+});
+
+test('excel: multi-statement formula routine renders one row group per assignment', () => {
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'g.pdf', pageCount: 1 }),
+      routines: [{
+        name: 'Totals',
+        kind: 'formula',
+        sourcePages: [1],
+        evidenceText: 'ev',
+        expressionText: 'line_total = price + fee; grand_total = line_total + tax',
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Totals'), strings);
+  const steps = sectionRows(values, 'Steps');
+  const assignments = steps.body.filter((row) => row[1] !== '' && row[2] === '<--');
+  assert.deepEqual(assignments.map((row) => row[1]), ['line_total', 'grand_total']);
+  assert.ok(!steps.body.some((row) => row.join(' ').includes('grand_total = line_total')));
+});
+
+test('excel: grouped routine sheet preserves source step order and sequences', async () => {
+  const { groupStepRoutines } = await import('../src/routine-group.js');
+  const members = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'g.pdf', pageCount: 1 }),
+      routines: [
+        { name: 'PIPE-STEP-01: Base', kind: 'formula', sourcePages: [1], evidenceText: 'ev1', expressionText: 'rate1 = base_rate', inputs: ['base_rate'], outputs: ['rate1'] },
+        { name: 'PIPE-STEP-02: Factor', kind: 'formula', sourcePages: [1], evidenceText: 'ev2', expressionText: 'rate2 = rate1 * zone_factor', inputs: ['rate1', 'zone_factor'], outputs: ['rate2'] },
+        { name: 'PIPE-STEP-03: Total', kind: 'formula', sourcePages: [1], evidenceText: 'ev3', expressionText: 'total = rate2 + flat_fee', inputs: ['rate2', 'flat_fee'], outputs: ['total'] },
+      ],
+    })
+  ).routines;
+  const { routines } = groupStepRoutines(members);
+  assert.equal(routines.length, 1);
+  const job = normalizeJob(
+    createJob({ document: createDocument({ filename: 'g.pdf', pageCount: 1 }), routines })
+  );
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const names = sheetNamesInOrder(workbook);
+  const sheet = names.find((n) => n.startsWith('PIPE-STEP-01 to'));
+  assert.ok(sheet, 'expected one grouped routine sheet');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, sheet), strings);
+  const steps = sectionRows(values, 'Steps');
+  assert.deepEqual(steps.body.map((row) => row[0]), ['1', '2.1', '2.2', '3.1', '3.2']);
+  assert.deepEqual(
+    steps.body.filter((row) => row[1] !== '').map((row) => row[1]),
+    ['rate1', 'rate2', 'total']
+  );
+});
+
+test('excel: Table Summary shows table aliases for traceability', () => {
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'g.pdf', pageCount: 1 }),
+      tables: [
+        { name: 'SYN-CODE Part A', title: 'Synthetic Widget Multipliers', sourcePages: [1], evidenceText: 'ev', headers: ['K'], rows: [['1']] },
+      ],
+      routines: [],
+    })
+  );
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Table Summary'), strings);
+  assert.equal(values[0][2], 'Aliases');
+  assert.equal(values[1][1], 'Synthetic Widget Multipliers');
+  assert.equal(values[1][2], 'SYN-CODE Part A');
 });

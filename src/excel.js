@@ -1077,26 +1077,38 @@ function renderRatingStep(text, origDet, tables) {
   return { instruction, operation: '', operand: '', output: '', det: det ?? null };
 }
 
-// A formula-only routine (no steps) still renders one stepwise row
-// from its stated expression: `output = rhs` becomes `output <-- rhs`.
-// Anything else stays verbatim with no invented operation.
-function synthesizedExpressionEntry(r) {
+// A formula-only routine (no steps) still renders stepwise rows from its
+// stated expression: each top-level `output = rhs` assignment becomes its
+// own `output <-- rhs` row group in source order, so no assignment hides
+// inside another row's operand cell. Anything else stays verbatim with no
+// invented operation.
+function synthesizedExpressionEntries(r) {
   const raw = String(r.expression_text ?? '');
-  if (!raw.trim()) return null;
-  const clean = raw.replace(/^\s*calculate\s+(?=[A-Za-z_]\w*\s*=)/i, '').replace(/\.\s*$/, '').trim();
-  const parsed = parseAssignmentOperands(clean);
-  const rhs = parsed ? clean.replace(/^\s*[A-Za-z_]\w*\s*=\s*/, '') : '';
-  if (parsed && parsed.outputs[0] && rhs.trim() && !/^[=<>!]/.test(rhs.trim())) {
-    return {
-      seq: '1',
+  if (!raw.trim()) return [];
+  const segments = splitTopLevel(raw, ';')
+    .map((s) => String(s ?? '').trim().replace(/\.\s*$/, '').trim())
+    .filter(Boolean);
+  const entries = [];
+  for (const segment of segments) {
+    const clean = segment.replace(/^\s*calculate\s+(?=[A-Za-z_]\w*\s*=)/i, '').trim();
+    const parsed = parseAssignmentOperands(clean);
+    const rhs = parsed ? clean.replace(/^\s*[A-Za-z_]\w*\s*=\s*/, '') : '';
+    if (!parsed || !parsed.outputs[0] || !rhs.trim() || /^[=<>!]/.test(rhs.trim())) {
+      return [{ seq: '1', instruction: raw, operation: '', operand: '', output: '', det: null }];
+    }
+    entries.push({
+      seq: String(entries.length + 1),
       instruction: parsed.outputs[0],
       operation: '<--',
       operand: rhs.trim(),
       output: parsed.outputs[0],
       det: { inputs: parsed.inputs, output: parsed.outputs[0] },
-    };
+    });
   }
-  return { seq: '1', instruction: raw, operation: '', operand: '', output: '', det: null };
+  if (entries.length === 0) {
+    return [{ seq: '1', instruction: raw, operation: '', operand: '', output: '', det: null }];
+  }
+  return entries;
 }
 
 // ---------- Rating-step expansion (generic) ----------
@@ -1885,8 +1897,7 @@ function buildRatingStepEntries(r, tables) {
   } else if (detailed.length > 0) {
     detailed.forEach((det, idx) => push(det?.instruction ?? det?.original_text ?? '', det, idx));
   } else {
-    const synth = synthesizedExpressionEntry(r);
-    if (synth) entries.push(synth);
+    entries.push(...synthesizedExpressionEntries(r));
   }
   return entries;
 }
@@ -2226,12 +2237,13 @@ function jobRows(job, source) {
     coverLinks.push({ r: cover.length - 1, c: 1, location: sheetLocation(routineSheetNameList[idx]) });
   });
 
-  const tableSummary = [['Table ID', 'Title', 'Purpose', 'Applicability', 'Effective period', 'Source pages', 'Source location', 'Evidence text', 'Footnotes', 'Notes', 'Continuation', 'Row count', 'Column count', 'Review status']];
+  const tableSummary = [['Table ID', 'Title', 'Aliases', 'Purpose', 'Applicability', 'Effective period', 'Source pages', 'Source location', 'Evidence text', 'Footnotes', 'Notes', 'Continuation', 'Row count', 'Column count', 'Review status']];
   const tableSummaryLinks = [];
   tables.forEach((t, idx) => {
     tableSummary.push([
       t.id ?? '',
       t.name ?? '',
+      listJoin(t.aliases ?? []),
       t.purpose ?? '',
       t.applicability ?? '',
       t.effective_period ?? '',
@@ -2367,7 +2379,7 @@ export function buildWorkbookXlsx(job, { source = 'recorded', compress = true } 
   // Register shared strings in sheet order for deterministic indexes.
   const sheets = [
     sheetXml(cover, shared, [32, 60], coverLinks),
-    sheetXml(tableSummary, shared, [10, 34, 24, 24, 18, 12, 18, 60, 30, 30, 24, 10, 12, 14], tableSummaryLinks),
+    sheetXml(tableSummary, shared, [10, 34, 24, 24, 24, 18, 12, 18, 60, 30, 30, 24, 10, 12, 14], tableSummaryLinks),
     sheetXml(routineSummary, shared, [11, 34, 18, 24, 24, 20, 30, 30, 40, 12, 18, 60, 30, 14], routineSummaryLinks),
     sheetXml(tableColumns, shared, [10, 34, 10, 28, 28, 16, 16, 16, 40]),
     ...tableSheets.map((s) => sheetXml(s.rows, shared, Array(Math.max(s.colCount, 1)).fill(28))),

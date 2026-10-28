@@ -1,7 +1,8 @@
 // Minimal text-based PDF text extractor (zero dependencies).
 // Supports: xref tables + xref streams + object streams, FlateDecode /
 // ASCIIHex / ASCII85 content streams, WinAnsi / MacRoman / Differences /
-// ToUnicode font decoding, per-page text with rough line breaks.
+// ToUnicode / embedded-Type1-built-in font decoding, per-page text with
+// rough line breaks.
 // Scope: text-based PDFs. Scanned-image PDFs and /Encrypt are out of scope.
 // Layout use is minimal but genuine: text-matrix positions drive line breaks,
 // word spaces, and tab markers for wide same-line gutters (column gaps), so
@@ -60,6 +61,8 @@ const GLYPH_MAP = {
   periodcentered: '·', ellipsis: '…', dagger: '†', daggerdbl: '‡',
   section: '§', paragraph: '¶', sterling: '£', yen: '¥', cent: '¢',
   fl: 'ﬂ', fi: 'ﬁ', ffi: 'ﬃ', ffl: 'ﬄ',
+  lessequal: '≤', greaterequal: '≥', arrowright: '→',
+  parenleftbigg: '(', parenrightbigg: ')',
 };
 for (const ch of 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz') GLYPH_MAP[ch] = ch;
 
@@ -656,6 +659,63 @@ function parseToUnicode(data) {
 
 // ---------- font decoding ----------
 
+// Parse the built-in /Encoding of an embedded Type1 font program: the
+// cleartext `dup <code> /<glyph> put` entries. Accepts raw cleartext and
+// PFB-wrapped programs (ASCII segments only; the encrypted portion carries
+// outlines, never the encoding). Returns an array of 256 glyph names (null
+// for unmapped codes), or null when the program carries no encoding so the
+// caller keeps its existing fallback instead of guessing.
+export function parseType1BuiltInEncoding(program) {
+  let text = '';
+  try {
+    const buf = Buffer.from(program ?? []);
+    if (buf.length >= 6 && buf[0] === 0x80 && buf[1] === 0x01) {
+      const parts = [];
+      let pos = 0;
+      while (pos + 6 <= buf.length && buf[pos] === 0x80) {
+        const kind = buf[pos + 1];
+        if (kind === 0x03) break;
+        const len = buf.readUInt32LE(pos + 2);
+        const start = pos + 6;
+        if (start + len > buf.length) break;
+        if (kind === 0x01) parts.push(buf.subarray(start, start + len));
+        pos = start + len;
+      }
+      text = Buffer.concat(parts).toString('latin1');
+    } else {
+      text = buf.toString('latin1');
+    }
+  } catch {
+    return null;
+  }
+  if (!text.includes('/Encoding')) return null;
+  const names = new Array(256).fill(null);
+  let count = 0;
+  for (const m of text.matchAll(/dup\s+(\d+)\s*\/([A-Za-z0-9_]+)\s*put/g)) {
+    const code = Number(m[1]);
+    if (code < 0 || code > 255) continue;
+    if (names[code] === null) count += 1;
+    names[code] = m[2];
+  }
+  return count > 0 ? names : null;
+}
+
+// Built-in encoding of a simple font's embedded Type1 program (/FontFile):
+// the PDF spec's designated decoding when the font dict carries no
+// /Encoding of its own. Returns null for anything else (TrueType/CFF
+// programs, missing descriptors) so decoding falls through unchanged.
+function builtInEncodingNames(reader, dict) {
+  try {
+    const descriptor = reader.resolveOne(dictValue(dict, 'FontDescriptor'));
+    if (!descriptor || descriptor.type !== 'dict') return null;
+    const program = reader.resolveOne(dictValue(descriptor.dict, 'FontFile'));
+    if (!program || program.type !== 'stream') return null;
+    return parseType1BuiltInEncoding(decodeStreamData(program.dict, program.data));
+  } catch {
+    return null;
+  }
+}
+
 function buildFontDecoder(reader, fontValue) {
   const font = reader.resolveOne(fontValue);
   const empty = { decode: (bytes) => bytes.toString('latin1') };
@@ -697,11 +757,18 @@ function buildFontDecoder(reader, fontValue) {
     }
   }
 
+  // Simple fonts without their own /Encoding, /Differences, or /ToUnicode
+  // coverage decode through the embedded program's built-in encoding (the
+  // PDF spec fallback), before the WinAnsi/MacRoman guess. Resolved once
+  // per font; the decoder itself is cached per font object.
+  const builtIn = composite ? null : builtInEncodingNames(reader, dict);
   const decodeSimpleByte = (b) => {
     const key = b.toString(16).padStart(2, '0');
     if (toUnicode.has(key)) return toUnicode.get(key);
     const diff = diffNames[b];
     if (diff) return glyphNameToUnicode(diff, b);
+    const builtin = builtIn ? builtIn[b] : null;
+    if (builtin) return glyphNameToUnicode(builtin, b);
     return codePointToString(baseByte(b));
   };
 

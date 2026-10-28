@@ -579,3 +579,20 @@ test('models: table aliases resolve via prefix both ways, keywords, and dash var
   assert.equal(resolveTableReference(tables, 'Table Z'), null);
   assert.equal(resolveTableReference([{ id: 'T1', name: 'Table A' }], 'Table A \u2014 Base property rate')?.id, 'T1');
 });
+
+test('models: table name and title are preserved as aliases for resolution', () => {
+  const job = normalizeJob(
+    createJob({
+      tables: [
+        { name: 'SYN-CODE Part A', title: 'Synthetic Widget Multipliers', sourcePages: [1], evidenceText: 'ev', headers: ['K'], rows: [['1']] },
+        { name: 'Plain Table', title: 'Plain Table', sourcePages: [1], evidenceText: 'ev', headers: ['K'], rows: [['1']] },
+      ],
+    })
+  );
+  assert.equal(job.tables[0].name, 'Synthetic Widget Multipliers');
+  assert.deepEqual(job.tables[0].aliases, ['SYN-CODE Part A']);
+  assert.deepEqual(job.tables[1].aliases, []);
+  assert.equal(resolveTableReference(job.tables, 'SYN-CODE Part A')?.id, job.tables[0].id);
+  assert.equal(resolveTableReference(job.tables, 'Synthetic Widget Multipliers')?.id, job.tables[0].id);
+  assert.equal(resolveTableReference(job.tables, 'Plain Table')?.id, job.tables[1].id);
+});
