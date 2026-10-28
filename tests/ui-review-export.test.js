@@ -134,7 +134,8 @@ async function makeUI() {
     + 'get detailCtx(){return detailCtx},set detailCtx(v){detailCtx=v},'
     + 'get ui(){return ui},set ui(v){ui=v},fn:{computeStepDone,'
     + 'itemNeedsReview,isAcknowledged,countReviewSteps,adoptJob,'
-    + 'renderReview,renderExport,openReviewItem,updateSteps}};';
+    + 'renderReview,renderExport,openReviewItem,updateSteps,'
+    + 'collapseOtherReviewItems}};';
   vm.runInContext(inline + hook, ctx, { filename: 'ui-inline.js' });
   await new Promise((r) => setTimeout(r, 20));
   const T = ctx.__T;
@@ -171,19 +172,15 @@ test('ui review/export: sidebar splits into Review and Export steps', async () =
 test('ui review/export: sections own their responsibilities, export action near top', async () => {
   const { html } = await makeUI();
   const review = sectionBounds(html, 'reviewSection');
-  assert.ok(review.includes('id="issues"'), 'review keeps validation issues');
-  assert.ok(review.includes('id="unresolved"'), 'review lists unresolved items');
+  assert.ok(review.includes('id="reviewSummary"'), 'review summarizes open work');
+  assert.ok(review.includes('id="reviewList"'), 'review consolidates items and issues');
   assert.ok(review.includes('id="saveBtn"'), 'review keeps save & re-validate');
   assert.ok(!review.includes('id="exportBtn"'), 'export action leaves review');
 
   const exp = sectionBounds(html, 'exportSection');
   assert.ok(exp.includes('id="exportStatus"'), 'export shows validation status');
   assert.ok(exp.includes('id="exportBtn"'), 'export keeps Excel download');
-  assert.ok(exp.includes('id="exportReview"'), 'export shows unresolved REVIEW items');
-  assert.ok(
-    exp.indexOf('id="exportBtn"') < exp.indexOf('id="exportReview"'),
-    'Excel download sits near the top, above the REVIEW list',
-  );
+  assert.ok(!exp.includes('id="exportReview"'), 'item lists leave export');
 });
 
 test('ui review/export: step completion splits review done from export ready', async () => {
@@ -208,7 +205,7 @@ test('ui review/export: step completion splits review done from export ready', a
 test('ui review/export: review lists unresolved items with source evidence', async () => {
   const { T, el } = await makeUI();
   T.fn.adoptJob(fixturePayload());
-  const body = el('unresolved').innerHTML;
+  const body = el('reviewList').innerHTML;
   assert.match(body, /T2/);
   assert.match(body, /R4/);
   assert.match(body, /warn table excerpt from page two/);
@@ -238,16 +235,179 @@ test('ui review/export: export allowed with warnings, blocked on errors', async 
   assert.equal(el('exportBtn').disabled, false);
 });
 
-test('ui review/export: export clearly shows unresolved REVIEW steps', async () => {
+test('ui review/export: export counts REVIEW steps while review holds the details', async () => {
   const { T, el } = await makeUI();
   T.fn.adoptJob(fixturePayload());
   assert.ok(T.fn.countReviewSteps(T.draft.routines[1]) > 0, 'fixture has REVIEW steps');
-  assert.match(el('exportReview').innerHTML, /R4/);
-  assert.match(el('exportReview').innerHTML, /REVIEW/);
+  assert.match(el('exportStatus').innerHTML, /REVIEW/);
+  assert.match(el('reviewList').innerHTML, /R4/);
+  assert.match(el('reviewList').innerHTML, /REVIEW/);
 
   T.draft.routines[1].review_status = 'reviewed';
   T.fn.renderExport();
-  assert.doesNotMatch(el('exportReview').innerHTML, /R4/);
+  T.fn.renderReview();
+  assert.match(el('exportStatus').innerHTML, /0 unresolved REVIEW steps/);
+  const regrouped = el('reviewList').innerHTML;
+  assert.match(regrouped, /No routines need review\./);
+  assert.equal(regrouped.split('>V2<').length - 1, 1, 'acknowledged routine warning shown once');
+});
+
+test('ui review/export: review is one grouped view with collapsed items', async () => {
+  const { T, el, html } = await makeUI();
+  const review = sectionBounds(html, 'reviewSection');
+  assert.ok(review.includes('id="reviewSummary"'), 'review has a summary');
+  assert.ok(review.includes('id="reviewList"'), 'review has one consolidated list');
+  assert.ok(!review.includes('id="issues"'), 'flat issues list removed');
+  assert.ok(!review.includes('id="unresolved"'), 'separate unresolved list removed');
+
+  T.fn.adoptJob(fixturePayload());
+  const body = el('reviewList').innerHTML;
+  assert.match(body, /Tables/);
+  assert.match(body, /Routines/);
+  assert.match(body, /Validation issues/);
+  assert.match(body, /T2/);
+  assert.match(body, /R4/);
+  assert.match(body, /warning/);
+  assert.match(body, /REVIEW/);
+  assert.doesNotMatch(body, /Clean Table/);
+  const itemTags = body.match(/<details class="review-item"[^>]*>/g) || [];
+  assert.ok(itemTags.length >= 2, 'review items are expandable');
+  for (const tag of itemTags) assert.doesNotMatch(tag, /\bopen\b/, 'items collapsed by default');
+});
+
+test('ui review/export: review shows each issue once with details and evidence', async () => {
+  const { T, el } = await makeUI();
+  T.fn.adoptJob(fixturePayload());
+  const body = el('reviewList').innerHTML;
+  assert.equal(body.split('>V1<').length - 1, 1, 'warning V1 appears once');
+  assert.equal(body.split('>V2<').length - 1, 1, 'warning V2 appears once');
+  assert.match(body, /unclear units/);
+  assert.match(body, /cannot reliably interpret/);
+  assert.match(body, /warn table excerpt from page two/);
+  assert.match(body, /legacy surcharge excerpt from page three/);
+
+  T.draft.tables[1].review_status = 'reviewed';
+  T.fn.renderReview();
+  const regrouped = el('reviewList').innerHTML;
+  assert.equal(regrouped.split('>V1<').length - 1, 1, 'acknowledged-item warning still shown once');
+  assert.match(regrouped, /Validation issues/);
+});
+
+test('ui review/export: review keeps navigation to table and routine', async () => {
+  const { T, el } = await makeUI();
+  T.fn.adoptJob(fixturePayload());
+  const body = el('reviewList').innerHTML;
+  assert.match(body, /data-open-kind="tables" data-open-id="T2"/);
+  assert.match(body, /data-open-kind="routines" data-open-id="R4"/);
+
+  T.fn.openReviewItem('tables', 'T2');
+  assert.equal(T.ui.tab, 'tables');
+  assert.equal(T.ui.mode, 'detail');
+  assert.equal(T.ui.selectedId, 'T2');
+});
+
+test('ui review/export: export shows only status, counts, and download', async () => {
+  const { T, el, html } = await makeUI();
+  const exp = sectionBounds(html, 'exportSection');
+  assert.ok(exp.includes('id="exportStatus"'), 'export shows validation status');
+  assert.ok(exp.includes('id="exportBtn"'), 'export keeps Excel download');
+  assert.ok(!exp.includes('id="exportReview"'), 'REVIEW item list removed from export');
+  assert.ok(!exp.includes('Unresolved REVIEW steps'), 'REVIEW subhead removed from export');
+
+  T.fn.adoptJob(fixturePayload());
+  const status = el('exportStatus').innerHTML;
+  assert.match(status, /warning/i);
+  assert.match(status, /REVIEW/);
+  assert.doesNotMatch(status, /data-open-kind/, 'no item navigation in export');
+  assert.doesNotMatch(status, /legacy surcharge excerpt/, 'no item evidence in export');
+});
+
+test('ui review: accordion keeps at most one card expanded', async () => {
+  const { T, el } = await makeUI();
+  T.fn.adoptJob(fixturePayload());
+  assert.ok((el('reviewList').listeners.toggle || []).length > 0, 'toggle listener registered');
+
+  const first = { open: true };
+  const second = { open: true };
+  el('reviewList').querySelectorAll = () => [first, second];
+  T.fn.collapseOtherReviewItems(first);
+  assert.equal(first.open, true, 'opened card stays open');
+  assert.equal(second.open, false, 'other card collapses');
+
+  first.open = false;
+  second.open = true;
+  T.fn.collapseOtherReviewItems(first);
+  assert.equal(second.open, true, 'closing a card collapses nothing else');
+
+  const group = { open: true, matches: () => false };
+  const card = { open: true, matches: (sel) => sel === 'details.review-item' };
+  el('reviewList').querySelectorAll = () => [card];
+  T.fn.collapseOtherReviewItems(group);
+  assert.equal(card.open, true, 'group toggles never collapse cards');
+});
+
+test('ui review: card statuses distinguish review state, warnings, and REVIEW steps', async () => {
+  const { T, el } = await makeUI();
+  T.fn.adoptJob(fixturePayload());
+  T.draft.tables[1].review_status = 'pending';
+  T.fn.renderReview();
+  const body = el('reviewList').innerHTML;
+  assert.match(body, /Status: pending/);
+  assert.match(body, /class="pill warning">1 warning</);
+  assert.match(body, /class="pill review">1 REVIEW step</);
+  assert.doesNotMatch(body, /class="pill warning">\d+ REVIEW/);
+});
+
+test('ui review: summary labels total issues, warnings, and REVIEW steps distinctly', async () => {
+  const { T, el } = await makeUI();
+  T.fn.adoptJob(fixturePayload());
+  const summary = el('reviewSummary').innerHTML;
+  assert.match(summary, /2 validation issues \(0 errors · 2 warnings\)/);
+  assert.match(summary, /1 REVIEW step\./);
+});
+
+test('ui review: standalone issue without an item is shown once, without navigation', async () => {
+  const { T, el } = await makeUI();
+  T.fn.adoptJob(fixturePayload());
+  T.state.job.issues.push({ id: 'V7', severity: 'warning', target_type: 'table', target_id: 'TX', message: 'orphan flag', source_pages: [1] });
+  T.fn.renderReview();
+  const body = el('reviewList').innerHTML;
+  assert.equal(body.split('>V7<').length - 1, 1, 'orphan warning shown once');
+  assert.match(body, /No matching extracted table or routine/);
+  assert.doesNotMatch(body, /data-open-id="TX"/);
+});
+
+test('ui review: expanded cards carry full issue text and evidence', async () => {
+  const { T, el } = await makeUI();
+  T.fn.adoptJob(fixturePayload());
+  const longMsg = `detailed cause ${'x'.repeat(200)}`;
+  const longEv = `full evidence ${'y'.repeat(200)}`;
+  T.state.job.issues.push({ id: 'V5', severity: 'warning', target_type: 'table', target_id: 'T2', message: longMsg, source_pages: [2] });
+  T.draft.tables.find((t) => t.id === 'T2').evidence_text = longEv;
+  T.fn.renderReview();
+  const body = el('reviewList').innerHTML;
+  assert.ok(body.includes(longMsg), 'full issue message preserved');
+  assert.ok(body.includes(longEv), 'full source evidence preserved');
+  assert.equal(body.split('>V5<').length - 1, 1, 'long warning shown once');
+});
+
+test('ui review: each card carries its own Open button outside the summary', async () => {
+  const { T, el } = await makeUI();
+  T.fn.adoptJob(fixturePayload());
+  const body = el('reviewList').innerHTML;
+  const cards = body.split('<details class="review-item">').slice(1);
+  assert.ok(cards.length >= 2, 'review cards rendered');
+  const byId = {};
+  for (const card of cards) {
+    const m = card.match(/<span class="id-chip">([^<]+)</);
+    if (m) byId[m[1]] = card;
+  }
+  for (const [kind, id] of [['tables', 'T2'], ['routines', 'R4']]) {
+    const card = byId[id];
+    assert.ok(card, `${id} card rendered`);
+    assert.ok(card.includes(`data-open-kind="${kind}" data-open-id="${id}"`), `${id} opens its own ${kind.slice(0, -1)}`);
+    assert.ok(card.indexOf('</summary>') < card.indexOf('data-open-kind'), `${id} button sits in the expanded body`);
+  }
 });
 
 test('ui review/export: clear resets both new views without server calls', async () => {
@@ -258,10 +418,9 @@ test('ui review/export: clear resets both new views without server calls', async
   click('clearBtn');
   assert.equal(el('reviewSection').hidden, true);
   assert.equal(el('exportSection').hidden, true);
-  assert.equal(el('issues').innerHTML, '');
-  assert.equal(el('unresolved').innerHTML, '');
+  assert.equal(el('reviewSummary').innerHTML, '');
+  assert.equal(el('reviewList').innerHTML, '');
   assert.equal(el('exportStatus').innerHTML, '');
-  assert.equal(el('exportReview').innerHTML, '');
   assert.equal(el('exportBtn').disabled, false);
   for (let n = 1; n <= 6; n += 1) assert.equal(stepDone(n), false);
   assert.equal(fetchCalls.length, fetchBefore);

@@ -280,10 +280,9 @@ test('ui: clearing resets session state without server deletes', async () => {
   assert.equal(el('exportSection').hidden, true);
   assert.equal(el('jobSummary').innerHTML, '');
   assert.equal(el('browser').innerHTML, '');
-  assert.equal(el('issues').innerHTML, '');
-  assert.equal(el('unresolved').innerHTML, '');
+  assert.equal(el('reviewSummary').innerHTML, '');
+  assert.equal(el('reviewList').innerHTML, '');
   assert.equal(el('exportStatus').innerHTML, '');
-  assert.equal(el('exportReview').innerHTML, '');
   assert.equal(el('sideJob').textContent, '');
   assert.equal(el('resultMeta').textContent, '');
   assert.equal(el('file').value, '');
