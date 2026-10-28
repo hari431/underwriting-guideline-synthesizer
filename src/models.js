@@ -111,8 +111,12 @@ export function createRatingRoutine({
   const normConds = normalizeConditionLists({ conditions, conditions_detailed: conditions_detailed ?? conditionsDetailed });
   const normDeps = normalizeDependencyLists({ depends_on: dependsOn ?? depends_on, dependencies });
   const expressionTextStr = String(expressionText ?? expression_text ?? '');
-  let normInputs = normalizeStringList(inputs);
-  let normOutputs = normalizeStringList(outputs);
+  let normInputs = normalizeStringList(inputs)
+    .map(cleanStepInputValue)
+    .filter((v) => v && String(v).trim());
+  let normOutputs = normalizeStringList(outputs)
+    .map(cleanStepOutputValue)
+    .filter((v) => v && String(v).trim());
   if ((isEffectivelyEmpty(normInputs) || isEffectivelyEmpty(normOutputs)) && expressionTextStr.trim()) {
     const parsed = parseAssignmentOperands(expressionTextStr);
     if (parsed) {
@@ -380,6 +384,7 @@ function normalizeOneStep(entry, index) {
   if (status !== undefined && status !== null && String(status) !== '') out.interpretation_status = String(status);
   if (entry.original_text !== undefined && entry.original_text !== null) out.original_text = String(entry.original_text);
   enrichSparseStep(out);
+  sanitizeExplicitStep(out);
   return out;
 }
 
@@ -620,7 +625,7 @@ function acceptableCapture(word) {
 function identifiersOf(text) {
   const seen = new Set();
   const out = [];
-  for (const m of String(text ?? '').matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)) {
+  for (const m of String(text ?? '').matchAll(/[A-Za-z_][A-Za-z0-9_]*(?:[-.][A-Za-z0-9_]+)*/g)) {
     const key = m[0].toLowerCase();
     if (seen.has(key) || NON_IDENTIFIER_WORDS.has(key)) continue;
     seen.add(key);
@@ -1148,6 +1153,168 @@ function dedupeInputs(terms) {
   return out;
 }
 
+// Generic word operations the model sometimes emits instead of the canonical
+// 'expression'/'rounding' kinds. Plain English arithmetic verbs, never domain
+// vocabulary. Symbolic glyphs ('*', '+', '<--') bypass this mapping and stay
+// verbatim so explicit symbolic rows keep rendering as explicit-op rows.
+const ARITHMETIC_WORD_OPS = new Set([
+  'multiply', 'multiplies', 'multiplied', 'multiplication', 'product', 'times',
+  'add', 'adds', 'added', 'addition', 'sum', 'plus',
+  'subtract', 'subtracts', 'subtracted', 'subtraction', 'minus', 'difference',
+  'divide', 'divides', 'divided', 'division', 'quotient',
+  'calculate', 'calculates', 'calculated', 'calculation',
+  'compute', 'computes', 'computed', 'computation',
+]);
+const ROUNDING_WORD_OPS = new Set(['round', 'rounds', 'rounded', 'rounding', 'roundoff', 'round-off']);
+
+// A step output carrying a worked-example value ("LX-01 = 1,240.00") keeps
+// only its evidenced target code; a bare worked amount ("1,240.00",
+// "₹44,287.00") yields no reusable output at all. The full source text
+// stays verbatim in the step instruction/evidence. Exported for the Excel
+// routine-step renderer so stored jobs predating normalization still
+// display cleaned reusable columns.
+export function cleanStepOutputValue(raw) {
+  let s = String(raw ?? '').trim();
+  if (!s) return '';
+  const eqIdx = s.indexOf('=');
+  if (eqIdx >= 0) {
+    const left = s.slice(0, eqIdx).trim().replace(/[.;]+$/, '').trim();
+    s = left;
+  } else {
+    s = s.replace(/[.;]+$/, '').trim();
+  }
+  if (!s || isNumericFragment(s)) return '';
+  return s;
+}
+
+// True for a numeric token that reads as a worked amount rather than part
+// of a key: currency/percent/comma/decimal forms or multi-digit values.
+// Plain small integers ("Tier 2", "Table 1") stay so keys are never
+// corrupted by stripping.
+function isWorkedAmountToken(token) {
+  const s = String(token ?? '').trim();
+  if (!s) return false;
+  if (/^\d{1,3}$/.test(s)) return false;
+  return isNumericFragment(s);
+}
+
+// A step input with worked-example detail keeps only its reusable term:
+// parenthetical values ("Zone Rate (4.50%)" to "Zone Rate"), leading
+// currency amounts ("₹1,000,000 IDV" to "IDV"), and trailing amount clauses
+// ("Net Premium: ₹37,531.00" to "Net Premium") are stripped. Pure values
+// ("20.00%", "0.750%") yield '' so they never become reusable inputs.
+// Ambiguous descriptive text is otherwise retained verbatim for review.
+// Exported for the Excel renderer (see cleanStepOutputValue).
+export function cleanStepInputValue(raw) {
+  let s = String(raw ?? '').trim();
+  if (!s) return '';
+  s = s.replace(/\(\s*[₹$€£¥\d,.\s%+-]+\s*\)/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!s || isNumericFragment(s)) return '';
+  const kept = [];
+  for (const tok of s.split(/\s+/)) {
+    const stripped = tok.replace(/^[:;|@,()[\]{}"'`]+|[:;|@,()[\]{}"'`]+$/g, '');
+    if (!stripped) continue;
+    if (/^[₹$€£¥%‰]+$/.test(stripped)) continue;
+    if (isWorkedAmountToken(stripped)) continue;
+    kept.push(stripped);
+  }
+  const out = kept.join(' ').replace(/\s+/g, ' ').trim();
+  if (!out || isNumericFragment(out)) return '';
+  return out;
+}
+
+// Explicit arithmetic evidence: an operator joining two sides, or an
+// assignment form ("Basis = 1") with a target and a right-hand side.
+// Descriptive prose without either is not arithmetic.
+function hasArithmeticEvidence(expr) {
+  const s = String(expr ?? '').trim();
+  if (!s) return false;
+  if (splitArithmeticOperands(s)) return true;
+  const eq = /^(.*?)\s*=\s*(.+?)\s*$/.exec(s.replace(/\.\s*$/, ''));
+  return Boolean(eq && eq[1].trim() && eq[2].trim());
+}
+
+// Drop a model-provided operation whose evidence does not support it. The
+// instruction, sequence, and source references stay so the ambiguous text
+// is retained and flagged for review; only the unsupported structured
+// interpretation is removed.
+function demoteExplicitStepToUnparsed(out) {
+  delete out.operation;
+  delete out.expression;
+  delete out.operand;
+  delete out.inputs;
+  delete out.output;
+  delete out.depends_on;
+  delete out.interpretation_status;
+}
+
+// Canonicalize a model-provided step operation and strip worked-example
+// values from its reusable fields. Word arithmetic ("multiply"/"add")
+// becomes 'expression' only with an evidenced operator or assignment;
+// "round" becomes 'rounding'; lookups always keep their verb (missing keys
+// are flagged by validation); assignments keep an explicit target with its
+// stated value (an "=" form, or an output paired with an expression or
+// operand). Anything else demotes to unparsed so descriptive text never
+// renders as executable logic. Symbolic glyph operations and already-clean
+// canonical steps pass through untouched. Exported for the Excel renderer
+// so stored jobs predating normalization display the same cleaned columns.
+export function sanitizeExplicitStep(out) {
+  if (!out || !out.operation) return;
+  const origOp = String(out.operation).trim();
+  if (!origOp) return;
+  if (out.output !== undefined) {
+    const cleaned = cleanStepOutputValue(out.output);
+    if (cleaned) out.output = cleaned;
+    else delete out.output;
+  }
+  if (out.inputs !== undefined) {
+    const cleaned = (out.inputs ?? []).map(cleanStepInputValue).filter((v) => v && String(v).trim());
+    if (cleaned.length > 0) out.inputs = dedupeInputs(cleaned);
+    else delete out.inputs;
+  }
+  if (/^[^A-Za-z0-9\s]+$/.test(origOp)) return;
+  const low = origOp.toLowerCase();
+  let canonical = null;
+  if (ARITHMETIC_WORD_OPS.has(low)) canonical = 'expression';
+  else if (ROUNDING_WORD_OPS.has(low) || low === 'r') canonical = 'rounding';
+  else if (low.includes('lookup') || low.includes('look-up')) canonical = 'lookup';
+  else if (low === 'expression' || low === 'assignment') canonical = low;
+  else if (low === 'condition' || low === 'conditional' || low === 'if' || low === 'elseif' || low === 'else') {
+    canonical = low === 'conditional' ? 'condition' : low;
+  } else {
+    if (hasArithmeticEvidence(String(out.expression ?? out.operand ?? ''))) canonical = 'expression';
+    else {
+      demoteExplicitStepToUnparsed(out);
+      return;
+    }
+  }
+  if (canonical === 'expression') {
+    if (!hasArithmeticEvidence(String(out.expression ?? out.operand ?? ''))) {
+      demoteExplicitStepToUnparsed(out);
+      return;
+    }
+    out.operation = 'expression';
+  } else if (canonical === 'rounding') {
+    out.operation = 'rounding';
+  } else if (canonical === 'lookup') {
+    out.operation = 'lookup';
+  } else if (canonical === 'assignment') {
+    const output = String(out.output ?? '').trim();
+    const exprText = String(out.expression ?? '').trim();
+    const operandText = String(out.operand ?? '').trim();
+    const combined = exprText || operandText;
+    const eq = /^(.*?)\s*=\s*(.+?)\s*$/.exec(combined.replace(/\.\s*$/, ''));
+    const hasEqualsForm = Boolean(eq && eq[1].trim() && eq[2].trim());
+    if (!hasEqualsForm && (!output || !combined)) {
+      demoteExplicitStepToUnparsed(out);
+      return;
+    }
+    out.operation = 'assignment';
+  } else {
+    out.operation = canonical;
+  }
+}
+
 // Parse a whole step line as one arithmetic expression. Returns
 // {expression, inputs} or null when the line is not safely readable as bare
 // arithmetic.
@@ -1341,6 +1508,58 @@ function tryParseRoundingAnywhere(body) {
   return out;
 }
 
+// Breakdown rows extracted as plain strings ("CODE value"): a leading code
+// token identifies the row's output only when the remainder is a single
+// short value (no operators, no multi-part markers, at most a few words).
+// Anything longer or operator-bearing stays REVIEW: the reference layout
+// allows exactly one operand per row, and a mixed label-plus-calculation
+// remainder cannot be split into isolated single operands without
+// inventing boundaries. Only the evidenced code and remainder are used; no
+// names or values are invented. Bare calculations ("LX-01 + LX-02"),
+// incomplete fragments, "=" forms (output conflict), and reference
+// pointers ("see ...") are excluded so they keep their existing handling
+// (parsed arithmetic or REVIEW). Generic syntax (code shape, operators,
+// term length), never domain vocabulary.
+function tryParseLeadingCodeAssignment(body) {
+  const text = String(body ?? '').trim();
+  if (!text) return null;
+  const m = /^([A-Z0-9]{2,}-[A-Z0-9]+)\s+(.+?)\s*$/.exec(text);
+  if (!m) return null;
+  const output = m[1];
+  const remainder = m[2].trim().replace(/\.\s*$/, '').trim();
+  if (!remainder) return null;
+  if (/^[+*/×÷%=-]/.test(remainder)) return null;
+  if (/[+*/×÷%-]\s*$/.test(remainder)) return null;
+  if (/=\s*$/.test(remainder)) return null;
+  if (remainder.includes('=')) return null;
+  if (/^(see|refer|check|consult|cf)\b/i.test(remainder)) return null;
+  if (/[;:|?!]/.test(remainder)) return null;
+  if (hasArithmeticEvidence(remainder)) return null;
+  if (remainder.split(/\s+/).filter(Boolean).length > 4) return null;
+  return { operation: 'assignment', output, expression: remainder };
+}
+
+// Output label standing before an isolated calculation core inside a
+// labelled breakdown line ("OD-NET Net Subtotal OD-01 + DISC-01"). A
+// leading code token yields just the code; any other non-empty prefix
+// yields the trimmed label (trailing label punctuation stripped). The
+// reference layout requires Instruction to hold the output, never the
+// arithmetic expression, so the evidenced prefix becomes the output and
+// the isolated core keeps the operands. Returns null when the expression
+// opens the line (bare calculation with no label to evidence an output).
+function inferCalculationOutput(body, expression) {
+  const text = String(body ?? '');
+  const core = String(expression ?? '').trim();
+  if (!text || !core) return null;
+  const idx = text.indexOf(core);
+  if (idx <= 0) return null;
+  const prefix = text.slice(0, idx).trim().replace(/[:;.]+\s*$/, '').trim();
+  if (!prefix) return null;
+  const code = /^([A-Z0-9]{2,}-[A-Z0-9]+)\b/.exec(prefix);
+  if (code) return code[1];
+  return prefix;
+}
+
 // Derive step operation/expression/operand/inputs/output from explicit
 // wording. Only confident syntactic patterns produce fields; anything else
 // yields a minimal entry so the source text is never embellished.
@@ -1431,10 +1650,24 @@ function deriveStepDetail(text) {
           entry.operation = 'expression';
           entry.expression = bare.expression;
           if (bare.inputs.length > 0) entry.inputs = bare.inputs;
-          if (bare.output) entry.output = bare.output;
+          if (bare.output) {
+            entry.output = bare.output;
+          } else {
+            const inferred = inferCalculationOutput(body, bare.expression);
+            if (inferred) entry.output = inferred;
+          }
           derived = true;
         }
       }
+    }
+  }
+  if (!derived) {
+    const codeAssign = tryParseLeadingCodeAssignment(body);
+    if (codeAssign) {
+      entry.operation = codeAssign.operation;
+      entry.output = codeAssign.output;
+      entry.expression = codeAssign.expression;
+      derived = true;
     }
   }
   if (derived) entry.interpretation_status = 'inferred';

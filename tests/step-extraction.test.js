@@ -67,7 +67,7 @@ test('steps: embedded arithmetic core extracts from a labelled breakdown line', 
   assert.equal(det.operation, 'expression');
   assert.equal(det.expression, 'LX-01 + LX-02');
   assert.deepEqual(det.inputs, ['LX-01', 'LX-02']);
-  assert.equal(det.output, undefined);
+  assert.equal(det.output, 'LX-NET');
   assert.deepEqual(r.steps[0], 'LX-NET Ledger net subtotal LX-01 + LX-02 — 1,240.00');
 });
 
@@ -228,7 +228,7 @@ test('steps: workbook shows evidenced operations and reserves REVIEW for unparse
   const steps = sectionRows(routineSheetValues(job, 'LX — Ledger Fee Calc'), 'Steps');
   assert.deepEqual(steps.header, ['Step #', 'Instruction', 'Op', '(', 'Operand', ')', 'Line Comment']);
   assert.deepEqual(steps.body, [
-    ['1', 'LX-01 + LX-02', '+', '', 'LX-01 + LX-02', '', 'Calculate LX-01 + LX-02 (source step 1; output not stated — verify)'],
+    ['1', 'LX-01 + LX-02', 'REVIEW', '', '', '', 'Needs review — no evidenced operation (source step 1)'],
     ['2', 'Rounded Half-Up to Nearest Coin', 'R', '', 'Half-Up to Nearest Coin', '', 'Round Half-Up to Nearest Coin (source step 2)'],
     ['3', 'Fixed annual standard.', 'REVIEW', '', '', '', 'Needs review — no evidenced operation (source step 3)'],
   ]);
@@ -276,4 +276,527 @@ test('steps: mixed breakdown workbook builds are byte-deterministic', () => {
   const a = buildWorkbookXlsx(mixedJob(), { source: 'recorded' });
   const b = buildWorkbookXlsx(mixedJob(), { source: 'recorded' });
   assert.ok(a.equals(b), 'expected identical bytes for identical input');
+});
+
+// ---------- explicit-step normalization regressions ----------
+// Model-provided steps sometimes carry word operations (multiply/add/round)
+// with worked-example amounts mixed into inputs/outputs. Generic
+// normalization must place explicit lookups, arithmetic, intermediate
+// outputs, and rounding in the correct columns, keep worked values as
+// evidence only, and demote descriptive prose without an evidenced
+// operator to unparsed (marked for review) instead of inventing logic.
+
+function explicitLedgerRoutine(stepObjects) {
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'ledger-guideline.pdf', pageCount: 2 }),
+      routines: [{
+        name: 'LX — Ledger Fee Calc',
+        kind: 'calculation_steps',
+        sourcePages: [2],
+        evidenceText: 'synthetic ledger calculation steps',
+        steps: stepObjects,
+      }],
+    })
+  );
+  return job.routines[0];
+}
+
+test('steps: explicit word operations normalize with worked values stripped', () => {
+  const r = explicitLedgerRoutine([
+    {
+      sequence: 1,
+      instruction: 'LX-01 Ledger base fee Vehicle Units (2,000) × Zone Rate (4.50%)',
+      operation: 'multiply',
+      expression: 'Vehicle Units (2,000) × Zone Rate (4.50%)',
+      inputs: ['Vehicle Units (2,000)', 'Zone Rate (4.50%)'],
+      output: 'LX-01 = 90.00',
+    },
+    {
+      sequence: 4,
+      instruction: 'LX-NET Ledger net subtotal LX-01 + LX-02',
+      operation: 'add',
+      expression: 'LX-01 + LX-02',
+      inputs: ['LX-01', 'LX-02'],
+      output: 'LX-NET = 1,240.00',
+    },
+  ]);
+  assert.deepEqual(r.steps, [
+    'LX-01 Ledger base fee Vehicle Units (2,000) × Zone Rate (4.50%)',
+    'LX-NET Ledger net subtotal LX-01 + LX-02',
+  ]);
+  const [first, second] = r.steps_detailed;
+  assert.equal(first.operation, 'expression');
+  assert.equal(first.expression, 'Vehicle Units (2,000) × Zone Rate (4.50%)');
+  assert.deepEqual(first.inputs, ['Vehicle Units', 'Zone Rate']);
+  assert.equal(first.output, 'LX-01');
+  assert.equal(second.operation, 'expression');
+  assert.equal(second.expression, 'LX-01 + LX-02');
+  assert.deepEqual(second.inputs, ['LX-01', 'LX-02']);
+  assert.equal(second.output, 'LX-NET');
+});
+
+test('steps: explicit lookup and rounding place targets correctly without worked amounts', () => {
+  const r = explicitLedgerRoutine([
+    {
+      sequence: 6,
+      instruction: 'LX-TP Ledger statutory tariff Mandated rate for widget class',
+      operation: 'lookup',
+      expression: 'Mandated rate for widget class',
+      inputs: ['Widget Tier 2'],
+      output: 'LX-TP = 340.00',
+    },
+    {
+      sequence: 10,
+      instruction: 'Rounded Half-Up to Nearest Coin',
+      operation: 'round',
+      expression: 'Rounded Half-Up to Nearest Coin',
+      inputs: ['LX-TOTAL'],
+      output: '1,240.00',
+    },
+  ]);
+  const [lookup, rounding] = r.steps_detailed;
+  assert.equal(lookup.operation, 'lookup');
+  assert.equal(lookup.output, 'LX-TP');
+  assert.deepEqual(lookup.inputs, ['Widget Tier 2']);
+  assert.equal(rounding.operation, 'rounding');
+  assert.equal(rounding.output, undefined);
+  assert.deepEqual(rounding.inputs, ['LX-TOTAL']);
+  assert.deepEqual(r.steps[1], 'Rounded Half-Up to Nearest Coin');
+});
+
+test('steps: explicit word operation without an evidenced operator stays unparsed', () => {
+  const instruction = 'Ledger factor loading Standard bracket Flat Factor 1.000000';
+  const r = explicitLedgerRoutine([
+    {
+      sequence: 2,
+      instruction,
+      operation: 'multiply',
+      expression: 'Standard bracket Flat Factor 1.000000',
+      inputs: ['Standard bracket'],
+      output: 'LX-F1 = 0.00',
+    },
+  ]);
+  assert.deepEqual(r.steps, [instruction]);
+  const det = r.steps_detailed[0];
+  assert.equal(det.instruction, instruction);
+  assert.equal(det.operation, undefined);
+  assert.equal(det.expression, undefined);
+  assert.equal(det.output, undefined);
+  assert.equal(det.inputs, undefined);
+  assert.equal(det.interpretation_status, undefined);
+});
+
+test('steps: explicit-step workbook splits calculations and flags long descriptives', () => {
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'ledger-guideline.pdf', pageCount: 2 }),
+      routines: [{
+        name: 'LX — Ledger Fee Calc',
+        kind: 'calculation_steps',
+        sourcePages: [2],
+        evidenceText: 'synthetic ledger calculation steps',
+        steps: [
+          {
+            sequence: 1,
+            instruction: 'LX-01 Ledger base fee Vehicle Units (2,000) × Zone Rate (4.50%)',
+            operation: 'multiply',
+            expression: 'Vehicle Units (2,000) × Zone Rate (4.50%)',
+            inputs: ['Vehicle Units (2,000)', 'Zone Rate (4.50%)'],
+            output: 'LX-01 = 90.00',
+          },
+          {
+            sequence: 2,
+            instruction: 'LX-F1 Ledger factor loading Standard bracket Flat Factor 1.000000',
+            operation: 'multiply',
+            expression: 'Standard bracket Flat Factor 1.000000',
+            inputs: ['Standard bracket'],
+            output: 'LX-F1 = 0.00',
+          },
+          {
+            sequence: 10,
+            instruction: 'Rounded Half-Up to Nearest Coin',
+            operation: 'round',
+            expression: 'Rounded Half-Up to Nearest Coin',
+            inputs: ['LX-TOTAL'],
+            output: '1,240.00',
+          },
+        ],
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  const steps = sectionRows(routineSheetValues(job, 'LX — Ledger Fee Calc'), 'Steps');
+  assert.deepEqual(steps.header, ['Step #', 'Instruction', 'Op', '(', 'Operand', ')', 'Line Comment']);
+  assert.equal(steps.body.length, 4);
+  assert.deepEqual(steps.body[0].slice(0, 6), ['1.1', 'LX-01', '<--', '', 'Vehicle Units', '']);
+  assert.deepEqual(steps.body[1].slice(0, 6), ['1.2', '', '×', '', 'Zone Rate', '']);
+  assert.ok(!steps.body[0][4].includes('90.00'), 'worked amount must not leak into Operand');
+  assert.deepEqual(steps.body[2].slice(0, 6), ['2', 'LX-F1 Ledger factor loading Standard bracket Flat Factor 1.000000', 'REVIEW', '', '', '']);
+  assert.deepEqual(steps.body[3].slice(0, 6), ['10', 'Rounded Half-Up to Nearest Coin', 'R', '', 'Half-Up to Nearest Coin', '']);
+  assert.ok(job.issues.some((i) => /without an evidenced operation/.test(i.message) && /step 2/.test(i.message)));
+  assert.ok(job.issues.some((i) => /Rounding step 10/.test(i.message) && /no target/.test(i.message)));
+});
+
+// ---------- explicit rate-routine column regressions ----------
+// Explicit model steps must map to the established seven columns with clean
+// output variables, operators (<--, +, *, R), and operands — not long
+// descriptive text in Instruction or unnecessary REVIEW rows. Synthetic
+// ledger fixtures only; no production names or values.
+
+test('steps: explicit assignment with output and value phrase stays as assignment', () => {
+  const r = explicitLedgerRoutine([
+    {
+      sequence: 7,
+      instruction: 'LX-PA Ledger personal cover Fixed Annual Standard',
+      operation: 'assignment',
+      expression: 'Fixed Annual Standard',
+      inputs: ['Standard'],
+      output: 'LX-PA = 375.00',
+    },
+  ]);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, 'assignment');
+  assert.equal(det.output, 'LX-PA');
+  assert.equal(det.expression, 'Fixed Annual Standard');
+  assert.deepEqual(det.inputs, ['Standard']);
+});
+
+test('steps: explicit assignment workbook shows clean output with <-- and value operand', () => {
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'ledger-guideline.pdf', pageCount: 2 }),
+      routines: [{
+        name: 'LX — Ledger Fee Calc',
+        kind: 'calculation_steps',
+        sourcePages: [2],
+        evidenceText: 'synthetic ledger calculation steps',
+        steps: [
+          {
+            sequence: 7,
+            instruction: 'LX-PA Ledger personal cover Fixed Annual Standard',
+            operation: 'assignment',
+            expression: 'Fixed Annual Standard',
+            inputs: ['Standard'],
+            output: 'LX-PA = 375.00',
+          },
+        ],
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  const steps = sectionRows(routineSheetValues(job, 'LX — Ledger Fee Calc'), 'Steps');
+  assert.equal(steps.body.length, 1);
+  assert.deepEqual(steps.body[0].slice(0, 6), ['7', 'LX-PA', '<--', '', 'Fixed Annual Standard', '']);
+  assert.ok(!job.issues.some((i) => /without an evidenced operation/.test(i.message)));
+});
+
+test('steps: explicit calculation with output renders clean and expands hyphenated codes', () => {
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'ledger-guideline.pdf', pageCount: 2 }),
+      routines: [{
+        name: 'LX — Ledger Fee Calc',
+        kind: 'calculation_steps',
+        sourcePages: [2],
+        evidenceText: 'synthetic ledger calculation steps',
+        steps: [
+          {
+            sequence: 4,
+            instruction: 'LX-NET Ledger net subtotal LX-01 + LX-02',
+            operation: 'add',
+            expression: 'LX-01 + LX-02',
+            inputs: ['LX-01', 'LX-02'],
+            output: 'LX-NET = 1,240.00',
+          },
+        ],
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  const steps = sectionRows(routineSheetValues(job, 'LX — Ledger Fee Calc'), 'Steps');
+  assert.equal(steps.body.length, 2);
+  assert.deepEqual(steps.body[0].slice(0, 6), ['4.1', 'LX-NET', '<--', '', 'LX-01', '']);
+  assert.deepEqual(steps.body[1].slice(0, 6), ['4.2', '', '+', '', 'LX-02', '']);
+});
+
+test('steps: explicit multiplication splits phrase operands into continuation rows', () => {
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'ledger-guideline.pdf', pageCount: 2 }),
+      routines: [{
+        name: 'LX — Ledger Fee Calc',
+        kind: 'calculation_steps',
+        sourcePages: [2],
+        evidenceText: 'synthetic ledger calculation steps',
+        steps: [
+          {
+            sequence: 1,
+            instruction: 'LX-01 Ledger base fee Vehicle Units (2,000) × Zone Rate (4.50%)',
+            operation: 'multiply',
+            expression: 'Vehicle Units (2,000) × Zone Rate (4.50%)',
+            inputs: ['Vehicle Units (2,000)', 'Zone Rate (4.50%)'],
+            output: 'LX-01 = 90.00',
+          },
+        ],
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  const steps = sectionRows(routineSheetValues(job, 'LX — Ledger Fee Calc'), 'Steps');
+  assert.equal(steps.body.length, 2);
+  assert.deepEqual(steps.body[0].slice(0, 6), ['1.1', 'LX-01', '<--', '', 'Vehicle Units', '']);
+  assert.deepEqual(steps.body[1].slice(0, 6), ['1.2', '', '×', '', 'Zone Rate', '']);
+  assert.ok(!steps.body[0][4].includes('90.00'), 'worked output amount must not leak into Operand');
+});
+
+test('steps: explicit lookup with keys but no table renders clean assignment', () => {
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'ledger-guideline.pdf', pageCount: 2 }),
+      routines: [{
+        name: 'LX — Ledger Fee Calc',
+        kind: 'calculation_steps',
+        sourcePages: [2],
+        evidenceText: 'synthetic ledger calculation steps',
+        steps: [
+          {
+            sequence: 6,
+            instruction: 'LX-TP Ledger statutory tariff Mandated rate for widget class',
+            operation: 'lookup',
+            expression: 'Mandated rate for widget class',
+            inputs: ['Widget Tier 2'],
+            output: 'LX-TP = 340.00',
+          },
+        ],
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  const det = job.routines[0].steps_detailed[0];
+  assert.equal(det.operation, 'lookup');
+  assert.equal(det.output, 'LX-TP');
+  const steps = sectionRows(routineSheetValues(job, 'LX — Ledger Fee Calc'), 'Steps');
+  assert.equal(steps.body.length, 1);
+  assert.deepEqual(steps.body[0].slice(0, 6), ['6', 'LX-TP', '<--', '', 'Widget Tier 2', '']);
+});
+
+test('steps: explicit rounding with hyphenated target renders clean with source and wording', () => {
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'ledger-guideline.pdf', pageCount: 2 }),
+      routines: [{
+        name: 'LX — Ledger Fee Calc',
+        kind: 'calculation_steps',
+        sourcePages: [2],
+        evidenceText: 'synthetic ledger calculation steps',
+        steps: [
+          {
+            sequence: 10,
+            instruction: 'Round LX-TOTAL to the nearest whole coin. Store the result as LX-BILLED.',
+            operation: 'round',
+            expression: 'Round LX-TOTAL to the nearest whole coin',
+            inputs: ['LX-TOTAL'],
+            output: 'LX-BILLED',
+          },
+        ],
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  const steps = sectionRows(routineSheetValues(job, 'LX — Ledger Fee Calc'), 'Steps');
+  assert.equal(steps.body.length, 1);
+  assert.equal(steps.body[0][0], '10');
+  assert.equal(steps.body[0][1], 'LX-BILLED');
+  assert.equal(steps.body[0][2], 'R');
+  assert.ok(steps.body[0][4].includes('LX-TOTAL'), `operand should carry source, got: ${steps.body[0][4]}`);
+  assert.ok(steps.body[0][4].includes('nearest whole coin'), `operand should carry wording, got: ${steps.body[0][4]}`);
+});
+
+// ---------- code-led plain-string step regressions ----------
+// Breakdown rows extracted as plain strings ("CODE description ...") must
+// map a leading code to Instruction with Op <-- and the stated remainder
+// as Operand — not REVIEW — while genuinely ambiguous multi-part lines
+// without a code or explicit operator stay REVIEW. Synthetic ledger
+// fixtures only; no production names or values.
+
+test('steps: code-led mixed label and calculation stays REVIEW without isolated operands', () => {
+  const line = 'LX-01 Ledger base fee Vehicle Units (2,000) × Zone Rate (4.50%)';
+  const r = ledgerRoutine([line]);
+  assert.deepEqual(r.steps, [line]);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, undefined);
+  assert.equal(det.output, undefined);
+  assert.equal(det.expression, undefined);
+});
+
+test('steps: code-led mixed workbook stays REVIEW without isolated operands', () => {
+  const line = 'LX-01 Ledger base fee Vehicle Units (2,000) × Zone Rate (4.50%)';
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'ledger-guideline.pdf', pageCount: 2 }),
+      routines: [{
+        name: 'LX — Ledger Fee Calc',
+        kind: 'calculation_steps',
+        sourcePages: [2],
+        evidenceText: 'synthetic ledger calculation steps',
+        steps: [line],
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  const steps = sectionRows(routineSheetValues(job, 'LX — Ledger Fee Calc'), 'Steps');
+  assert.equal(steps.body.length, 1);
+  assert.deepEqual(steps.body[0].slice(0, 6), ['1', line, 'REVIEW', '', '', '']);
+  assert.ok(job.issues.some((i) => /without an evidenced operation/.test(i.message)));
+});
+
+test('steps: code-led long description without operator stays REVIEW', () => {
+  const line = 'LX-F1 Ledger factor loading Standard bracket Flat Factor 1.000000';
+  const r = ledgerRoutine([line]);
+  assert.deepEqual(r.steps, [line]);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, undefined);
+  assert.equal(det.output, undefined);
+  assert.equal(det.expression, undefined);
+});
+
+test('steps: code-led long description workbook stays REVIEW', () => {
+  const line = 'LX-F1 Ledger factor loading Standard bracket Flat Factor 1.000000';
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'ledger-guideline.pdf', pageCount: 2 }),
+      routines: [{
+        name: 'LX — Ledger Fee Calc',
+        kind: 'calculation_steps',
+        sourcePages: [2],
+        evidenceText: 'synthetic ledger calculation steps',
+        steps: [line],
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  const steps = sectionRows(routineSheetValues(job, 'LX — Ledger Fee Calc'), 'Steps');
+  assert.equal(steps.body.length, 1);
+  assert.deepEqual(steps.body[0].slice(0, 6), ['1', line, 'REVIEW', '', '', '']);
+  assert.ok(job.issues.some((i) => /without an evidenced operation/.test(i.message)));
+});
+
+test('steps: multi-part line without code or operator stays REVIEW', () => {
+  const line = 'TOTAL LEDGER PREMIUM PAYABLE Net Premium: 37,531.00 | Statutory Levy @ 18.00%: 6,755.58';
+  const r = ledgerRoutine([line]);
+  assert.deepEqual(r.steps, [line]);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, undefined);
+  assert.equal(det.expression, undefined);
+  assert.equal(det.output, undefined);
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'ledger-guideline.pdf', pageCount: 2 }),
+      routines: [{
+        name: 'LX — Ledger Fee Calc',
+        kind: 'calculation_steps',
+        sourcePages: [2],
+        evidenceText: 'synthetic ledger calculation steps',
+        steps: [line],
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  const steps = sectionRows(routineSheetValues(job, 'LX — Ledger Fee Calc'), 'Steps');
+  assert.deepEqual(steps.body[0].slice(0, 6), ['1', line, 'REVIEW', '', '', '']);
+  assert.ok(job.issues.some((i) => /without an evidenced operation/.test(i.message)));
+});
+
+// ---------- reference-layout mapping regressions ----------
+// Instruction holds only the output variable, a condition keyword, or a
+// source-supported name — never an arithmetic expression. Op holds <--,
+// a condition marker, or one arithmetic operator. Operand holds exactly
+// one variable, table invocation, calculated variable, or code parameter
+// per row; multi-operand calculations split into continuation rows with
+// blank Instruction in source order. Synthetic fixtures only.
+
+function layoutJob(steps, tables = []) {
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'ledger-guideline.pdf', pageCount: 2 }),
+      tables,
+      routines: [{
+        name: 'LX — Ledger Fee Calc',
+        kind: 'calculation_steps',
+        sourcePages: [2],
+        evidenceText: 'synthetic ledger calculation steps',
+        steps,
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  return job;
+}
+
+test('steps: addition with leading code splits into continuation rows', () => {
+  const job = layoutJob(['LX-NET Ledger net subtotal LX-01 + LX-02']);
+  const det = job.routines[0].steps_detailed[0];
+  assert.equal(det.operation, 'expression');
+  assert.equal(det.output, 'LX-NET');
+  assert.equal(det.expression, 'LX-01 + LX-02');
+  const steps = sectionRows(routineSheetValues(job, 'LX — Ledger Fee Calc'), 'Steps');
+  assert.equal(steps.body.length, 2);
+  assert.deepEqual(steps.body[0].slice(0, 6), ['1.1', 'LX-NET', '<--', '', 'LX-01', '']);
+  assert.deepEqual(steps.body[1].slice(0, 6), ['1.2', '', '+', '', 'LX-02', '']);
+});
+
+test('steps: table lookup renders one invocation operand row', () => {
+  const job = layoutJob(
+    ['Look up ledger_rate from Schedule L using ledger_class.'],
+    [{
+      name: 'Schedule L', sourcePages: [1], evidenceText: 'ledger rate schedule',
+      headers: ['Ledger Class', 'Rate'], rows: [['C1', '12.00']],
+    }]
+  );
+  const steps = sectionRows(routineSheetValues(job, 'LX — Ledger Fee Calc'), 'Steps');
+  assert.equal(steps.body.length, 1);
+  assert.deepEqual(steps.body[0].slice(0, 6), ['1', 'ledger_rate', '<--', '', 'table:Schedule L (ledger_class)', '']);
+});
+
+test('steps: condition renders IF branch rows with single operands', () => {
+  const job = layoutJob(['If ledger_class is Tier 2, set ledger_rate to high_rate, otherwise set ledger_rate to low_rate.']);
+  const steps = sectionRows(routineSheetValues(job, 'LX — Ledger Fee Calc'), 'Steps');
+  const kinds = steps.body.map((row) => row[1]);
+  assert.ok(kinds.includes('IF'), `expected IF row, got: ${JSON.stringify(kinds)}`);
+  assert.ok(kinds.includes('ELSE'), `expected ELSE row, got: ${JSON.stringify(kinds)}`);
+  assert.ok(kinds.includes('ENDIF'), `expected ENDIF row, got: ${JSON.stringify(kinds)}`);
+  const branchTrue = steps.body.find((row) => row[1] === 'ledger_rate' && row[2] === '<--' && row[4] === 'high_rate');
+  const branchFalse = steps.body.find((row) => row[1] === 'ledger_rate' && row[2] === '<--' && row[4] === 'low_rate');
+  assert.ok(branchTrue, `expected true branch ledger_rate <-- high_rate, got: ${JSON.stringify(steps.body)}`);
+  assert.ok(branchFalse, `expected false branch ledger_rate <-- low_rate, got: ${JSON.stringify(steps.body)}`);
+});
+
+test('steps: multi-row expression keeps source order across continuation rows', () => {
+  const job = layoutJob([{
+    sequence: 5,
+    instruction: 'LX-SUM Ledger staged total',
+    operation: 'add',
+    expression: 'LX-01 + LX-02 + LX-03',
+    inputs: ['LX-01', 'LX-02', 'LX-03'],
+    output: 'LX-SUM',
+  }]);
+  const steps = sectionRows(routineSheetValues(job, 'LX — Ledger Fee Calc'), 'Steps');
+  assert.equal(steps.body.length, 3);
+  assert.deepEqual(steps.body.map((row) => row[0]), ['5.1', '5.2', '5.3']);
+  assert.deepEqual(steps.body.map((row) => row[2]), ['<--', '+', '+']);
+  assert.deepEqual(steps.body.map((row) => row[4]), ['LX-01', 'LX-02', 'LX-03']);
+  assert.equal(steps.body[0][1], 'LX-SUM');
+  assert.equal(steps.body[1][1], '');
+  assert.equal(steps.body[2][1], '');
+});
+
+test('steps: short code-led value maps as single-operand assignment', () => {
+  const job = layoutJob(['LX-STD Standard']);
+  const det = job.routines[0].steps_detailed[0];
+  assert.equal(det.operation, 'assignment');
+  assert.equal(det.output, 'LX-STD');
+  const steps = sectionRows(routineSheetValues(job, 'LX — Ledger Fee Calc'), 'Steps');
+  assert.equal(steps.body.length, 1);
+  assert.deepEqual(steps.body[0].slice(0, 6), ['1', 'LX-STD', '<--', '', 'Standard', '']);
 });

@@ -17,7 +17,7 @@
 // Cover and the summaries link each asset name to its detail worksheet.
 // Fixed ZIP timestamps keep builds byte-deterministic.
 import { deflateRawSync } from 'node:zlib';
-import { normalizeVariableKey, parseAssignmentOperands, resolveTableReference, tableReferenceTerms } from './models.js';
+import { cleanStepInputValue, cleanStepOutputValue, normalizeVariableKey, parseAssignmentOperands, resolveTableReference, sanitizeExplicitStep, tableReferenceTerms } from './models.js';
 
 // ---------- CRC32 + minimal ZIP writer ----------
 
@@ -876,23 +876,28 @@ function lookupOperand(det, tables) {
 }
 
 // Right-hand side of an assignment step: strip an optional 'Calculate' verb
-// and sentence-final period, then split 'output = rhs'. Returns
-// { output, rhs } or null when no plain assignment is evidenced (prose,
-// comparisons, and conditionals fall back to the verbatim source text).
+// and sentence-final period, then split 'output = rhs'. An explicit output
+// paired with a right-hand-side-only expression (no '=') also yields
+// { output, rhs } so model-provided calculations render as clean
+// `output <-- rhs` rows. Returns null when no plain assignment is
+// evidenced (prose, comparisons, and conditionals fall back to the
+// verbatim source text).
 function splitAssignment(det) {
   const raw = String(det?.expression ?? '');
+  const outputRaw = String(det?.output ?? '');
   if (!raw.trim()) {
-    const output = String(det?.output ?? '');
     const operand = String(det?.operand ?? '');
-    if (output && operand.trim()) return { output, rhs: operand };
+    if (outputRaw && operand.trim()) return { output: outputRaw, rhs: operand.trim() };
     return null;
   }
-  const clean = raw.replace(/^\s*calculate\s+(?=[A-Za-z_]\w*\s*=)/i, '').replace(/\.\s*$/, '').trim();
+  const clean = raw.replace(/^\s*calculate\s+/i, '').replace(/\.\s*$/, '').trim();
   if (/^(if|else|when|otherwise)\b/i.test(clean)) return null;
   const m = /^\s*([A-Za-z_]\w*)\s*=\s*([\s\S]+?)\s*$/.exec(clean);
-  if (!m || !m[2].trim()) return null;
-  if (/^[=<>!]/.test(m[2].trim())) return null;
-  return { output: String(det?.output ?? '') || m[1], rhs: m[2].trim() };
+  if (m && m[2].trim() && !/^[=<>!]/.test(m[2].trim())) {
+    return { output: outputRaw || m[1], rhs: m[2].trim() };
+  }
+  if (outputRaw && !clean.includes('=')) return { output: outputRaw, rhs: clean };
+  return null;
 }
 
 // Operand for a partially parsed step: keep whatever the parser evidenced
@@ -905,11 +910,11 @@ function fallbackOperand(det) {
   return (det?.inputs ?? []).map((k) => String(k ?? '').trim()).filter(Boolean).join(', ');
 }
 
-// Single variable-like token (optionally dotted): the only operand shapes
-// treated as a rounding source. Anything else is source wording or precision
-// detail and is preserved verbatim in the operand.
+// Single variable-like token (dotted or hyphenated codes included): the
+// only operand shapes treated as a rounding source. Anything else is source
+// wording or precision detail and is preserved verbatim in the operand.
 function isVariableLike(value) {
-  return /^[A-Za-z_]\w*(?:\.\w+)*$/.test(String(value ?? '').trim());
+  return /^[A-Za-z_][\w.-]*$/.test(String(value ?? '').trim());
 }
 
 // Rounding detail after the target ('to the nearest whole unit ...'): the
@@ -920,7 +925,7 @@ function extractRoundingDetail(text) {
   let body = String(text ?? '').trim();
   if (!body) return '';
   body = body.replace(/^\s*step\s+\d+\s*[:.)\-]?\s*/i, '').replace(/^\s*\(?\d{1,3}\)?[\s:.)\-]+\s*/, '');
-  const m = /^\s*round\s+[A-Za-z_]\w*\s+([\s\S]+?)\s*$/i.exec(body);
+  const m = /^\s*round\s+[A-Za-z_][\w.-]*\s+([\s\S]+?)\s*$/i.exec(body);
   if (!m || !m[1].trim()) return '';
   let rest = m[1].trim();
   rest = rest.split(/\s*\.\s*store\b/i)[0].split(/\s*;\s*store\b/i)[0].split(/\s*,\s*store\s+the\s+result\s+as\b/i)[0].trim();
@@ -976,45 +981,59 @@ function isConditionOperation(op) {
   return CONDITION_OPERATION_WORDS.has(String(op ?? '').trim().toLowerCase());
 }
 
+// Display view of a stored step detail: the same canonicalization and
+// worked-value stripping as normalization, applied to a copy so stored
+// jobs predating the fix still render cleaned reusable columns. The
+// source instruction text is never altered.
+function displayDet(det) {
+  if (!det || typeof det !== 'object') return det ?? null;
+  const copy = {
+    ...det,
+    inputs: Array.isArray(det.inputs) ? [...det.inputs] : det.inputs,
+    depends_on: Array.isArray(det.depends_on) ? [...det.depends_on] : det.depends_on,
+  };
+  sanitizeExplicitStep(copy);
+  return copy;
+}
+
 // One stepwise rating-routine entry { instruction, operation, operand, output, det }.
-// Pure assignments (lookups, `output = rhs`) read as `output <-- operand`;
-// rounding reads as `output R source wording`; conditions expand with their
-// keywords under Instruction. Explicit symbolic operations (such as '*') and
-// anything unparsed keep the verbatim source text so no detail is lost.
-function renderRatingStep(text, det, tables) {
+// Pure assignments (lookups, `output = rhs`, explicit output with rhs-only
+// expression) read as `output <-- operand`; rounding reads as
+// `output R source wording`; conditions expand with their keywords under
+// Instruction. Anything without a mappable output (targetless
+// calculations, unparsed lines) keeps the verbatim source text flagged for
+// review so no detail is lost and no expression poses as an Instruction.
+function renderRatingStep(text, origDet, tables) {
+  const det = displayDet(origDet);
   const instruction = String(text ?? '');
   if (det && isLookupOperation(det.operation)) {
     const operand = lookupOperand(det, tables);
     const output = String(det.output ?? '');
-    if (output && operand) return { instruction: output, operation: '<--', operand, output, det };
-    return { instruction, operation: '', operand: '', output, det };
+    if (output) return { instruction: output, operation: '<--', operand, output, det };
+    if (operand) return { instruction, operation: '<--', operand, output: '', det };
+    return { instruction, operation: '', operand: '', output: '', det: null };
   }
   const word = String(det?.operation ?? '').toLowerCase();
   if (det && (word === 'expression' || word === 'assignment')) {
     const split = splitAssignment(det);
     if (split) return { instruction: split.output, operation: '<--', operand: split.rhs, output: split.output, det };
-    // Targetless but evidenced calculation ("LX-01 + LX-02"): one honest row
-    // carrying the source operators and the verbatim expression. Nothing is
-    // expanded or assigned without a stated output.
-    const expr = String(det.expression ?? '').trim() || fallbackOperand(det);
-    if (expr) {
-      const lexemes = bareExpressionLexemes(det.expression ?? '');
-      return { instruction, operation: lexemes.join(' ') || 'expression', operand: expr, output: String(det.output ?? ''), det };
-    }
-    return { instruction, operation: '', operand: fallbackOperand(det), output: String(det.output ?? ''), det };
+    return { instruction, operation: '', operand: '', output: '', det: null };
   }
   if (det && word === 'rounding') {
     // Final assignment form: the evidenced output variable leads under
     // Instruction with the rounding operation preserved, and the operand
     // carries the rounded source plus its source wording. Same-variable
-    // rounding keeps only the wording so the variable is not repeated.
+    // rounding keeps only the wording so the variable is not repeated. An
+    // input-only source never becomes the target: without an explicit
+    // output or operand, the step stays targetless so validation and the
+    // workbook agree that no target was stated.
     const target = String(det.output ?? '').trim();
     const operandRaw = String(det.operand ?? '').trim();
-    const source = isVariableLike(operandRaw)
-      ? operandRaw
-      : (det.inputs ?? []).map((v) => String(v ?? '').trim()).find((v) => isVariableLike(v)) ?? '';
+    const operandSource = isVariableLike(operandRaw) ? operandRaw : '';
+    const inputSource = (det.inputs ?? []).map((v) => String(v ?? '').trim()).find((v) => isVariableLike(v)) ?? '';
+    const source = operandSource || inputSource;
     const detail = extractRoundingDetail(instruction);
-    const resolvedTarget = target || source;
+    const resolvedTarget = target || operandSource;
     if (!resolvedTarget) {
       const wording = extractRoundingWording(instruction);
       return { instruction, operation: 'R', operand: wording || operandRaw || fallbackOperand(det), output: target, det };
@@ -1032,7 +1051,7 @@ function renderRatingStep(text, det, tables) {
     } else {
       operand = detail || operandRaw || source;
     }
-    return { instruction: resolvedTarget, operation: 'R', operand, output: target || source, det };
+    return { instruction: resolvedTarget, operation: 'R', operand, output: resolvedTarget, det };
   }
   if (det && isConditionOperation(det.operation)) {
     return { instruction, operation: '', operand: String(det.output ?? ''), output: String(det.output ?? ''), det };
@@ -1068,9 +1087,12 @@ function synthesizedExpressionEntry(r) {
 // ---------- Rating-step expansion (generic) ----------
 
 // Tokenize an arithmetic right-hand side into operands, operators, and
-// parentheses. Identifiers may carry dots (source keys); numbers keep their
-// exact text. Returns null on any unfamiliar character so the caller keeps
-// the verbatim single row instead of inventing an interpretation.
+// parentheses. Identifiers may carry dots (source keys) or hyphens (coded
+// step outputs such as LX-01); numbers keep their exact text. A hyphen
+// inside a code is part of the operand because the identifier match runs
+// first; a spaced hyphen still tokenizes as minus. Returns null on any
+// unfamiliar character so the caller keeps the verbatim single row instead
+// of inventing an interpretation.
 function tokenizeArithmetic(rhs) {
   const tokens = [];
   const text = String(rhs ?? '');
@@ -1091,15 +1113,15 @@ function tokenizeArithmetic(rhs) {
       i += 1;
       continue;
     }
-    if (ch === '+' || ch === '-' || ch === '*' || ch === '/' || ch === '%' || ch === '×' || ch === '÷') {
-      tokens.push({ type: 'op', value: ch });
-      i += 1;
-      continue;
-    }
-    const idMatch = /[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*/.exec(text.slice(i));
+    const idMatch = /[A-Za-z_][A-Za-z0-9_]*(?:[-.][A-Za-z0-9_]+)*/.exec(text.slice(i));
     if (idMatch && idMatch.index === 0) {
       tokens.push({ type: 'operand', value: idMatch[0] });
       i += idMatch[0].length;
+      continue;
+    }
+    if (ch === '+' || ch === '-' || ch === '*' || ch === '/' || ch === '%' || ch === '×' || ch === '÷') {
+      tokens.push({ type: 'op', value: ch });
+      i += 1;
       continue;
     }
     const numMatch = /\d+(?:\.\d+)?/.exec(text.slice(i));
@@ -1114,7 +1136,95 @@ function tokenizeArithmetic(rhs) {
 }
 
 function isIdentifierOperand(value) {
-  return /^[+-]?[A-Za-z_][A-Za-z0-9_.]*$/.test(String(value ?? '').trim());
+  return /^[+-]?[A-Za-z_][A-Za-z0-9_.-]*$/.test(String(value ?? '').trim());
+}
+
+// Amount-like parenthetical group: numbers, currency, percents, and
+// punctuation only — no letters — so "(2,000)" and "(3.28%)" strip as
+// worked illustration values while grouping parens (with variables or
+// operators inside) are left for the strict tokenizer or REVIEW.
+function isAmountParen(inner) {
+  return /^[\s₹$€£¥\d,.\%+-]+$/.test(String(inner ?? ''));
+}
+
+// Reusable term inside one phrase operand: strip amount parentheticals,
+// collapse whitespace, and keep a bare amount only when nothing else
+// remains. Returns null when the operand carries grouping parens,
+// multi-part markers, nested operators, or descriptive length instead of
+// a single term.
+function cleanPhraseOperand(fragment) {
+  const text = String(fragment ?? '').trim();
+  if (!text || /[;:|?!]/.test(text)) return null;
+  let cleaned = text;
+  const groups = [...text.matchAll(/\(([^()]*)\)/g)];
+  for (const g of groups) {
+    if (!isAmountParen(g[1])) return null;
+  }
+  cleaned = cleaned.replace(/\([^()]*\)/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!cleaned) {
+    const fallback = groups.length > 0 ? String(groups[0][1] ?? '').trim() : '';
+    if (!fallback) return null;
+    cleaned = fallback;
+  }
+  if (cleaned.includes('=')) return null;
+  if (/[+*/×÷%=-]/.test(cleaned.replace(/^[+-]/, ''))) {
+    if (/[+*/×÷%]/.test(cleaned)) return null;
+    if (/\s+-\s+/.test(` ${cleaned} `)) return null;
+  }
+  if (cleaned.split(/\s+/).filter(Boolean).length > 4) return null;
+  return cleaned;
+}
+
+// Split a flat multi-operand expression with phrase operands ("Vehicle
+// Units (2,000) × Zone Rate (4.50%)") into single cleaned operands with
+// source-order operators. Parens are never split across, so grouping and
+// amounts stay attached to their operand for the cleaner to accept or
+// reject. Returns { operands, ops } or null when any side is not a
+// single term.
+function splitPhraseOperands(rhs) {
+  const text = String(rhs ?? '').trim();
+  if (!text) return null;
+  const operands = [];
+  const ops = [];
+  let depth = 0;
+  let current = '';
+  const flush = () => {
+    operands.push(current);
+    current = '';
+  };
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === '(') {
+      depth += 1;
+      current += ch;
+      continue;
+    }
+    if (ch === ')') {
+      depth = Math.max(0, depth - 1);
+      current += ch;
+      continue;
+    }
+    if (depth === 0 && (ch === '+' || ch === '*' || ch === '/' || ch === '%' || ch === '×' || ch === '÷')) {
+      flush();
+      ops.push(ch);
+      continue;
+    }
+    if (depth === 0 && ch === '-' && /\s/.test(text[i - 1] ?? ' ') && /\s/.test(text[i + 1] ?? ' ')) {
+      flush();
+      ops.push(ch);
+      continue;
+    }
+    current += ch;
+  }
+  flush();
+  if (operands.length < 2 || ops.length !== operands.length - 1) return null;
+  const cleaned = [];
+  for (const part of operands) {
+    const term = cleanPhraseOperand(part);
+    if (!term) return null;
+    cleaned.push(term);
+  }
+  return { operands: cleaned, ops };
 }
 
 // Expand `output = rhs` into one ordered row per operation, preserving the
@@ -1183,12 +1293,13 @@ function expandArithmetic(output, rhs) {
 }
 
 // Identifiers in free text, excluding only generic conditional connectives.
-// Extra prose words resolve to no traceability and fall back to a purpose
-// comment, so no meaning is invented.
+// Hyphenated codes and dotted keys stay whole; extra prose words resolve to
+// no traceability and fall back to a purpose comment, so no meaning is
+// invented.
 function simpleIdentifiers(text) {
   const out = [];
   const seen = new Set();
-  for (const m of String(text ?? '').matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)) {
+  for (const m of String(text ?? '').matchAll(/[A-Za-z_][A-Za-z0-9_]*(?:[-.][A-Za-z0-9_]+)*/g)) {
     const low = m[0].toLowerCase();
     if (['and', 'or', 'not', 'if', 'then', 'else', 'when', 'where', 'otherwise'].includes(low)) continue;
     if (seen.has(low)) continue;
@@ -1407,6 +1518,33 @@ function expandOneRatingEntry(entry) {
           kind: expanded[0].open || expanded[0].close ? 'arithmetic-first' : 'assignment',
           commentInputs: isIdentifierOperand(expanded[0].operand) ? [expanded[0].operand.replace(/^[+-]/, '')] : [],
           rhs,
+        }];
+      }
+      const phrases = splitPhraseOperands(rhs);
+      if (phrases) {
+        return phrases.operands.map((operand, idx) => ({
+          instruction: idx === 0 ? output : '',
+          op: idx === 0 ? '<--' : phrases.ops[idx - 1],
+          open: '',
+          operand,
+          close: '',
+          output,
+          kind: idx === 0 ? 'arithmetic-first' : 'arithmetic-cont',
+          commentInputs: isIdentifierOperand(operand) ? [operand.replace(/^[+-]/, '')] : [],
+          rhs,
+        }));
+      }
+      if (bareExpressionLexemes(rhs).length > 0) {
+        return [{
+          instruction: String(det.instruction ?? entry.instruction ?? ''),
+          op: '',
+          open: '',
+          operand: '',
+          close: '',
+          output: '',
+          kind: 'unparsed',
+          commentInputs: [],
+          det: null,
         }];
       }
     }
@@ -1985,6 +2123,8 @@ function jobRows(job, source) {
   const routineSummary = [['Routine ID', 'Name', 'Kind', 'Purpose', 'Applicability', 'Execution context', 'Inputs', 'Outputs', 'Expression', 'Source pages', 'Source location', 'Evidence text', 'Notes', 'Review status']];
   const routineSummaryLinks = [];
   routines.forEach((r, idx) => {
+    const displayInputs = (r.inputs ?? []).map(cleanStepInputValue).filter((v) => v && String(v).trim());
+    const displayOutputs = (r.outputs ?? []).map(cleanStepOutputValue).filter((v) => v && String(v).trim());
     routineSummary.push([
       r.id ?? '',
       r.name ?? '',
@@ -1992,8 +2132,8 @@ function jobRows(job, source) {
       r.purpose ?? '',
       r.applicability ?? '',
       r.execution_context ?? '',
-      listJoin(r.inputs),
-      listJoin(r.outputs),
+      listJoin(displayInputs),
+      listJoin(displayOutputs),
       r.expression_text ?? '',
       pagesLabel(r.source_pages),
       r.source_location ?? '',
