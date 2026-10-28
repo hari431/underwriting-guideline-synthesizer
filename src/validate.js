@@ -225,7 +225,7 @@ function checkLeadingZeroIdentifiers(table, warn) {
 }
 
 const GENERIC_VALUE_TERMS = /\b(rate|factor|cost|premium|price|amount|charge|fee|modifier|multiplier)\b/i;
-const UNITS_INDICATORS = /[$€£¥%‰]|percent|per\s*cent|dollar|cent|euro|currency|\bper\b|annual|monthly|yearly|daily|\/year|\/month|\/day|basis\s*point/i;
+const UNITS_INDICATORS = /[$€£¥%‰]|percent|per\s*cent|dollar|\bcents?\b|euro|currency|\bper\b|annual|monthly|yearly|daily|\/year|\/month|\/day|basis\s*point/i;
 
 function checkUnclearUnits(table, warn) {
   const headers = table.headers ?? [];

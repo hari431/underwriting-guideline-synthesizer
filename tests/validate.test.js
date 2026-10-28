@@ -187,6 +187,18 @@ test('validate: factor tables without units keep semantics warnings', () => {
   assert.ok(!issues.some((i) => i.target_id === 'T2' && /unclear units/.test(i.message)));
 });
 
+test('validate: unclear-units check needs cents as a word, not a substring', () => {
+  const job = jobWith({
+    tables: [
+      { name: 'Central Territory Factors', sourcePages: [1], evidenceText: 'Central territory factor schedule', headers: ['Territory', 'Factor'], rows: [['Metro Central', '1.30']] },
+      { name: 'Widget Fees', sourcePages: [1], evidenceText: 'Widget fees stated in cents', headers: ['Widget key', 'Fee'], rows: [['w1', '25']] },
+    ],
+  });
+  const issues = validateJob(job);
+  assert.ok(issues.some((i) => i.target_id === 'T1' && /unclear units/.test(i.message)));
+  assert.ok(!issues.some((i) => i.target_id === 'T2' && /unclear units/.test(i.message)));
+});
+
 test('validate: step refs matching table columns resolve; unknown refs still flag', () => {
   const job = jobWith({
     tables: [{ name: 'Factors', sourcePages: [1], evidenceText: 'e', headers: ['Region Key', 'Value'], rows: [['a', '1']] }],
