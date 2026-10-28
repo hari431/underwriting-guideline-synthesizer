@@ -285,6 +285,34 @@ test('models: structured steps, conditions, and dependencies preserved with stri
   assert.deepEqual(r.depends_on, ['Base table']);
 });
 
+test('models: step grid cells pass through verbatim without becoming operations', () => {
+  const job = normalizeJob(
+    createJob({
+      routines: [{
+        name: 'Calc', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'ev',
+        steps: [
+          {
+            sequence: 1,
+            instruction: 'LX-01 Ledger base fee Vehicle Units (2,000)',
+            operation: 'multiply',
+            expression: 'Vehicle Units (2,000)',
+            cells: { Formula: 'Vehicle Units (2,000)', Basis: 'Flat amount', Factor: '1.000000', Empty: '  ' },
+          },
+        ],
+      }],
+    })
+  );
+  const det = job.routines[0].steps_detailed[0];
+  // No operator joins anything: the claimed operation demotes, but the
+  // source cells survive verbatim as audit evidence with normalized roles.
+  assert.equal(det.operation, undefined);
+  assert.deepEqual(det.cells, { formula: 'Vehicle Units (2,000)', basis: 'Flat amount', factor: '1.000000' });
+  // Cells count as explicit-extraction evidence: a second normalization
+  // pass (as the pipeline performs) regenerates nothing away.
+  const again = normalizeJob(job);
+  assert.deepEqual(again.routines[0].steps_detailed[0].cells, det.cells);
+});
+
 test('models: lookups parse across Find/Retrieve/Select phrasings with normalized outputs', () => {
   const job = normalizeJob(
     createJob({

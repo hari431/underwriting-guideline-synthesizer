@@ -109,3 +109,13 @@ test('extract: prompt separates reusable tables, adjacent grids, and genuine ste
     assert.ok(!prompt.includes(sample), `prompt must not hardcode sample value: ${sample}`);
   }
 });
+
+test('extract: prompt preserves grid-row cells with column roles, never as operations', () => {
+  const prompt = buildExtractionPrompt([{ page: 1, text: 'sample' }]);
+  for (const term of ['cells {', 'verbatim cell text', 'role', 'never become an operation']) {
+    assert.ok(prompt.includes(term), `prompt missing cells guidance: ${term}`);
+  }
+  for (const sample of ['Base Rate by Driver Class', 'Territory Factor', 'territory_factor', 'policy_fee', 'OD-01', 'Vehicle IDV']) {
+    assert.ok(!prompt.includes(sample), `prompt must not hardcode sample value: ${sample}`);
+  }
+});

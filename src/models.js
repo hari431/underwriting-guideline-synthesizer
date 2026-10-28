@@ -383,6 +383,22 @@ function normalizeOneStep(entry, index) {
   const status = entry.interpretation_status ?? entry.interpretationStatus ?? entry.status;
   if (status !== undefined && status !== null && String(status) !== '') out.interpretation_status = String(status);
   if (entry.original_text !== undefined && entry.original_text !== null) out.original_text = String(entry.original_text);
+  // Source grid cells carried verbatim for auditability (see the extraction
+  // prompt's cells guidance): every string-valued role entry passes through
+  // untouched, whatever the role names are. Cells are evidence, never
+  // interpretation — downstream parsing and validation must not treat them
+  // as an operation, operand, or dependency.
+  if (entry.cells !== undefined && entry.cells !== null && typeof entry.cells === 'object' && !Array.isArray(entry.cells)) {
+    const cells = {};
+    for (const [key, value] of Object.entries(entry.cells)) {
+      const role = String(key ?? '').trim().toLowerCase();
+      if (!role || value === undefined || value === null) continue;
+      const text = String(value);
+      if (!text.trim()) continue;
+      cells[role] = text;
+    }
+    if (Object.keys(cells).length > 0) out.cells = cells;
+  }
   enrichSparseStep(out);
   sanitizeExplicitStep(out);
   return out;
@@ -495,10 +511,13 @@ function hasSubstantiveValue(value) {
 }
 
 // True when a normalized step entry looks auto-derived (safe to regenerate)
-// rather than explicitly extracted (must be preserved).
+// rather than explicitly extracted (must be preserved). Source grid cells
+// count as explicit-extraction evidence, so carried cells survive
+// re-normalization instead of being regenerated away.
 function looksDerivedStep(entry) {
   if (!entry || typeof entry !== 'object') return true;
   const substantive = ['sequence', 'operation', 'expression', 'operand', 'inputs', 'output', 'depends_on', 'source_pages', 'source_location', 'evidence'];
+  if (entry.cells && typeof entry.cells === 'object' && Object.keys(entry.cells).length > 0) return false;
   if (!substantive.some((k) => hasSubstantiveValue(entry[k]))) return true;
   return entry.interpretation_status === 'inferred'
     && entry.sequence === undefined
@@ -638,6 +657,130 @@ function splitMainClause(text) {
   const t = String(text ?? '');
   const idx = t.search(/,\s*(where|with)\b/i);
   return idx < 0 ? t : t.slice(0, idx);
+}
+
+// Split text on a delimiter that appears at parenthesis depth zero, so
+// statement separators (`;`) split while function arguments (`f(a;b)`)
+// stay intact. Generic syntax, never domain vocabulary. Exported for the
+// Excel routine-step renderer, which expands each assignment segment into
+// its own row group.
+export function splitTopLevel(text, delimiter = ';') {
+  const s = String(text ?? '');
+  const parts = [];
+  let depth = 0;
+  let current = '';
+  for (let i = 0; i < s.length; i += 1) {
+    const ch = s[i];
+    if (ch === '(') depth += 1;
+    else if (ch === ')') depth = Math.max(0, depth - 1);
+    if (ch === delimiter && depth === 0) {
+      parts.push(current);
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  parts.push(current);
+  return parts;
+}
+
+// True when `=` at index i is a standalone assignment rather than part of
+// a comparison (`==`, `!=`, `<=`, `>=`).
+function isStandaloneEquals(s, i) {
+  if (s[i] !== '=') return false;
+  const prev = s[i - 1] ?? '';
+  const next = s[i + 1] ?? '';
+  return prev !== '=' && prev !== '!' && prev !== '<' && prev !== '>'
+    && next !== '=' && next !== '>';
+}
+
+// Function names called in an expression (`round_half_up(...)`, `min(...)`):
+// identifiers immediately followed by an opening parenthesis. Such names
+// are invocations, never variable references, so they are excluded from
+// step inputs. Generic call syntax, never function names.
+function functionNamesIn(text) {
+  const out = new Set();
+  for (const m of String(text ?? '').matchAll(/\b([A-Za-z_]\w*)\s*\(/g)) {
+    out.add(m[1].toLowerCase());
+  }
+  return out;
+}
+
+// An unspaced hyphen between identifier parts (`Premstep6-Discncb`) reads
+// as subtraction only when either side names a value defined by the same
+// step; otherwise it stays a hyphenated code (`OD-01`). Inserts spaces
+// around such hyphens so tokenizers split the subtraction while codes
+// stay whole. Generic: driven by same-step outputs, never by names.
+// Exported for the Excel renderer, which applies the same split.
+export function splitHyphenSubtraction(rhs, definedLower) {
+  const defined = definedLower instanceof Set ? definedLower
+    : new Set((Array.isArray(definedLower) ? definedLower : []).map((s) => String(s ?? '').toLowerCase()));
+  if (defined.size === 0) return String(rhs ?? '');
+  return String(rhs ?? '').replace(/([A-Za-z0-9_]+)-([A-Za-z_][A-Za-z0-9_]*)/g, (m, left, right) => {
+    if (defined.has(String(left).toLowerCase()) || defined.has(String(right).toLowerCase())) {
+      return `${left} - ${right}`;
+    }
+    return m;
+  });
+}
+
+function identifiersExcludingFunctions(text) {
+  const funcs = functionNamesIn(text);
+  if (funcs.size === 0) return identifiersOf(text);
+  return identifiersOf(text).filter((v) => !funcs.has(String(v).toLowerCase()));
+}
+
+// Parse explicit `output = rhs` assignments stated anywhere in a step body:
+// after a colon (`Compute base: out=a*b`), with lookup context, or several
+// assignments separated by top-level semicolons (`a=x*y; b=a-z`). Each
+// `;`-separated segment must carry exactly one standalone `=` with a valid
+// output identifier and a non-empty right-hand side; anything else yields
+// null so prose, comparisons, and incomplete fragments stay unparsed.
+// Returns { segments: [{ output, rhs }], expression, output, inputs } or
+// null. Inputs exclude same-step intermediate outputs and function names
+// so within-step definitions never warn as unresolved references.
+function parseTrailingAssignments(body) {
+  const main = splitMainClause(String(body ?? ''));
+  if (!main || !main.includes('=')) return null;
+  const rawSegments = splitTopLevel(main, ';');
+  const segments = [];
+  for (const raw of rawSegments) {
+    const seg = String(raw ?? '').trim().replace(/\.\s*$/, '').trim();
+    if (!seg) continue;
+    const equals = [];
+    for (let i = 0; i < seg.length; i += 1) {
+      if (isStandaloneEquals(seg, i)) equals.push(i);
+    }
+    if (equals.length !== 1) return null;
+    const eqAt = equals[0];
+    const left = seg.slice(0, eqAt);
+    const rhs = seg.slice(eqAt + 1).trim();
+    if (!rhs || !/[A-Za-z0-9_₹$€£¥]/.test(rhs)) return null;
+    // The output is a whole token immediately before `=`: hyphenated or
+    // dotted codes (`LX-NET = ...`) do not partially match (`NET`), they
+    // stay unparsed instead of misparsing.
+    const outMatch = /(?:^|[^A-Za-z0-9_.-])([A-Za-z_]\w*)\s*$/.exec(left);
+    if (!outMatch || !acceptableCapture(outMatch[1])) return null;
+    segments.push({ output: outMatch[1], rhs });
+  }
+  if (segments.length === 0) return null;
+  const defined = new Set(segments.map((s) => s.output.toLowerCase()));
+  // Normalize subtraction hyphens before building the expression so the
+  // stored text, inputs, and workbook rows all split the same way.
+  for (const s of segments) s.rhs = splitHyphenSubtraction(s.rhs, defined);
+  const expression = segments.map((s) => `${s.output} = ${s.rhs}`).join('; ');
+  const output = segments[segments.length - 1].output;
+  const seen = new Set();
+  const inputs = [];
+  for (const s of segments) {
+    for (const v of identifiersExcludingFunctions(s.rhs)) {
+      const key = v.toLowerCase();
+      if (defined.has(key) || seen.has(key)) continue;
+      seen.add(key);
+      inputs.push(v);
+    }
+  }
+  return { segments, expression, output, inputs };
 }
 
 // Parse an explicit top-level assignment `output = rhs`. Returns null unless
@@ -1511,15 +1654,14 @@ function tryParseRoundingAnywhere(body) {
 // Breakdown rows extracted as plain strings ("CODE value"): a leading code
 // token identifies the row's output only when the remainder is a single
 // short value (no operators, no multi-part markers, at most a few words).
-// Anything longer or operator-bearing stays REVIEW: the reference layout
-// allows exactly one operand per row, and a mixed label-plus-calculation
-// remainder cannot be split into isolated single operands without
-// inventing boundaries. Only the evidenced code and remainder are used; no
-// names or values are invented. Bare calculations ("LX-01 + LX-02"),
-// incomplete fragments, "=" forms (output conflict), and reference
-// pointers ("see ...") are excluded so they keep their existing handling
-// (parsed arithmetic or REVIEW). Generic syntax (code shape, operators,
-// term length), never domain vocabulary.
+// Operator-bearing remainders are handled by the arithmetic parsers above;
+// anything longer without an isolatable core stays REVIEW. Only the
+// evidenced code and remainder are used; no names or values are invented.
+// Bare calculations ("LX-01 + LX-02"), incomplete fragments, "=" forms
+// (output conflict), and reference pointers ("see ...") are excluded so
+// they keep their existing handling (parsed arithmetic or REVIEW).
+// Generic syntax (code shape, operators, term length), never domain
+// vocabulary.
 function tryParseLeadingCodeAssignment(body) {
   const text = String(body ?? '').trim();
   if (!text) return null;
@@ -1558,6 +1700,183 @@ function inferCalculationOutput(body, expression) {
   const code = /^([A-Z0-9]{2,}-[A-Z0-9]+)\b/.exec(prefix);
   if (code) return code[1];
   return prefix;
+}
+
+// Split text on top-level arithmetic operators, tracking paren depth so
+// amount groups never split. `+ * / × ÷` split anywhere; ASCII hyphen
+// splits only when spaced (hyphenated codes never split); bare `%` never
+// splits (percents in breakdown lines are values, not modulo). Returns
+// { parts, ops } or null when no operator joins two sides.
+function splitTopLevelOperators(text) {
+  const s = String(text ?? '');
+  const parts = [];
+  const ops = [];
+  let depth = 0;
+  let current = '';
+  for (let i = 0; i < s.length; i += 1) {
+    const ch = s[i];
+    if (ch === '(') {
+      depth += 1;
+      current += ch;
+      continue;
+    }
+    if (ch === ')') {
+      depth = Math.max(0, depth - 1);
+      current += ch;
+      continue;
+    }
+    if (depth === 0) {
+      if (ch === '+' || ch === '*' || ch === '/' || ch === '×' || ch === '÷') {
+        parts.push(current);
+        ops.push(ch);
+        current = '';
+        continue;
+      }
+      if (ch === '-' && /\s/.test(s[i - 1] ?? ' ') && /\s/.test(s[i + 1] ?? ' ')) {
+        parts.push(current);
+        ops.push(ch);
+        current = '';
+        continue;
+      }
+    }
+    current += ch;
+  }
+  parts.push(current);
+  if (ops.length === 0) return null;
+  return { parts, ops };
+}
+
+// A single operand word inside a phrase: starts uppercase or numeric and
+// carries no parens, operators, or label punctuation. Lowercase words
+// are label prose or trailing detail, never operand terms.
+function isOperandWord(token) {
+  const t = String(token ?? '').trim();
+  if (!t) return false;
+  if (/[()+\-*/×÷%=;|?!:@]/.test(t)) return false;
+  return /^[A-Z0-9]/.test(t);
+}
+
+// Trailing amount group (`(2,000)`, `(4.50%)`) at the end of a segment:
+// instance values attached to an operand phrase. Letters disqualify
+// (grouping or code detail, never a worked amount). Returns the group
+// text or '' when none is evidenced.
+function trailingAmountGroup(segment) {
+  const m = /\(\s*[₹$€£¥\d,.\s%+-]+\s*\)\s*$/.exec(String(segment ?? ''));
+  return m ? m[0].trim() : '';
+}
+
+// Trailing operand phrase on the label side: up to two trailing
+// capitalized-or-numeric words plus an optional amount group. Capped so
+// descriptive labels are never absorbed; the full source text stays in
+// the instruction. Returns { term, core } or null.
+function trailingOperandPhrase(segment) {
+  let s = String(segment ?? '').trim().replace(/[.;]+\s*$/, '').trim();
+  if (!s) return null;
+  let amount = '';
+  const group = trailingAmountGroup(s);
+  if (group) {
+    amount = group;
+    s = s.slice(0, s.length - group.length).trim();
+  }
+  const tokens = s.split(/\s+/).filter(Boolean);
+  const words = [];
+  for (let i = tokens.length - 1; i >= 0 && words.length < 2; i -= 1) {
+    const tok = tokens[i].replace(/[,;:]+$/, '');
+    if (!isOperandWord(tok) || isWorkedAmountToken(tok)) break;
+    words.unshift(tok);
+  }
+  if (words.length === 0) return null;
+  const term = words.join(' ');
+  return { term, core: amount ? `${term} ${amount}` : term };
+}
+
+// Leading operand phrase on the operator side: capitalized-or-numeric
+// words plus an optional amount group, stopping at bare amounts,
+// lowercase prose, or any paren group. Bounded by the operator, so it
+// takes all words to its boundary (validated to four or fewer, like
+// every phrase operand). Returns { term, core } or null.
+function leadingOperandPhrase(segment) {
+  const s = String(segment ?? '').trim().replace(/[.;]+\s*$/, '').trim();
+  if (!s) return null;
+  const tokens = s.split(/\s+/).filter(Boolean);
+  const words = [];
+  let amount = '';
+  for (const tok of tokens) {
+    if (tok.includes('(') || tok.includes(')')) {
+      if (words.length > 0 && /^\(\s*[₹$€£¥\d,.\s%+-]+\s*\)$/.test(tok)) {
+        amount = tok;
+      }
+      break;
+    }
+    const clean = tok.replace(/[,;:]+$/, '');
+    if (!isOperandWord(clean) || isWorkedAmountToken(clean)) break;
+    words.push(clean);
+    if (words.length > 4) return null;
+  }
+  if (words.length === 0) return null;
+  const term = words.join(' ');
+  return { term, core: amount ? `${term} ${amount}` : term };
+}
+
+// A middle operand phrase stands wholly between two operators:
+// capitalized-or-numeric words with at most one trailing amount group,
+// four words or fewer. Returns { term, core } or null.
+function wholeOperandPhrase(segment) {
+  let s = String(segment ?? '').trim().replace(/[.;]+\s*$/, '').trim();
+  if (!s) return null;
+  let amount = '';
+  const group = trailingAmountGroup(s);
+  if (group) {
+    amount = group;
+    s = s.slice(0, s.length - group.length).trim();
+  }
+  if (/[()]/.test(s)) return null;
+  const tokens = s.split(/\s+/).filter(Boolean).map((t) => t.replace(/[,;:]+$/, ''));
+  if (tokens.length === 0 || tokens.length > 4) return null;
+  for (const tok of tokens) {
+    if (!isOperandWord(tok) || isWorkedAmountToken(tok)) return null;
+  }
+  const term = tokens.join(' ');
+  return { term, core: amount ? `${term} ${amount}` : term };
+}
+
+// A code-led breakdown row with a phrase calculation: leading output
+// code, descriptive label, then operator-joined phrases with
+// worked-amount groups and optional trailing worked columns
+// (`CODE label PhraseA (1,000) × PhraseB (2.50%) [tail]`). Isolates the
+// operator core so the code becomes the output and each phrase becomes
+// one operand; amount groups stay in the expression (stripped for inputs
+// and workbook operands) and trailing columns are ignored. Single-letter
+// terms are abbreviations, never operands. Returns null unless every
+// operand isolates cleanly, so partial structure never poses as a
+// confident parse. Generic syntax (code shape, operators, phrase bounds),
+// never domain vocabulary.
+function tryParseCodeLedPhraseArithmetic(body) {
+  const text = String(body ?? '').trim();
+  if (!text) return null;
+  const code = /^([A-Z0-9]{2,}-[A-Z0-9]+)\s+(.+?)\s*$/.exec(text);
+  if (!code) return null;
+  const output = code[1];
+  const rest = code[2];
+  if (!/[+*/×÷-]/.test(rest)) return null;
+  const split = splitTopLevelOperators(rest);
+  if (!split || split.parts.length < 2) return null;
+  const { parts, ops } = split;
+  const first = trailingOperandPhrase(parts[0]);
+  if (!first) return null;
+  const last = leadingOperandPhrase(parts[parts.length - 1]);
+  if (!last) return null;
+  const mids = [];
+  for (let i = 1; i < parts.length - 1; i += 1) {
+    const mid = wholeOperandPhrase(parts[i]);
+    if (!mid) return null;
+    mids.push(mid);
+  }
+  const cores = [first.core, ...mids.map((m) => m.core), last.core];
+  const terms = [first.term, ...mids.map((m) => m.term), last.term];
+  if (terms.some((t) => t.length < 2)) return null;
+  const expression = cores[0] + ops.map((op, i) => ` ${op} ${cores[i + 1]}`).join('');
+  return { operation: 'expression', output, expression, inputs: dedupeInputs(terms) };
 }
 
 // Derive step operation/expression/operand/inputs/output from explicit
@@ -1601,6 +1920,16 @@ function deriveStepDetail(text) {
     } else if (operand) {
       entry.output = operand;
     }
+    // A rounding directive carrying an explicit assignment (`Round ...:
+    // out=round_fn(x;2)`) evidences its target and source through the
+    // assignment; prose targets never become variables.
+    if (!entry.output) {
+      const trailing = parseTrailingAssignments(body);
+      if (trailing) {
+        entry.output = trailing.output;
+        if (trailing.inputs.length > 0) entry.inputs = trailing.inputs;
+      }
+    }
   } else {
     const clause = extractConditionalClause(body);
     const parsed = clause ? parseConditionalBranches(clause) : null;
@@ -1625,13 +1954,16 @@ function deriveStepDetail(text) {
       if (combined.length > 0) entry.inputs = combined;
       derived = true;
     } else if (!/^(if|else|when|otherwise)\b/i.test(body)) {
-      const main = splitMainClause(body);
-      const assign = /^\s*(?:calculate\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+?)\s*\.?\s*$/i.exec(main);
-      if (assign && assign[2].trim()) {
+      // Explicit assignments anywhere in the step: leading (`out = a*b`),
+      // trailing after prose (`Compute base: out=a*b`), or several
+      // separated by semicolons (`a=x*y; b=a-z`). Comparisons, prose, and
+      // incomplete fragments yield null and stay unparsed.
+      const trailing = parseTrailingAssignments(body);
+      if (trailing) {
         entry.operation = 'expression';
-        entry.expression = main.replace(/^\s*calculate\s+/i, '').replace(/\.\s*$/, '');
-        entry.output = assign[1];
-        entry.inputs = identifiersOf(assign[2]);
+        entry.expression = trailing.expression;
+        entry.output = trailing.output;
+        entry.inputs = trailing.inputs;
         derived = true;
       }
       if (!derived) {
@@ -1657,6 +1989,19 @@ function deriveStepDetail(text) {
             if (inferred) entry.output = inferred;
           }
           derived = true;
+        }
+        // Code-led phrase calculations the bare parser cannot isolate
+        // (multi-word operands with worked-amount groups inside a labelled
+        // breakdown row). Runs only when bare arithmetic found no core.
+        if (!derived) {
+          const phrase = tryParseCodeLedPhraseArithmetic(body);
+          if (phrase) {
+            entry.operation = phrase.operation;
+            entry.expression = phrase.expression;
+            entry.output = phrase.output;
+            if (phrase.inputs.length > 0) entry.inputs = phrase.inputs;
+            derived = true;
+          }
         }
       }
     }

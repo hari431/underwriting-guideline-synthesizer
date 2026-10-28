@@ -62,6 +62,28 @@ test('validate: unfamiliar formula syntax is flagged for review, not invalid', (
   assert.match(issues[0].message, /not treated as invalid/);
 });
 
+test('validate: unparsed formula-like steps name the missing evidence class', () => {
+  const job = jobWith({
+    routines: [{
+      name: 'R', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'ev',
+      steps: [
+        'LX-01 Ledger base fee schedule (2,000)',
+        'Review the outcome with the team.',
+      ],
+    }],
+  });
+  const issues = validateJob(job);
+  // The paren-bearing line reaches for formula syntax but states no
+  // operation, assignment, or lookup: flagged with the evidence class.
+  // Pure prose stays covered only by the aggregate check below.
+  const stepFlags = issues.filter((i) => /states no confident operation/.test(i.message));
+  assert.equal(stepFlags.length, 1);
+  assert.match(stepFlags[0].message, /Step 1/);
+  assert.match(stepFlags[0].message, /no explicit operator/);
+  assert.match(stepFlags[0].message, /not treated as invalid/);
+  assert.ok(issues.some((i) => /without an evidenced operation/.test(i.message)));
+});
+
 test('validate: unresolved dependencies and duplicates warn', () => {
   const job = jobWith({
     tables: [{ name: 'Dup', sourcePages: [1], evidenceText: 'e', headers: ['A'], rows: [['1']] }],

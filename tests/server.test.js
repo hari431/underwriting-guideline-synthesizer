@@ -84,6 +84,17 @@ test('server: demo sample flow end to end (offline)', async () => {
   assert.ok(xlsx.body.length > 1000);
 });
 
+test('server: demo flow persists raw extraction beside the job', async () => {
+  const handle = listener();
+  const created = await call(handle, { method: 'POST', url: '/api/demo/sample' });
+  assert.equal(created.status, 201);
+  const { id } = json(created);
+  const raw = JSON.parse(await fs.readFile(path.join(storeDir, `${id}.extract.json`), 'utf8'));
+  assert.deepEqual(Object.keys(raw).sort(), ['routines', 'tables']);
+  assert.equal(raw.tables.length, 2);
+  assert.equal(raw.routines.length, 4);
+});
+
 test('server: edits re-validate and unknown jobs 404', async () => {
   const handle = listener();
   const created = await call(handle, { method: 'POST', url: '/api/demo/sample' });

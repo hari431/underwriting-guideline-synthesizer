@@ -17,7 +17,7 @@
 // Cover and the summaries link each asset name to its detail worksheet.
 // Fixed ZIP timestamps keep builds byte-deterministic.
 import { deflateRawSync } from 'node:zlib';
-import { cleanStepInputValue, cleanStepOutputValue, normalizeVariableKey, parseAssignmentOperands, resolveTableReference, sanitizeExplicitStep, tableReferenceTerms } from './models.js';
+import { cleanStepInputValue, cleanStepOutputValue, normalizeVariableKey, parseAssignmentOperands, resolveTableReference, sanitizeExplicitStep, splitHyphenSubtraction, splitTopLevel, tableReferenceTerms } from './models.js';
 
 // ---------- CRC32 + minimal ZIP writer ----------
 
@@ -879,9 +879,10 @@ function lookupOperand(det, tables) {
 // and sentence-final period, then split 'output = rhs'. An explicit output
 // paired with a right-hand-side-only expression (no '=') also yields
 // { output, rhs } so model-provided calculations render as clean
-// `output <-- rhs` rows. Returns null when no plain assignment is
-// evidenced (prose, comparisons, and conditionals fall back to the
-// verbatim source text).
+// `output <-- rhs` rows. Multi-assignment expressions (top-level `;`)
+// return null here: the expansion below renders each segment as its own
+// row group instead. Returns null when no plain assignment is evidenced
+// (prose, comparisons, and conditionals fall back to the verbatim text).
 function splitAssignment(det) {
   const raw = String(det?.expression ?? '');
   const outputRaw = String(det?.output ?? '');
@@ -890,6 +891,7 @@ function splitAssignment(det) {
     if (outputRaw && operand.trim()) return { output: outputRaw, rhs: operand.trim() };
     return null;
   }
+  if (splitTopLevel(raw, ';').length > 1) return null;
   const clean = raw.replace(/^\s*calculate\s+/i, '').replace(/\.\s*$/, '').trim();
   if (/^(if|else|when|otherwise)\b/i.test(clean)) return null;
   const m = /^\s*([A-Za-z_]\w*)\s*=\s*([\s\S]+?)\s*$/.exec(clean);
@@ -929,6 +931,9 @@ function extractRoundingDetail(text) {
   if (!m || !m[1].trim()) return '';
   let rest = m[1].trim();
   rest = rest.split(/\s*\.\s*store\b/i)[0].split(/\s*;\s*store\b/i)[0].split(/\s*,\s*store\s+the\s+result\s+as\b/i)[0].trim();
+  // A trailing assignment restating the rounded result (`: out=fn(x;2)`)
+  // is the step's structured output, not rounding wording, so it is cut.
+  rest = rest.split(/\s*:\s*[A-Za-z_]\w*\s*=[\s\S]*$/)[0].trim();
   rest = rest.replace(/[.;]+\s*$/, '').trim();
   if (!rest || /^store\b/i.test(rest)) return '';
   return rest;
@@ -1017,6 +1022,11 @@ function renderRatingStep(text, origDet, tables) {
   if (det && (word === 'expression' || word === 'assignment')) {
     const split = splitAssignment(det);
     if (split) return { instruction: split.output, operation: '<--', operand: split.rhs, output: split.output, det };
+    // Multi-assignment steps keep their detail so the expansion below can
+    // render each segment; anything else stays verbatim for review.
+    if (splitTopLevel(String(det.expression ?? ''), ';').length > 1) {
+      return { instruction, operation: '', operand: '', output: String(det.output ?? ''), det };
+    }
     return { instruction, operation: '', operand: '', output: '', det: null };
   }
   if (det && word === 'rounding') {
@@ -1092,7 +1102,10 @@ function synthesizedExpressionEntry(r) {
 // inside a code is part of the operand because the identifier match runs
 // first; a spaced hyphen still tokenizes as minus. Returns null on any
 // unfamiliar character so the caller keeps the verbatim single row instead
-// of inventing an interpretation.
+// of inventing an interpretation. A function invocation (`name(...)` with
+// no space before the paren) tokenizes as one operand so calls split
+// around their arguments without parsing inside them; currency-prefixed
+// amounts (`$37.50`) tokenize as one value operand.
 function tokenizeArithmetic(rhs) {
   const tokens = [];
   const text = String(rhs ?? '');
@@ -1115,8 +1128,26 @@ function tokenizeArithmetic(rhs) {
     }
     const idMatch = /[A-Za-z_][A-Za-z0-9_]*(?:[-.][A-Za-z0-9_]+)*/.exec(text.slice(i));
     if (idMatch && idMatch.index === 0) {
-      tokens.push({ type: 'operand', value: idMatch[0] });
-      i += idMatch[0].length;
+      let value = idMatch[0];
+      let next = i + value.length;
+      // A directly attached paren group is a call's argument list, kept
+      // whole as one invocation operand; unbalanced parens fail safe.
+      if (text[next] === '(') {
+        let depth = 0;
+        let j = next;
+        for (; j < text.length; j += 1) {
+          if (text[j] === '(') depth += 1;
+          else if (text[j] === ')') {
+            depth -= 1;
+            if (depth === 0) break;
+          }
+        }
+        if (depth !== 0) return null;
+        value += text.slice(next, j + 1);
+        next = j + 1;
+      }
+      tokens.push({ type: 'operand', value });
+      i = next;
       continue;
     }
     if (ch === '+' || ch === '-' || ch === '*' || ch === '/' || ch === '%' || ch === '×' || ch === '÷') {
@@ -1124,7 +1155,7 @@ function tokenizeArithmetic(rhs) {
       i += 1;
       continue;
     }
-    const numMatch = /\d+(?:\.\d+)?/.exec(text.slice(i));
+    const numMatch = /(?:[₹$€£¥]\s*)?\d+(?:\.\d+)?%?/.exec(text.slice(i));
     if (numMatch && numMatch.index === 0) {
       tokens.push({ type: 'operand', value: numMatch[0] });
       i += numMatch[0].length;
@@ -1425,6 +1456,16 @@ function expandConditionEntry(entry) {
   const rows = [];
   const pushBranchRow = (branch, kind) => {
     const value = extractBranchValue(branch);
+    // A branch calculation with several operands splits into continuation
+    // rows like any assignment; single values keep the branch assignment
+    // row so true/false wording stays explicit.
+    if (output && value) {
+      const expanded = expandAssignmentSegment(output, value);
+      if (expanded && expanded.length > 1) {
+        for (const row of expanded) rows.push(row);
+        return;
+      }
+    }
     rows.push({
       instruction: output,
       op: output ? '<--' : '',
@@ -1475,6 +1516,86 @@ function expandConditionEntry(entry) {
   return rows;
 }
 
+// Expand one `output = rhs` segment into row specs: arithmetic splits into
+// continuation rows, phrase operands split around worked amounts, and a
+// single value stays one assignment row. Returns null when the right-hand
+// side carries operators that cannot be split, so the caller keeps the
+// verbatim row instead of inventing boundaries.
+function expandAssignmentSegment(output, rhs) {
+  const cleanRhs = String(rhs ?? '').trim();
+  if (!output || !cleanRhs) return null;
+  const expanded = expandArithmetic(output, cleanRhs);
+  if (expanded && expanded.length > 1) {
+    return expanded.map((row, idx) => ({
+      ...row,
+      output,
+      kind: idx === 0 ? 'arithmetic-first' : 'arithmetic-cont',
+      commentInputs: isIdentifierOperand(row.operand) ? [row.operand.replace(/^[+-]/, '')] : [],
+      rhs: cleanRhs,
+    }));
+  }
+  if (expanded && expanded.length === 1) {
+    return [{
+      ...expanded[0],
+      output,
+      kind: expanded[0].open || expanded[0].close ? 'arithmetic-first' : 'assignment',
+      commentInputs: isIdentifierOperand(expanded[0].operand) ? [expanded[0].operand.replace(/^[+-]/, '')] : [],
+      rhs: cleanRhs,
+    }];
+  }
+  const phrases = splitPhraseOperands(cleanRhs);
+  if (phrases) {
+    return phrases.operands.map((operand, idx) => ({
+      instruction: idx === 0 ? output : '',
+      op: idx === 0 ? '<--' : phrases.ops[idx - 1],
+      open: '',
+      operand,
+      close: '',
+      output,
+      kind: idx === 0 ? 'arithmetic-first' : 'arithmetic-cont',
+      commentInputs: isIdentifierOperand(operand) ? [operand.replace(/^[+-]/, '')] : [],
+      rhs: cleanRhs,
+    }));
+  }
+  if (bareExpressionLexemes(cleanRhs).length > 0) return null;
+  return [{
+    instruction: output,
+    op: '<--',
+    open: '',
+    operand: cleanRhs,
+    close: '',
+    output,
+    kind: 'assignment',
+    commentInputs: [],
+    rhs: cleanRhs,
+  }];
+}
+
+// Expand a multi-assignment expression (`a=x*y; b=a-z`) into ordered row
+// groups, one group per segment. Returns null when any segment carries
+// an `=`-less fragment or unsplittable operators, so the step keeps its
+// verbatim row instead of partially inventing structure.
+function expandMultiAssignment(det) {
+  const raw = String(det?.expression ?? '');
+  const parts = splitTopLevel(raw, ';').map((p) => String(p ?? '').trim()).filter(Boolean);
+  if (parts.length < 2) return null;
+  const parsed = [];
+  for (const part of parts) {
+    const m = /^\s*([A-Za-z_]\w*)\s*=\s*([\s\S]+?)\s*$/.exec(part);
+    if (!m || !m[2].trim()) return null;
+    parsed.push({ output: m[1], rhs: m[2].trim() });
+  }
+  const defined = new Set(parsed.map((p) => p.output.toLowerCase()));
+  const specs = [];
+  for (const p of parsed) {
+    const rhs = splitHyphenSubtraction(p.rhs, defined);
+    const rows = expandAssignmentSegment(p.output, rhs);
+    if (!rows) return null;
+    for (const row of rows) specs.push({ ...row, det });
+  }
+  return specs.length > 0 ? specs : null;
+}
+
 // Expand one base rating entry into one or more seven-column row specs.
 // Lookups, rounding, single-operand assignments, explicit symbolic rows, and
 // anything unparsed stay single; arithmetic with operators and confident
@@ -1496,10 +1617,21 @@ function expandOneRatingEntry(entry) {
       det,
     }];
   }
+  // Several assignments in one source step (`a=x*y; b=a-z`): each segment
+  // expands to its own row group in source order, so every output keeps
+  // its Instruction row and every continuation row stays blank.
+  if (det && (word === 'expression' || word === 'assignment')) {
+    const rawExpression = String(det.expression ?? '');
+    if (splitTopLevel(rawExpression, ';').length > 1) {
+      const multi = expandMultiAssignment(det);
+      if (multi) return multi;
+    }
+  }
   if (det && (word === 'expression' || word === 'assignment') && entry.operation === '<--') {
     const split = splitAssignment(det);
     const output = split?.output || String(entry.output ?? entry.instruction ?? '');
-    const rhs = split?.rhs ?? String(entry.operand ?? '');
+    const rawRhs = split?.rhs ?? String(entry.operand ?? '');
+    const rhs = splitHyphenSubtraction(rawRhs, [output]);
     if (output && rhs.trim()) {
       const expanded = expandArithmetic(output, rhs);
       if (expanded && expanded.length > 1) {

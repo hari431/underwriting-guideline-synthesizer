@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { processPdf, applyReviewEdits } from './pipeline.js';
-import { saveJob, loadJob, listJobs } from './store.js';
+import { saveExtraction, saveJob, loadJob, listJobs } from './store.js';
 import { buildWorkbookXlsx } from './excel.js';
 import { ModelDisabledError, isModelEnabled } from './extract.js';
 import { loadDotEnv } from './dotenv.js';
@@ -87,21 +87,23 @@ export function createServer({ storeDir = path.join(ROOT, 'jobs'), modelEnv = pr
       }
       if (req.method === 'POST' && pathname === '/api/demo/sample') {
         const pdf = await fs.readFile(SAMPLE_PDF);
-        const { job, source } = await processPdf(pdf, {
+        const { job, source, extraction } = await processPdf(pdf, {
           filename: 'sample-guideline.pdf',
           recordingPath: SAMPLE_RECORDING,
         });
         const id = randomUUID();
         await saveJob(storeDir, id, job);
+        await saveExtraction(storeDir, id, extraction);
         await saveMeta(storeDir, id, { source });
         return sendJson(res, 201, { id, job, source });
       }
       if (req.method === 'POST' && pathname === '/api/jobs') {
         const pdf = await readBody(req, MAX_PDF_BYTES);
         const filename = String(req.headers['x-filename'] || 'upload.pdf').slice(0, 120);
-        const { job, source } = await processPdf(pdf, { filename, modelOptions: { env: modelEnv } });
+        const { job, source, extraction } = await processPdf(pdf, { filename, modelOptions: { env: modelEnv } });
         const id = randomUUID();
         await saveJob(storeDir, id, job);
+        await saveExtraction(storeDir, id, extraction);
         await saveMeta(storeDir, id, { source });
         return sendJson(res, 201, { id, job, source });
       }

@@ -490,16 +490,16 @@ function checkStepFormulas(routine, warn) {
   steps.forEach((step, idx) => {
     const text = String(step ?? '').trim();
     if (!text) return;
+    if (hasOperationEvidence(stepDetailForStep(routine, idx, String(step ?? '')))) return;
+    // Pure prose without operator-like characters is covered by the aggregate
+    // "without an evidenced operation" check; flag only text that reaches for
+    // formula syntax yet states no confident operation. The verdict keys off
+    // the missing evidence class — no explicit operator, assignment, or
+    // table reference — never off which characters happen to appear, so
+    // equivalent steps warn consistently regardless of charset accidents.
     if (!FORMULA_OPERATORS.test(text)) return;
     if (CONDITIONAL_KEYWORDS.test(text) && !text.includes('=')) return;
-    // Structured steps already carry their interpretation (and get specific
-    // incomplete-logic flags when a target is missing); only unparsed text
-    // is "syntax the validator cannot reliably interpret".
-    if (hasOperationEvidence(stepDetailForStep(routine, idx, String(step ?? '')))) return;
-    const verdict = classifyFormula(text);
-    if (verdict === 'review') {
-      warn('routine', routine.id, `Step ${idx + 1} ("${truncate(text, 60)}") uses syntax the validator cannot reliably interpret; flagged for analyst review (not treated as invalid).`, routine.source_pages);
-    }
+    warn('routine', routine.id, `Step ${idx + 1} ("${truncate(text, 60)}") states no confident operation — no explicit operator, '=' assignment, or table lookup; flagged for analyst review (not treated as invalid).`, routine.source_pages);
   });
 }
 

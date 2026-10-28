@@ -620,37 +620,6 @@ test('steps: explicit rounding with hyphenated target renders clean with source 
 // without a code or explicit operator stay REVIEW. Synthetic ledger
 // fixtures only; no production names or values.
 
-test('steps: code-led mixed label and calculation stays REVIEW without isolated operands', () => {
-  const line = 'LX-01 Ledger base fee Vehicle Units (2,000) × Zone Rate (4.50%)';
-  const r = ledgerRoutine([line]);
-  assert.deepEqual(r.steps, [line]);
-  const det = r.steps_detailed[0];
-  assert.equal(det.operation, undefined);
-  assert.equal(det.output, undefined);
-  assert.equal(det.expression, undefined);
-});
-
-test('steps: code-led mixed workbook stays REVIEW without isolated operands', () => {
-  const line = 'LX-01 Ledger base fee Vehicle Units (2,000) × Zone Rate (4.50%)';
-  const job = normalizeJob(
-    createJob({
-      document: createDocument({ filename: 'ledger-guideline.pdf', pageCount: 2 }),
-      routines: [{
-        name: 'LX — Ledger Fee Calc',
-        kind: 'calculation_steps',
-        sourcePages: [2],
-        evidenceText: 'synthetic ledger calculation steps',
-        steps: [line],
-      }],
-    })
-  );
-  job.issues = validateJob(job);
-  const steps = sectionRows(routineSheetValues(job, 'LX — Ledger Fee Calc'), 'Steps');
-  assert.equal(steps.body.length, 1);
-  assert.deepEqual(steps.body[0].slice(0, 6), ['1', line, 'REVIEW', '', '', '']);
-  assert.ok(job.issues.some((i) => /without an evidenced operation/.test(i.message)));
-});
-
 test('steps: code-led long description without operator stays REVIEW', () => {
   const line = 'LX-F1 Ledger factor loading Standard bracket Flat Factor 1.000000';
   const r = ledgerRoutine([line]);
@@ -799,4 +768,285 @@ test('steps: short code-led value maps as single-operand assignment', () => {
   const steps = sectionRows(routineSheetValues(job, 'LX — Ledger Fee Calc'), 'Steps');
   assert.equal(steps.body.length, 1);
   assert.deepEqual(steps.body[0].slice(0, 6), ['1', 'LX-STD', '<--', '', 'Standard', '']);
+});
+
+// ---------- trailing-assignment regressions ----------
+// Calculation steps that state prose before an explicit `output = rhs`
+// assignment (after a colon, with lookup context, or several assignments
+// separated by semicolons) must derive the structured operation instead of
+// staying REVIEW. Function-call right-hand sides keep the call as one
+// operand without treating the function name as a variable. Synthetic
+// ledger fixtures only; no production names or values.
+
+test('steps: trailing assignment after prose parses as expression', () => {
+  const r = ledgerRoutine([
+    'Step 1: Retrieve base tariff Rbase from Schedule L matching tier and zone. Compute gross base: Premstep1=declared_value*Rbase',
+  ]);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, 'expression');
+  assert.equal(det.output, 'Premstep1');
+  assert.equal(det.expression, 'Premstep1 = declared_value*Rbase');
+  assert.deepEqual(det.inputs, ['declared_value', 'Rbase']);
+  assert.equal(det.interpretation_status, 'inferred');
+});
+
+test('steps: trailing assignment workbook splits into continuation rows', () => {
+  const job = layoutJob([
+    'Step 1: Retrieve base tariff Rbase from Schedule L matching tier and zone. Compute gross base: Premstep1=declared_value*Rbase',
+  ]);
+  const steps = sectionRows(routineSheetValues(job, 'LX — Ledger Fee Calc'), 'Steps');
+  assert.equal(steps.body.length, 2);
+  assert.deepEqual(steps.body[0].slice(0, 6), ['1.1', 'Premstep1', '<--', '', 'declared_value', '']);
+  assert.deepEqual(steps.body[1].slice(0, 6), ['1.2', '', '*', '', 'Rbase', '']);
+});
+
+test('steps: semicolon-separated assignments keep the final output', () => {
+  const r = ledgerRoutine([
+    'Step 7: Retrieve discount rate Dncb from Schedule L. Discount and net: Discncb=Premstep6*Dncb; Premstep7=Premstep6-Discncb',
+  ]);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, 'expression');
+  assert.equal(det.output, 'Premstep7');
+  assert.equal(det.expression, 'Discncb = Premstep6*Dncb; Premstep7 = Premstep6 - Discncb');
+  assert.deepEqual(det.inputs, ['Premstep6', 'Dncb']);
+  const job = layoutJob([
+    'Step 7: Retrieve discount rate Dncb from Schedule L. Discount and net: Discncb=Premstep6*Dncb; Premstep7=Premstep6-Discncb',
+  ]);
+  const steps = sectionRows(routineSheetValues(job, 'LX — Ledger Fee Calc'), 'Steps');
+  assert.equal(steps.body.length, 4);
+  assert.deepEqual(steps.body.map((row) => row[0]), ['7.1', '7.2', '7.3', '7.4']);
+  assert.deepEqual(steps.body[0].slice(0, 6), ['7.1', 'Discncb', '<--', '', 'Premstep6', '']);
+  assert.deepEqual(steps.body[1].slice(0, 6), ['7.2', '', '*', '', 'Dncb', '']);
+  assert.deepEqual(steps.body[2].slice(0, 6), ['7.3', 'Premstep7', '<--', '', 'Premstep6', '']);
+  assert.deepEqual(steps.body[3].slice(0, 6), ['7.4', '', '-', '', 'Discncb', '']);
+  assert.match(steps.body[3][6], /uses Discncb from step 7\.1/);
+});
+
+test('steps: function-call right-hand side stays one operand without function inputs', () => {
+  const r = ledgerRoutine([
+    'Step 15: Round the aggregate premium to two decimals using half-up rounding: Prempretax=round_half_up(Premstep14;2)',
+  ]);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, 'rounding');
+  assert.equal(det.output, 'Prempretax');
+  assert.deepEqual(det.inputs, ['Premstep14']);
+  const job = layoutJob([
+    'Step 15: Round the aggregate premium to two decimals using half-up rounding: Prempretax=round_half_up(Premstep14;2)',
+  ]);
+  const steps = sectionRows(routineSheetValues(job, 'LX — Ledger Fee Calc'), 'Steps');
+  assert.equal(steps.body.length, 1);
+  assert.equal(steps.body[0][1], 'Prempretax');
+  assert.equal(steps.body[0][2], 'R');
+  assert.ok(steps.body[0][4].includes('Premstep14'));
+});
+
+test('steps: function factor in arithmetic splits around the call', () => {
+  const job = layoutJob([{
+    sequence: 1,
+    instruction: 'Ledger rider premium',
+    operation: 'expression',
+    expression: 'PremiumZ=declared_value*RateZ(vehicle_age)',
+    inputs: ['declared_value', 'vehicle_age'],
+    output: 'PremiumZ',
+  }]);
+  const steps = sectionRows(routineSheetValues(job, 'LX — Ledger Fee Calc'), 'Steps');
+  assert.equal(steps.body.length, 2);
+  assert.deepEqual(steps.body[0].slice(0, 6), ['1.1', 'PremiumZ', '<--', '', 'declared_value', '']);
+  assert.deepEqual(steps.body[1].slice(0, 6), ['1.2', '', '*', '', 'RateZ(vehicle_age)', '']);
+});
+
+test('steps: currency amount in arithmetic splits as one value operand', () => {
+  const job = layoutJob([
+    'Step 14: If ledger cover is applicable, add fixed charge: Premstep14=Premstep13+$37.50',
+  ]);
+  const steps = sectionRows(routineSheetValues(job, 'LX — Ledger Fee Calc'), 'Steps');
+  const kinds = steps.body.map((row) => row[1]);
+  assert.ok(kinds.includes('IF'));
+  assert.ok(kinds.includes('ENDIF'));
+  const first = steps.body.find((row) => row[1] === 'Premstep14' && row[2] === '<--');
+  assert.ok(first, `expected branch ledger assignment, got: ${JSON.stringify(steps.body)}`);
+  assert.equal(first[4], 'Premstep13');
+  const cont = steps.body.find((row) => row[1] === '' && row[2] === '+');
+  assert.ok(cont, `expected branch continuation row, got: ${JSON.stringify(steps.body)}`);
+  assert.equal(cont[4], '$37.50');
+});
+
+test('steps: multi-operand branch assignment splits into continuation rows', () => {
+  const job = layoutJob([
+    'If opt_rider == TRUE, compute rider cost: Premstep9=Premstep8+PremiumZ',
+  ]);
+  const steps = sectionRows(routineSheetValues(job, 'LX — Ledger Fee Calc'), 'Steps');
+  const kinds = steps.body.map((row) => row[1]);
+  assert.ok(kinds.includes('IF'));
+  assert.ok(kinds.includes('ENDIF'));
+  const first = steps.body.find((row) => row[1] === 'Premstep9' && row[2] === '<--');
+  assert.ok(first, `expected branch assignment, got: ${JSON.stringify(steps.body)}`);
+  assert.equal(first[4], 'Premstep8');
+  const cont = steps.body.find((row) => row[1] === '' && row[2] === '+');
+  assert.ok(cont, `expected branch continuation row, got: ${JSON.stringify(steps.body)}`);
+  assert.equal(cont[4], 'PremiumZ');
+});
+
+test('steps: lookup context without an assignment stays REVIEW', () => {
+  const line = 'Retrieve base tariff Rbase from Schedule L matching tier and zone.';
+  const r = ledgerRoutine([line]);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, undefined);
+  assert.equal(det.output, undefined);
+  assert.equal(det.expression, undefined);
+});
+
+// ---------- reference-format lookup regressions ----------
+// Table lookups render as one row: the retrieved variable under
+// Instruction, `<--` under Op, and exactly one table invocation with its
+// keys under Operand. Synthetic ledger fixtures only.
+
+test('steps: table lookup renders one invocation row per reference format', () => {
+  const job = layoutJob(
+    ['Step 2: Retrieve ledger_factor from Schedule L using ledger_class.'],
+    [{
+      name: 'Schedule L', sourcePages: [1], evidenceText: 'ledger rate schedule',
+      headers: ['Ledger Class', 'Rate'], rows: [['C1', '12.00']],
+    }]
+  );
+  const det = job.routines[0].steps_detailed[0];
+  assert.equal(det.operation, 'lookup');
+  assert.equal(det.output, 'ledger_factor');
+  assert.deepEqual(det.inputs, ['ledger_class']);
+  const steps = sectionRows(routineSheetValues(job, 'LX — Ledger Fee Calc'), 'Steps');
+  assert.equal(steps.body.length, 1);
+  assert.deepEqual(steps.body[0].slice(0, 6), ['2', 'ledger_factor', '<--', '', 'table:Schedule L (ledger_class)', '']);
+});
+
+test('steps: multi-key lookup keeps one invocation operand row', () => {
+  const job = layoutJob(
+    ['Look up ledger_rate from Schedule L using ledger_class and ledger_tier.'],
+    [{
+      name: 'Schedule L', sourcePages: [1], evidenceText: 'ledger rate schedule',
+      headers: ['Ledger Class', 'Tier', 'Rate'], rows: [['C1', 'T1', '12.00']],
+    }]
+  );
+  const steps = sectionRows(routineSheetValues(job, 'LX — Ledger Fee Calc'), 'Steps');
+  assert.equal(steps.body.length, 1);
+  assert.deepEqual(steps.body[0].slice(0, 6), ['1', 'ledger_rate', '<--', '', 'table:Schedule L (ledger_class, ledger_tier)', '']);
+});
+
+// ---------- code-led phrase calculation regressions ----------
+// Breakdown rows stating a leading code, a descriptive label, and a phrase
+// calculation with worked-amount groups (`CODE label PhraseA (1,000) ×
+// PhraseB (2.50%) [trailing worked columns]`) must isolate the operator
+// core: the code becomes the output, each amount group stays attached to
+// its phrase for the expression, and reusable operands strip to clean
+// terms. Trailing worked columns never leak into operands. Synthetic
+// ledger fixtures only; no production names or values.
+
+test('steps: code-led phrase multiplication isolates operands from label', () => {
+  const line = 'LX-01 Ledger base fee Vehicle Units (2,000) × Zone Rate (4.50%)';
+  const r = ledgerRoutine([line]);
+  assert.deepEqual(r.steps, [line]);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, 'expression');
+  assert.equal(det.output, 'LX-01');
+  assert.equal(det.expression, 'Vehicle Units (2,000) × Zone Rate (4.50%)');
+  assert.deepEqual(det.inputs, ['Vehicle Units', 'Zone Rate']);
+  assert.equal(det.interpretation_status, 'inferred');
+});
+
+test('steps: code-led phrase workbook splits with clean reusable operands', () => {
+  const line = 'LX-01 Ledger base fee Vehicle Units (2,000) × Zone Rate (4.50%)';
+  const job = layoutJob([line]);
+  const steps = sectionRows(routineSheetValues(job, 'LX — Ledger Fee Calc'), 'Steps');
+  assert.equal(steps.body.length, 2);
+  assert.deepEqual(steps.body[0].slice(0, 6), ['1.1', 'LX-01', '<--', '', 'Vehicle Units', '']);
+  assert.deepEqual(steps.body[1].slice(0, 6), ['1.2', '', '×', '', 'Zone Rate', '']);
+  assert.ok(!steps.body[0][4].includes('2,000'), 'worked amount must not leak into Operand');
+  assert.ok(!steps.body[1][4].includes('4.50'), 'worked amount must not leak into Operand');
+  assert.ok(!job.issues.some((i) => /without an evidenced operation/.test(i.message)));
+});
+
+test('steps: code-led phrase with trailing worked columns strips the tail', () => {
+  const line = 'LX-01 Ledger base fee Vehicle Units (2,000) × Zone Rate (4.50%) 2,000 Units 0.045000 90.00';
+  const r = ledgerRoutine([line]);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, 'expression');
+  assert.equal(det.output, 'LX-01');
+  assert.equal(det.expression, 'Vehicle Units (2,000) × Zone Rate (4.50%)');
+  assert.deepEqual(det.inputs, ['Vehicle Units', 'Zone Rate']);
+  const job = layoutJob([line]);
+  const steps = sectionRows(routineSheetValues(job, 'LX — Ledger Fee Calc'), 'Steps');
+  assert.equal(steps.body.length, 2);
+  assert.deepEqual(steps.body[0].slice(0, 6), ['1.1', 'LX-01', '<--', '', 'Vehicle Units', '']);
+  assert.deepEqual(steps.body[1].slice(0, 6), ['1.2', '', '×', '', 'Zone Rate', '']);
+});
+
+test('steps: code-led three-part phrase addition splits in source order', () => {
+  const line = 'LX-SUM Ledger staged total Base Amount (100) + Fee Amount (20) + Tax Amount (5)';
+  const job = layoutJob([line]);
+  const det = job.routines[0].steps_detailed[0];
+  assert.equal(det.operation, 'expression');
+  assert.equal(det.output, 'LX-SUM');
+  assert.deepEqual(det.inputs, ['Base Amount', 'Fee Amount', 'Tax Amount']);
+  const steps = sectionRows(routineSheetValues(job, 'LX — Ledger Fee Calc'), 'Steps');
+  assert.equal(steps.body.length, 3);
+  assert.deepEqual(steps.body.map((row) => row[0]), ['1.1', '1.2', '1.3']);
+  assert.deepEqual(steps.body.map((row) => row[2]), ['<--', '+', '+']);
+  assert.deepEqual(steps.body.map((row) => row[4]), ['Base Amount', 'Fee Amount', 'Tax Amount']);
+  assert.equal(steps.body[0][1], 'LX-SUM');
+  assert.equal(steps.body[1][1], '');
+  assert.equal(steps.body[2][1], '');
+});
+
+// ---------- ambiguous breakdown-row negatives ----------
+// These shapes state no explicit operator, assignment, or lookup: a
+// bracket range with a factor, "applied on" prose with a percent,
+// "rate: X% on BASE" wording, tier/range qualifiers, and a trailing
+// value phrase beside an amount. Each must stay REVIEW with its source
+// text preserved — inferring ×, a table, or an operand from actuarial
+// plausibility would be guessing. In particular, positional value
+// extraction is unsound: the same trailing position holds a base in one
+// row and a value phrase in another, so neither can be isolated
+// reliably. Synthetic ledger fixtures only.
+
+function assertStaysReview(line) {
+  const r = ledgerRoutine([line]);
+  assert.deepEqual(r.steps, [line]);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, undefined);
+  assert.equal(det.output, undefined);
+  assert.equal(det.expression, undefined);
+  const job = layoutJob([line]);
+  const steps = sectionRows(routineSheetValues(job, 'LX — Ledger Fee Calc'), 'Steps');
+  assert.equal(steps.body.length, 1);
+  assert.deepEqual(steps.body[0].slice(0, 6), ['1', line, 'REVIEW', '', '', '']);
+}
+
+test('steps: bracket range with factor stays REVIEW without lookup syntax', () => {
+  // No lookup verb, table reference, or operator: the range selects an
+  // instance bracket and the factor value is instance-specific.
+  assertStaysReview('LX-F1 Ledger age loading Standard ledger bracket (25–55 Years) Flat Factor 1.000000 0.00');
+});
+
+test('steps: applied-on prose with percent stays REVIEW without an operator', () => {
+  // "applied on" is prose, not ×; negative signs mark value polarity,
+  // not subtraction; no operator joins the base and the percent.
+  assertStaysReview('LX-D1 Ledger discount Earned discount applied on Base Gross (20.00%) Subtotal Ledger -0.200000 -6,560.00');
+});
+
+test('steps: colon rate with on-phrase stays REVIEW without an operator', () => {
+  // The colon labels the rate and "on" is a preposition; neither states
+  // the multiplication joining the base and the percent.
+  assertStaysReview('LX-R1 Ledger rider Actuarial fixed rate: 0.750% on Ledger Value 0.007500 7,500.00');
+});
+
+test('steps: tier and range qualifiers stay REVIEW without a table reference', () => {
+  // Tier and range phrases qualify applicability; with no lookup verb or
+  // table reference no table invocation can be evidenced.
+  assertStaysReview('LX-S1 Ledger statutory tariff Mandated rate for items > 1,000cc up to 1,500cc Engine Tier 2 Statutory 3,416.00');
+});
+
+test('steps: trailing value phrase stays REVIEW without a delimiter', () => {
+  // No `=` or operator delimits the value phrase from the description,
+  // and the same trailing position holds a base elsewhere — see the
+  // applied-on shape above — so positional extraction would guess.
+  assertStaysReview('LX-P1 Ledger cover (Owner, 15 Lakhs SI) Fixed Annual Standard 375.00');
 });

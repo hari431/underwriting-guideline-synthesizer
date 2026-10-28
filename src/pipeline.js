@@ -9,7 +9,9 @@ import { validateJob } from './validate.js';
  * Process one PDF buffer into a validated job.
  * @param {Buffer} pdfBuffer
  * @param {{ filename?: string, recordingPath?: string|null, modelOptions?: object }} options
- * @returns {Promise<{ job: object, source: string }>}
+ * @returns {Promise<{ job: object, source: string, extraction: { tables: array, routines: array } }>}
+ * The returned extraction is the raw pre-normalization extractor output,
+ * passed through untouched so callers can persist it for auditability.
  */
 export async function processPdf(
   pdfBuffer,
@@ -66,7 +68,7 @@ export async function processPdf(
     );
   }
   job = normalizeJob(job);
-  return { job, source: recordingPath ? 'recorded' : 'live' };
+  return { job, source: recordingPath ? 'recorded' : 'live', extraction: { tables, routines } };
 }
 
 /**

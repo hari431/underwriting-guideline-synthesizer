@@ -27,6 +27,20 @@ test('pipeline: sample PDF + recording yields validated job', async () => {
   assert.ok(job.issues.some((i) => i.target_id === 'R4' && /cannot reliably interpret/.test(i.message)));
 });
 
+test('pipeline: processPdf returns raw extraction untouched for auditability', async () => {
+  const buf = await fs.readFile(samplePdf);
+  const { job, extraction } = await processPdf(buf, {
+    filename: 'sample-guideline.pdf',
+    recordingPath: recording,
+  });
+  const recorded = JSON.parse(await fs.readFile(recording, 'utf8'));
+  assert.deepEqual(extraction.tables, recorded.tables);
+  assert.deepEqual(extraction.routines, recorded.routines);
+  // Normalized job carries IDs the raw output lacks: the two differ.
+  assert.ok(job.tables.every((t) => t.id));
+  assert.ok(!recorded.tables.every((t) => t.id));
+});
+
 test('pipeline: live extraction without config raises ModelDisabledError', async () => {
   const buf = await fs.readFile(samplePdf);
   await assert.rejects(processPdf(buf, { modelOptions: { env: {} } }), ModelDisabledError);
