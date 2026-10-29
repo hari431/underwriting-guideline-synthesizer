@@ -185,8 +185,8 @@ function sheetRowsAsValues(sheetXml, stringsXml) {
   const rows = [];
   for (const m of sheetXml.matchAll(/<row r="(\d+)">(.*?)<\/row>/gs)) {
     rows.push(
-      [...m[2].matchAll(/<c r="[A-Z]+\d+" t="s"(?: s="\d+")?><v>(\d+)<\/v><\/c>/g)]
-        .map((c) => items[Number(c[1])] ?? '')
+      [...m[2].matchAll(/<c r="[A-Z]+\d+"(?: t="s"(?: s="\d+")?><v>(\d+)<\/v><\/c>|\/>)/g)]
+        .map((c) => (c[1] === undefined ? '' : (items[Number(c[1])] ?? '')))
     );
   }
   return rows;

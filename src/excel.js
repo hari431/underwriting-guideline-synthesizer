@@ -17,7 +17,7 @@
 // Cover and the summaries link each asset name to its detail worksheet.
 // Fixed ZIP timestamps keep builds byte-deterministic.
 import { deflateRawSync } from 'node:zlib';
-import { cleanStepInputValue, cleanStepOutputValue, normalizeVariableKey, parseAssignmentOperands, resolveTableReference, sanitizeExplicitStep, splitAssignmentSegment, splitHyphenSubtraction, splitTopLevel, tableReferenceTerms } from './models.js';
+import { cleanStepInputValue, cleanStepOutputValue, extractCellCodeTokens, normalizeVariableKey, parseAssignmentOperands, resolveTableReference, sanitizeExplicitStep, splitAssignmentSegment, splitHyphenSubtraction, splitTopLevel, tableCellCodes, tableReferenceTerms } from './models.js';
 
 // ---------- CRC32 + minimal ZIP writer ----------
 
@@ -184,6 +184,13 @@ function sheetXml(rows, shared, widths = [], links = [], styleSpec = []) {
     parts.push(`<row r="${r + 1}">`);
     row.forEach((value, c) => {
       const ref = `${colName(c)}${r + 1}`;
+      // Blank cells stay blank elements: routing them through the shared
+      // string table would write a numeric index that reads as a literal
+      // value without shared-string resolution.
+      if (String(value ?? '') === '') {
+        parts.push(`<c r="${ref}"/>`);
+        return;
+      }
       const link = linkByCell.get(`${r},${c}`);
       let style = '';
       if (link) {
@@ -408,6 +415,37 @@ function findRoutinesByTarget(routines, target) {
 // name/header match within the routine's explicit table dependencies.
 // Anything else is an input parameter (when no sources are evidenced or the
 // value is a known lookup key) or marked unresolved rather than guessed.
+// Column labels of one table: headers plus column labels. Display labels
+// stay out: matching runs on source wording only.
+function tableHeaderLabels(table) {
+  return [
+    ...(table?.headers ?? []),
+    ...(table?.columns ?? []).map((c) => c?.label ?? c?.original_label),
+  ];
+}
+
+// True when a column label opens the input at a word boundary (`Policy
+// ledger count` opens `Policy ledger count 4 ledgers`). Case-insensitive;
+// `Factor` never prefixes `Factory output`. Generic label shape, never names.
+function isHeaderPrefixOfInput(header, input) {
+  const h = String(header ?? '').trim().replace(/\s+/g, ' ');
+  const s = String(input ?? '').trim().replace(/\s+/g, ' ');
+  if (!h || s.length < h.length) return false;
+  if (s.slice(0, h.length).toLowerCase() !== h.toLowerCase()) return false;
+  if (s.length === h.length) return true;
+  return !/[A-Za-z0-9]/.test(s[h.length] ?? '');
+}
+
+// Candidate tables holding one of the input's code tokens as a whole-cell
+// code value (`LDV`, `EXP-3`). Generic code shapes via the shared model
+// helpers, so resolution matches validator term collection exactly.
+function tablesMatchingCellCode(candidates, input) {
+  const tokens = new Set(extractCellCodeTokens(input).map((t) => t.toLowerCase()));
+  if (tokens.size === 0) return [];
+  return (candidates ?? []).filter((t) =>
+    tableCellCodes(t).some((code) => tokens.has(String(code ?? '').toLowerCase())));
+}
+
 function resolveInputSources(routine, routines, tables) {
   const inputs = routine?.inputs ?? [];
   if (inputs.length === 0) return [];
@@ -479,6 +517,23 @@ function resolveInputSources(routine, routines, tables) {
         continue;
       }
       if (matches.length > 1) {
+        out.push({ input: trimmed, source: 'unresolved — verify', keys: '' });
+        continue;
+      }
+    }
+    // Weaker but still explicit evidence, weighed only when no exact match
+    // fired above: the input opens with a column label, or names a code the
+    // table holds as a whole-cell value. Either resolves only onto a single
+    // table; conflicting evidence stays unresolved rather than guessed.
+    if (norm.length >= 3 && candidates.length > 0) {
+      const prefixMatches = candidates.filter((t) => tableHeaderLabels(t).some((h) => isHeaderPrefixOfInput(h, trimmed)));
+      const codeMatches = tablesMatchingCellCode(candidates, trimmed);
+      const union = [...new Set([...prefixMatches, ...codeMatches])];
+      if (union.length === 1) {
+        out.push({ input: trimmed, source: String(union[0].name ?? union[0].id ?? ''), keys: '' });
+        continue;
+      }
+      if (union.length > 1) {
         out.push({ input: trimmed, source: 'unresolved — verify', keys: '' });
         continue;
       }

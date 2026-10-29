@@ -1229,7 +1229,7 @@ function checkStepExpressionSyntax(routine, warn) {
 // incomplete, and ambiguous steps stay silent. Rounding applies only with
 // an explicitly stated precision. Mismatches warn with step, stated,
 // computed, and difference; source values are never modified.
-const ARITHMETIC_EVAL_FUNCS = new Set(['round', 'round_half_up', 'min', 'max']);
+const ARITHMETIC_EVAL_FUNCS = new Set(['round', 'round_half_up', 'roundhalfup', 'min', 'max']);
 
 // Parse a source-stated amount ('$4,910.71', '125.0000 credits', '95%', '−$817.33').
 // Trailing unit words are labels, not value. Returns { value, decimals }
@@ -1470,11 +1470,26 @@ function checkStepWorkedArithmetic(routine, warn) {
       compareWorkedArithmetic(routine, step, idx, rhs, rhs, lhs, computed, target, pages, warn);
     } else if (equals.length === 0) {
       const output = String(step?.output ?? '').trim();
-      if (!output) return;
+      // A bare worked expression whose output is a variable states its
+      // expected value separately: verify the single stated result for that
+      // output the same way, so promoted worked steps keep their check.
+      let label = output;
+      let stated = output;
+      if (!parseStatedAmount(stated)) {
+        const results = Array.isArray(step?.stated_results) ? step.stated_results : [];
+        const single = results.length === 1
+          ? results[0]
+          : results.find((s) => normalizeVariableKey(s?.output) === normalizeVariableKey(output));
+        if (single && String(single?.value ?? '').trim()) {
+          label = String(single.value).trim();
+          stated = label;
+        }
+      }
+      if (!stated) return;
       const computed = evaluateNumericExpression(expr);
-      const target = parseStatedAmount(output);
+      const target = parseStatedAmount(stated);
       if (computed === null || target === null) return;
-      compareWorkedArithmetic(routine, step, idx, output, output, expr, computed, target, pages, warn);
+      compareWorkedArithmetic(routine, step, idx, label, stated, expr, computed, target, pages, warn);
     }
   });
 }

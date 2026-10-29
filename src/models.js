@@ -276,6 +276,7 @@ export function createRatingRoutine({
   });
   let finalSteps = normSteps.steps;
   let finalDetailed = normSteps.steps_detailed;
+  resolveStepBackrefs(finalDetailed);
   const hasSteps = finalSteps.some((s) => String(s ?? '').trim()) || finalDetailed.length > 0;
   if (normKind === 'worked_example' && !hasSteps && !expressionTextStr.trim()) {
     const promoted = promoteWorkedNotesToSteps({ notes: String(notes ?? ''), sourcePages: sourcePages ?? source_pages ?? [] });
@@ -283,6 +284,7 @@ export function createRatingRoutine({
       const promotedSteps = normalizeStepLists({ steps: promoted });
       finalSteps = promotedSteps.steps;
       finalDetailed = promotedSteps.steps_detailed;
+      resolveStepBackrefs(finalDetailed);
     }
   }
   return {
@@ -604,6 +606,7 @@ function normalizeOneStep(entry, index) {
     if (Object.keys(cells).length > 0) out.cells = cells;
   }
   promoteInstructionAssignments(out);
+  promoteExplicitStepExpression(out);
   enrichSparseStep(out);
   sanitizeExplicitStep(out);
   return out;
@@ -1434,7 +1437,7 @@ export function parseAssignmentOperands(text) {
 }
 
 function stripStepLabel(text) {
-  const withoutStep = String(text ?? '').replace(/^\s*(?:step\s*\d+\s*[:.)-]?\s*)+/i, '');
+  const withoutStep = String(text ?? '').replace(/^\s*(?:step\s*\d+\s*[:.)\-—–]?\s*)+/i, '');
   // Bare numbering ('1 Find ...', '1. Find ...', '(1) Find ...') strips only
   // when a letter follows, so quantities, decimals, and hyphenated terms
   // ('350 units', '1.20 ...', '2-factor ...') are never touched.
@@ -1445,12 +1448,275 @@ function splitKeys(text) {
   return String(text ?? '')
     .split(/\s+and\s+|,/i)
     .map((k) => k.trim().replace(/[.]+$/, '').trim())
+    .map((k) => k.replace(/^(the|a|an)\s+/i, '').trim())
     .filter(Boolean);
 }
 
 // Drop a lowercase prose article from a table mention ("in the Base rating
 // table" refers to "Base rating table"). Capitalized names stay verbatim so a
 // table actually named "The Ledger" keeps its exact reference.
+// A result label standing before an imperative clause (`Base tallage:
+// Select ...`, `Zone scaling: Multiply ... by ...`). The label names the
+// step's result; the clause states the operation. Split only when the clause
+// opens with a confident imperative verb — assignments, bare arithmetic,
+// and conditionals already handle embedded forms without a split, so they
+// never trigger one. Returns { label, clause } or null. Generic punctuation
+// shape, never label contents.
+const IMPERATIVE_VERBS = '(?:multiply|multiplies|divide|divides|add|adds|subtract|subtracts)';
+
+function isVerbClauseStart(clause) {
+  const text = String(clause ?? '');
+  if (new RegExp(`^${LOOKUP_VERBS}\\b`, 'i').test(text)) return true;
+  return new RegExp(`^${IMPERATIVE_VERBS}\\b`, 'i').test(text);
+}
+
+function splitLabelClause(body) {
+  const text = String(body ?? '');
+  const at = text.indexOf(':');
+  if (at <= 0) return null;
+  const label = text.slice(0, at).trim();
+  const clause = text.slice(at + 1).trim();
+  if (!label || !clause) return null;
+  if (!/[A-Za-z]/.test(label)) return null;
+  if (/=/.test(label)) return null;
+  if (label.split(/\s+/).filter(Boolean).length > 4) return null;
+  if (!isVerbClauseStart(clause)) return null;
+  return { label, clause };
+}
+
+// True for a `Step N result`-style label: a back-reference to another step,
+// never a result name, so it must not become an output variable.
+function isStepBackrefLabel(label) {
+  return /^(?:the\s+)?step\s+\d{1,4}\s+(?:result|output|value)s?$/i.test(String(label ?? '').trim());
+}
+
+// Explicit imperative arithmetic (`Multiply A by B`, `Divide A by B`,
+// `Add A to B`, `Subtract A from B`): both operands stated in words with a
+// canonical operator. Returns { expression, inputs, depends_on } or null
+// unless both operands are evidenced. Operand phrases stay verbatim (minus
+// articles); only the operator glyph is canonicalized. A trailing table
+// mention (`from Table Z`) is stripped from the second operand into
+// depends_on; a trailing `from`/`in` phrase without a table word stays
+// unparsed instead of guessing the attachment. Generic verbs and syntax,
+// never operand contents.
+function tryParseImperativeArithmetic(clause) {
+  const text = String(clause ?? '').trim().replace(/\.\s*$/, '').trim();
+  if (!text) return null;
+  const forms = [
+    { verb: /^(multiply|multiplies)\b/i, prep: 'by', op: '*', order: 'ab' },
+    { verb: /^(divide|divides)\b/i, prep: 'by', op: '/', order: 'ab' },
+    { verb: /^(add|adds)\b/i, prep: 'to', op: '+', order: 'ab' },
+    { verb: /^(subtract|subtracts)\b/i, prep: 'from', op: '-', order: 'ba' },
+  ];
+  for (const form of forms) {
+    if (!form.verb.test(text)) continue;
+    const rest = text.replace(form.verb, '').trim();
+    // Greedy first operand: the LAST preposition splits, so an operand that
+    // itself contains the preposition word keeps its full phrase.
+    const m = new RegExp(`^(.+)\\s+${form.prep}\\s+(.+)$`, 'i').exec(rest);
+    if (!m) return null;
+    let first = cleanImperativeOperand(m[1]);
+    let second = m[2].trim();
+    let table = '';
+    const trailing = /\s+(?:from|in)\s+(.+?)\s*$/.exec(second);
+    if (trailing && /=/.test(trailing[1])) return null;
+    if (trailing && /\b(tables?|schedules?|appendix|appendices|exhibits?)\b/i.test(trailing[1])) {
+      table = stripLeadingArticle(trailing[1].replace(/[.;]+\s*$/, '').trim());
+      second = second.slice(0, trailing.index).trim();
+    } else if (/\s+(?:from|in)\s+/i.test(second)) {
+      return null;
+    }
+    second = cleanImperativeOperand(second);
+    if (!first || !second) return null;
+    const [left, right] = form.order === 'ba' ? [second, first] : [first, second];
+    return {
+      expression: `${left} ${form.op} ${right}`,
+      inputs: [left, right],
+      depends_on: table ? [table] : [],
+    };
+  }
+  return null;
+}
+
+// One imperative operand phrase: verbatim minus a leading article and final
+// punctuation. Empty without both: prose fragments, nested verbs, and
+// assignments never become operands. Generic shape, never contents.
+function cleanImperativeOperand(fragment) {
+  const s = String(fragment ?? '').trim().replace(/[.;]+\s*$/, '').trim()
+    .replace(/^(the|a|an)\s+/i, '').trim();
+  if (!s || !/[A-Za-z]/.test(s)) return '';
+  if (s.includes('=') || s.includes(';')) return '';
+  if (/,\s*[A-Za-z]/.test(s)) return '';
+  if (s.split(/\s+/).filter(Boolean).length > 6) return '';
+  if (new RegExp(`^(?:${LOOKUP_VERBS}|${IMPERATIVE_VERBS}|round|if|when)\\b`, 'i').test(s)) return '';
+  return s;
+}
+
+// Nested conditional clauses inside a branch (`... premium. If the policy
+// covers 1 or 2 ledgers, ...`) restate their own conditions; their
+// identifiers must not count as branch overlap when deriving the outer
+// condition's inputs, or fragments like `policy`/`covers` become false
+// inputs. Generic clause shape, never variable names.
+function stripNestedConditionClauses(text) {
+  return String(text ?? '').replace(/\b(?:if|when)\b[^.;]*/gi, ' ');
+}
+
+// A rounding target phrase: one to three plain words, none an article,
+// preposition, connective, or adverb. Generic wording, never variable names.
+function isRoundingTargetPhrase(phrase) {
+  const words = String(phrase ?? '').replace(/\s+/g, ' ').trim().split(' ').filter(Boolean);
+  if (words.length === 0 || words.length > 3) return false;
+  return words.every((w) => acceptableCapture(w)
+    && !NON_CAPTURE_WORDS.has(w.toLowerCase())
+    && !/^(only|just)$/i.test(w));
+}
+
+// A function-call evaluation (`RoundHalfUp(x, 2)`): an identifier glued to a
+// balanced argument list. Spaced parens (`Rate (4.50%)`) are worked-amount
+// detail, never calls. Generic call syntax, never function names.
+function isCallFormExpression(expr) {
+  const s = String(expr ?? '').trim();
+  if (!/\b[A-Za-z_]\w*\(/.test(s)) return false;
+  let depth = 0;
+  for (const ch of s) {
+    if (ch === '(') depth += 1;
+    if (ch === ')') {
+      depth -= 1;
+      if (depth < 0) return false;
+    }
+  }
+  return depth === 0 && s.includes(')');
+}
+
+// The step label (instruction minus numbering) as an output variable: a
+// short lettered phrase with no clause punctuation, assignment, or amount.
+// Anything else yields '' so prose never poses as a variable.
+function stepLabelForOutput(instruction) {
+  const label = stripStepLabel(String(instruction ?? '')).trim().replace(/[.;]+\s*$/, '').trim();
+  if (!label || !/[A-Za-z]/.test(label)) return '';
+  if (/[:=;]/.test(label)) return '';
+  const words = label.split(/\s+/).filter(Boolean);
+  if (words.length === 0 || words.length > 4) return '';
+  if (isNumericFragment(label)) return '';
+  return label;
+}
+
+// A past-tense lookup statement (`Selected tallage for LXV`): a lookup verb
+// in past tense with an object and a `for` key. Returns { inputs: [key] } or
+// null. Generic verbs and syntax, never object or key contents.
+const PAST_LOOKUP_VERBS = '(?:selected|retrieved|found|obtained|determined|located|extracted|looked\\s+up)';
+
+function tryParsePastTenseLookup(expr) {
+  const m = new RegExp(`^${PAST_LOOKUP_VERBS}\\s+(.+?)\\s+for\\s+(.+?)\\s*$`, 'i')
+    .exec(String(expr ?? '').trim().replace(/[.;]+\s*$/, ''));
+  if (!m) return null;
+  const key = m[2].trim().replace(/^(the|a|an)\s+/i, '').trim();
+  if (!key || !/[A-Za-z0-9]/.test(key)) return null;
+  if (key.split(/\s+/).filter(Boolean).length > 6) return null;
+  return { inputs: [key] };
+}
+
+// Promote an explicit model-provided expression that states its own
+// calculation but carries no operation: bare arithmetic (`$1,050.00 × 1.00`),
+// call-form evaluations (`RoundHalfUp(...)`), and past-tense lookup
+// statements (`Selected tallage for LXV`). The step label becomes the output
+// variable and a bare worked amount becomes a stated result — both
+// preserved, never dropped or invented. Prose without such evidence stays
+// unparsed. Runs before instruction-word derivation so explicit structure
+// beats re-derivation.
+function promoteExplicitStepExpression(out) {
+  if (!out || out.operation) return;
+  const expr = String(out.expression ?? '').trim();
+  if (!expr) return;
+  const label = stepLabelForOutput(out.instruction);
+  const adoptOutput = () => {
+    const rawOutput = String(out.output ?? '').trim();
+    const cleaned = cleanStepOutputValue(rawOutput);
+    if (cleaned) {
+      out.output = cleaned;
+      return;
+    }
+    if (rawOutput && label) {
+      const existing = Array.isArray(out.stated_results) ? out.stated_results : [];
+      if (!existing.some((s) => String(s?.output ?? '') === label && String(s?.value ?? '') === rawOutput)) {
+        out.stated_results = [...existing, { output: label, value: rawOutput }];
+      }
+    }
+    if (label) out.output = label;
+    else delete out.output;
+  };
+  if (hasArithmeticEvidence(expr) || isCallFormExpression(expr)) {
+    out.operation = 'expression';
+    adoptOutput();
+    if (!out.interpretation_status) out.interpretation_status = 'inferred';
+    return;
+  }
+  const lookup = tryParsePastTenseLookup(expr);
+  if (lookup) {
+    out.operation = 'lookup';
+    out.inputs = lookup.inputs;
+    adoptOutput();
+    if (!out.interpretation_status) out.interpretation_status = 'inferred';
+  }
+}
+
+// Resolve `Step N result`-style back-references in structured step inputs to
+// the referenced step's evidenced output, in both inputs and the derived
+// expression. Dangling references (no step N, or step N states no output)
+// stay verbatim so validation keeps flagging them. The instruction keeps the
+// source wording either way. Generic reference shape, never step contents.
+const STEP_BACKREF = /^(?:the\s+)?step\s+(\d{1,4})\s+(?:result|output|value)s?$/i;
+
+// Step numbers evidencing one detail entry: its explicit sequence plus any
+// number its instruction opens with (`Step 2 — ...`, `2. Label`), so
+// `Step N result` references resolve whether steps were extracted as objects
+// or plain strings. First entry wins per number; unnumbered steps answer to
+// no number rather than guessing by position. Generic numbering shapes,
+// never step contents.
+function stepSequenceKeys(det) {
+  const keys = [];
+  const seq = det?.sequence;
+  if (seq !== undefined && seq !== null && String(seq).trim() !== '') {
+    const n = Number(String(seq).trim());
+    keys.push(Number.isInteger(n) ? String(n) : String(seq).trim());
+  }
+  const text = String(det?.instruction ?? det?.original_text ?? '');
+  const m = /^\s*(?:step\s*(\d{1,4})\b|\(?(\d{1,3})\)?\s*[:.)\]-]\s(?=[A-Za-z]))/i.exec(text);
+  const num = m ? (m[1] ?? m[2]) : null;
+  if (num) {
+    const key = String(Number.parseInt(num, 10));
+    if (!keys.includes(key)) keys.push(key);
+  }
+  return keys;
+}
+
+function resolveStepBackrefs(detailed) {
+  if (!Array.isArray(detailed) || detailed.length === 0) return;
+  const bySeq = new Map();
+  for (const d of detailed) {
+    if (!d || typeof d !== 'object') continue;
+    for (const key of stepSequenceKeys(d)) {
+      if (!bySeq.has(key)) bySeq.set(key, d);
+    }
+
+
+  }
+  for (const d of detailed) {
+    if (!d || !Array.isArray(d.inputs) || d.inputs.length === 0) continue;
+    d.inputs = d.inputs.map((raw) => {
+      const m = STEP_BACKREF.exec(String(raw ?? '').trim());
+      if (!m) return raw;
+      const target = bySeq.get(String(Number.parseInt(m[1], 10)));
+      const output = String(target?.output ?? '').trim();
+      if (!output) return raw;
+      if (String(d.expression ?? '').includes(String(raw ?? '').trim())) {
+        d.expression = String(d.expression ?? '').split(String(raw ?? '').trim()).join(output);
+      }
+      return output;
+    });
+  }
+}
+
 function stripLeadingArticle(text) {
   return String(text ?? '').replace(/^(the|a|an)\s+/, '').trim();
 }
@@ -1861,6 +2127,7 @@ function codeCellTerms(table, out) {
         : [s];
       for (const part of parts) {
         if (CODE_CELL_VALUE.test(part)) out.push(part);
+        else if (/^[A-Z][A-Z0-9]{1,7}$/.test(part)) out.push(part);
       }
     }
   }
@@ -1884,6 +2151,27 @@ function parenthesizedSymbolTerms(table, out) {
 // Lowercased id/name/alias/header/label terms identifying extracted
 // tables, plus code-shaped cell values, for matching references against
 // defined table structure.
+// Whole-cell code values of one table (separator-joined codes plus short
+// uppercase tokens): the identifiers inputs and lookup keys reference.
+// Shared by validation term collection and workbook input resolution.
+export function tableCellCodes(table) {
+  const out = [];
+  codeCellTerms(table, out);
+  return [...new Set(out)];
+}
+
+// Code-shaped tokens inside a free-text reference: separator-joined codes
+// plus short uppercase tokens. Shared shape with tableCellCodes so workbook
+// input resolution matches validator term collection exactly.
+export function extractCellCodeTokens(text) {
+  const out = [];
+  for (const m of String(text ?? '').matchAll(/[A-Za-z0-9]+(?:[-_.][A-Za-z0-9]+)*/g)) {
+    const tok = m[0];
+    if (CODE_CELL_VALUE.test(tok) || /^[A-Z][A-Z0-9]{1,7}$/.test(tok)) out.push(tok);
+  }
+  return [...new Set(out)];
+}
+
 export function tableReferenceTerms(tables) {
   const terms = [];
   for (const t of Array.isArray(tables) ? tables : []) {
@@ -2337,12 +2625,13 @@ export function cleanStepInputValue(raw) {
 
 // Explicit arithmetic evidence: an operator joining two sides (infix `x`
 // counts: `Base x Factor`), or an assignment form ("Basis = 1") with a
-// target and a right-hand side. Descriptive prose without either is not
+// target and a right-hand side. Call-form evaluations also count; otherwise prose is not
 // arithmetic.
 function hasArithmeticEvidence(expr) {
   const s = String(expr ?? '').trim();
   if (!s) return false;
   if (splitArithmeticOperands(normalizeInfixMultiply(s))) return true;
+  if (isCallFormExpression(s)) return true;
   const eq = /^(.*?)\s*=\s*(.+?)\s*$/.exec(s.replace(/\.\s*$/, ''));
   return Boolean(eq && eq[1].trim() && eq[2].trim());
 }
@@ -2662,19 +2951,28 @@ function tryParseBareArithmetic(body) {
 // is captured only in strict shapes ("round <variable> to ...",
 // "keep <variable> at ...") so rounding modes ("Half-Up") never become
 // variables; anything else yields the operation without an invented target.
+// Labels (`Rounding:`), temporal references (`before rounding`), and
+// negations (`do not round`) never count as rounding directives.
 function tryParseRoundingAnywhere(body) {
   const s = String(body ?? '');
   const keep = /\b(?:keep|retain)\s+(?:the\s+)?([A-Za-z_]\w*)\s+at\s+\d+\s+(?:decimal\s+places|decimals|places)\b/i.exec(s);
   if (keep && acceptableCapture(keep[1])) {
     return { operation: 'rounding', operand: keep[1], output: keep[1] };
   }
-  const m = /\bround(?:ed|ing|s)?\b/i.exec(s);
+  const matches = [...s.matchAll(/\bround(?:ed|ing|s)?\b/gi)];
+  const m = matches.find((cand) => {
+    const before = s.slice(0, cand.index ?? 0);
+    const rest = s.slice((cand.index ?? 0) + cand[0].length);
+    if (/^\s*:/.test(rest)) return false;
+    if (/\b(?:before|after)\s+$/i.test(before)) return false;
+    return !/\b(?:do\s+not|don't|never|without|no)\s+$/i.test(before);
+  });
   if (!m) return null;
   const after = s.slice(m.index + m[0].length);
   const out = { operation: 'rounding' };
-  const target = /^\s*(?:the\s+)?([A-Za-z_]\w*)\s+to\b/i.exec(after);
+  const target = /^\s*(?:only\s+|just\s+)?(?:the\s+|a\s+|an\s+)?([A-Za-z_]\w*(?:\s+[A-Za-z_]\w*){0,2})\s+to\b/i.exec(after);
   let operand = '';
-  if (target && acceptableCapture(target[1])) operand = target[1];
+  if (target && isRoundingTargetPhrase(target[1])) operand = target[1].replace(/\s+/g, ' ').trim();
   const stored = /\bstore\b.*?as\s+([A-Za-z_]\w*)/i.exec(s);
   const storedOutput = stored && acceptableCapture(stored[1]) ? stored[1] : '';
   if (operand) out.operand = operand;
@@ -2714,7 +3012,7 @@ function tryParseLeadingCodeAssignment(body) {
   if (remainder.includes('=')) return null;
   if (/^(see|refer|check|consult|cf)\b/i.test(remainder)) return null;
   if (/[;:|?!]/.test(remainder)) return null;
-  if (hasArithmeticEvidence(remainder)) return null;
+  if (hasArithmeticEvidence(remainder) && !isCallFormExpression(remainder)) return null;
   if (remainder.split(/\s+/).filter(Boolean).length > 4) return null;
   return { operation: 'assignment', output, expression: remainder };
 }
@@ -2925,28 +3223,36 @@ function deriveStepDetail(text) {
   const full = String(text ?? '').trim();
   if (!full) return entry;
   const body = stripStepLabel(full);
+  // A `Label: <imperative clause>` step parses its clause for the operation
+  // while the label names the result; anything else parses the whole body.
+  const labeled = splitLabelClause(body);
+  const verbText = labeled ? labeled.clause : body;
+  const labelOutput = labeled && !isStepBackrefLabel(labeled.label) ? labeled.label : '';
   let derived = false;
-  const lookupParsed = isLookupVerbStart(body) ? tryParseLookup(body) : null;
-  if (isClassicLookupStart(body)) {
+  const lookupParsed = isLookupVerbStart(verbText) ? tryParseLookup(verbText) : null;
+  if (isClassicLookupStart(verbText)) {
     entry.operation = 'lookup';
     derived = true;
     if (lookupParsed) {
-      if (lookupParsed.output) entry.output = lookupParsed.output;
+      if (labelOutput || lookupParsed.output) entry.output = labelOutput || lookupParsed.output;
       if (lookupParsed.inputs.length > 0) entry.inputs = lookupParsed.inputs;
       if (lookupParsed.depends_on.length > 0) entry.depends_on = lookupParsed.depends_on;
     }
   } else if (lookupParsed) {
     entry.operation = 'lookup';
     derived = true;
-    if (lookupParsed.output) entry.output = lookupParsed.output;
+    if (labelOutput || lookupParsed.output) entry.output = labelOutput || lookupParsed.output;
     if (lookupParsed.inputs.length > 0) entry.inputs = lookupParsed.inputs;
     if (lookupParsed.depends_on.length > 0) entry.depends_on = lookupParsed.depends_on;
   } else if (/^round\b/i.test(body)) {
     entry.operation = 'rounding';
     derived = true;
-    const target = /^round\s+([A-Za-z_]\w*)/i.exec(body);
+    const anchored = /^round\s+(?:only\s+|just\s+)?(?:the\s+|a\s+|an\s+)?([A-Za-z_]\w*(?:\s+[A-Za-z_]\w*){0,2})\s+to\b/i.exec(body);
+    const single = /^round\s+([A-Za-z_]\w*)/i.exec(body);
+    const target = (anchored && isRoundingTargetPhrase(anchored[1]) ? anchored : single);
     let operand = '';
-    if (target && acceptableCapture(target[1])) operand = target[1];
+    let proseOutput = false;
+    if (target && isRoundingTargetPhrase(target[1])) operand = target[1].replace(/\s+/g, ' ').trim();
     const stored = /\bstore\b.*?as\s+([A-Za-z_]\w*)/i.exec(body);
     const storedOutput = stored && acceptableCapture(stored[1]) ? stored[1] : '';
     if (operand) entry.operand = operand;
@@ -2957,11 +3263,12 @@ function deriveStepDetail(text) {
       }
     } else if (operand) {
       entry.output = operand;
+      proseOutput = true;
     }
     // A rounding directive carrying an explicit assignment (`Round ...:
     // out=round_fn(x;2)`) evidences its target and source through the
     // assignment; prose targets never become variables.
-    if (!entry.output) {
+    if (!entry.output || proseOutput) {
       const trailing = parseTrailingAssignments(body);
       if (trailing) {
         entry.output = trailing.output;
@@ -2978,7 +3285,7 @@ function deriveStepDetail(text) {
         ?? assignmentTargetFromBranch(parsed.false_branch);
       if (output) entry.output = output;
       const branchText = `${parsed.true_branch ?? ''} ${parsed.false_branch ?? ''}`;
-      const condVars = parsed.condition ? conditionInputVars(parsed.condition, branchText, output) : [];
+      const condVars = parsed.condition ? conditionInputVars(parsed.condition, stripNestedConditionClauses(branchText), output) : [];
       const rhsVars = [...rhsVarsFromBranch(parsed.true_branch), ...rhsVarsFromBranch(parsed.false_branch)];
       const combined = [];
       const seen = new Set();
@@ -2992,6 +3299,20 @@ function deriveStepDetail(text) {
       if (combined.length > 0) entry.inputs = combined;
       derived = true;
     } else if (!/^(if|else|when|otherwise)\b/i.test(body)) {
+      // Explicit imperative arithmetic (`Multiply A by B`) before the
+      // symbolic readers: the verb form never collides with them, and the
+      // label names the result when one is evidenced.
+      const imperative = tryParseImperativeArithmetic(verbText);
+      if (imperative) {
+        entry.operation = 'expression';
+        entry.expression = imperative.expression;
+        entry.inputs = imperative.inputs;
+        if (labelOutput) entry.output = labelOutput;
+        if (imperative.depends_on.length > 0) entry.depends_on = imperative.depends_on;
+        derived = true;
+      }
+      if (!derived) {
+      } // imperative results stand as-is; each symbolic reader below guards itself
       // Explicit assignments anywhere in the step: leading (`out = a*b`),
       // trailing after prose (`Compute base: out=a*b`), or several
       // separated by semicolons (`a=x*y; b=a-z`). Comparisons, prose, and

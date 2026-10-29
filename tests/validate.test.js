@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createDocument, createJob, normalizeJob } from '../src/models.js';
-import { classifyFormula, validateJob } from '../src/validate.js';
+import { classifyFormula, evaluateNumericExpression, validateJob } from '../src/validate.js';
 
 function jobWith(overrides) {
   return normalizeJob(
@@ -1698,4 +1698,41 @@ test('validate: explicit worked arithmetic checks silently when matching and war
   assert.ok(!arithmetic.some((i) => /Step 4/.test(i.message)), `symbolic expression must stay silent: ${msgs}`);
   assert.ok(!arithmetic.some((i) => /Step 5/.test(i.message)), `sign-convention magnitude match must stay silent: ${msgs}`);
   assert.equal(JSON.stringify(job.routines[0].steps_detailed), before, 'source values must never be modified');
+});
+
+test('validate: stated results on bare worked expressions verify silently when matching and warn on mismatch', () => {
+  const job = jobWith({
+    routines: [{
+      name: 'W', kind: 'worked_example', sourcePages: [1], evidenceText: 'e',
+      steps: [
+        {
+          sequence: 1, operation: 'expression',
+          instruction: 'Zone scaling', expression: '$1,050.00 × 1.00',
+          output: 'Zone scaling', stated_results: [{ output: 'Zone scaling', value: '$1,050.00' }],
+        },
+        {
+          sequence: 2, operation: 'expression',
+          instruction: 'Tenure scaling', expression: '$1,050.00 × 0.90',
+          output: 'Tenure scaling', stated_results: [{ output: 'Tenure scaling', value: '$999.99' }],
+        },
+      ],
+    }],
+  });
+  const before = JSON.stringify(job.routines[0].steps_detailed);
+  const issues = validateJob(job);
+  const msgs = issues.map((i) => i.message).join(' | ');
+  const arithmetic = issues.filter((i) => /recomputing/.test(i.message));
+  assert.ok(!arithmetic.some((i) => /Step 1/.test(i.message)), `matching stated result must stay silent: ${msgs}`);
+  const step2 = arithmetic.find((i) => /Step 2/.test(i.message));
+  assert.ok(step2, `stated-result mismatch must warn: ${msgs}`);
+  assert.match(step2.message, /\$999\.99/);
+  assert.match(step2.message, /945/);
+  assert.match(step2.message, /preserved, not corrected/);
+  assert.equal(JSON.stringify(job.routines[0].steps_detailed), before, 'source values must never be modified');
+});
+
+test('validate: RoundHalfUp call form evaluates like round_half_up', () => {
+  assert.equal(evaluateNumericExpression('RoundHalfUp($1,066.078125, 2)'), 1066.08);
+  assert.equal(evaluateNumericExpression('round_half_up(1.005, 2)'), 1.01);
+  assert.equal(evaluateNumericExpression('RoundHalfUp(2.5, 0)'), 3);
 });

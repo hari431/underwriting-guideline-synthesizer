@@ -175,8 +175,8 @@ function sheetRowsAsValues(sheetXml, stringsXml) {
   const rows = [];
   for (const m of sheetXml.matchAll(/<row r="(\d+)">(.*?)<\/row>/gs)) {
     rows.push(
-      [...m[2].matchAll(/<c r="[A-Z]+\d+" t="s"(?: s="\d+")?><v>(\d+)<\/v><\/c>/g)]
-        .map((c) => items[Number(c[1])] ?? '')
+      [...m[2].matchAll(/<c r="[A-Z]+\d+"(?: t="s"(?: s="\d+")?><v>(\d+)<\/v><\/c>|\/>)/g)]
+        .map((c) => (c[1] === undefined ? '' : (items[Number(c[1])] ?? '')))
     );
   }
   return rows;
@@ -1468,4 +1468,154 @@ test('steps: worked promotion leaves stepped examples and plain routines alone',
   assert.equal(plain.steps.length, 0);
   const expressed = ledgerRoutine([], { kind: 'worked_example', notes: 'Alpha = 1 + 2 = 3.00', expressionText: 'Alpha = beta + 2' });
   assert.equal(expressed.steps.length, 0);
+});
+
+// ---------- imperative routine-procedure regressions ----------
+// Ordered rating procedures state each operation as an imperative sentence
+// with a result label ("Base tallage: Select ...", "Zone scaling: Multiply
+// ... by ..."). The label names the step result; the clause states the
+// operation, operands, and table source. Synthetic ledger fixtures only.
+
+test('steps: label-prefixed lookup structures with the label as output', () => {
+  const r = ledgerRoutine(['Step 1 — Base tallage: Select the base annual tallage for the ledger class from Table L.']);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, 'lookup');
+  assert.equal(det.output, 'Base tallage');
+  assert.deepEqual(det.inputs, ['ledger class']);
+  assert.deepEqual(det.depends_on, ['Table L']);
+  assert.equal(det.interpretation_status, 'inferred');
+  assert.equal(r.steps[0], 'Step 1 — Base tallage: Select the base annual tallage for the ledger class from Table L.');
+});
+
+test('steps: imperative multiply and subtract structure with verbatim operands', () => {
+  const r = ledgerRoutine([
+    'Step 2 — Zone scaling: Multiply the base tallage by the zone factor from Table Z.',
+    'Step 7 — Net tallage: Subtract the ledger rebate from the pre-rebate tallage.',
+  ]);
+  const [first, second] = r.steps_detailed;
+  assert.equal(first.operation, 'expression');
+  assert.equal(first.expression, 'base tallage * zone factor');
+  assert.deepEqual(first.inputs, ['base tallage', 'zone factor']);
+  assert.equal(first.output, 'Zone scaling');
+  assert.deepEqual(first.depends_on, ['Table Z']);
+  assert.equal(second.operation, 'expression');
+  assert.equal(second.expression, 'pre-rebate tallage - ledger rebate');
+  assert.deepEqual(second.inputs, ['pre-rebate tallage', 'ledger rebate']);
+  assert.equal(second.output, 'Net tallage');
+  assert.equal(second.depends_on, undefined);
+});
+
+test('steps: imperative add and divide forms structure', () => {
+  const r = ledgerRoutine([
+    'Add the ledger fee to the base tallage.',
+    'Divide the gross tallage by the ledger count.',
+  ]);
+  assert.equal(r.steps_detailed[0].operation, 'expression');
+  assert.equal(r.steps_detailed[0].expression, 'ledger fee + base tallage');
+  assert.equal(r.steps_detailed[1].operation, 'expression');
+  assert.equal(r.steps_detailed[1].expression, 'gross tallage / ledger count');
+});
+
+test('steps: step-result backrefs resolve to the referenced step output', () => {
+  const r = ledgerRoutine([
+    'Step 1 — Base tallage: Select the base tallage for the ledger class from Table L.',
+    'Step 2 — Zone scaling: Multiply the base tallage by the zone factor from Table Z.',
+    'Step 3 — Tenure scaling: Multiply the Step 2 result by the tenure factor from Table T.',
+  ]);
+  assert.deepEqual(r.steps_detailed[2].inputs, ['Zone scaling', 'tenure factor']);
+  const dangling = ledgerRoutine(['Multiply the Step 9 result by the zone factor.']);
+  assert.deepEqual(dangling.steps_detailed[0].inputs, ['Step 9 result', 'zone factor']);
+});
+
+test('steps: sequential conditionals do not leak nested variables into inputs', () => {
+  const r = ledgerRoutine([
+    'Step 6 — Ledger rebate: If the policy covers 3 to 10 ledgers, the rebate is 5% of the pre-rebate tallage. If the policy covers 1 or 2 ledgers, the rebate is 0%.',
+  ]);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, 'condition');
+  assert.equal(det.inputs, undefined);
+});
+
+test('steps: rounding captures multi-word targets and skips labels and negations', () => {
+  const r = ledgerRoutine([
+    'Step 8 — Rounding: Round only the final tallage to two decimal places using standard round-half-up rounding. Do not round intermediate tallages.',
+  ]);
+  assert.equal(r.steps_detailed[0].operation, 'rounding');
+  assert.equal(r.steps_detailed[0].operand, 'final tallage');
+  assert.equal(r.steps_detailed[0].output, 'final tallage');
+  const temporal = ledgerRoutine(['Final tallage before rounding']);
+  assert.equal(temporal.steps_detailed[0].operation, undefined);
+  const negated = ledgerRoutine(['Do not round intermediate tallages.']);
+  assert.equal(negated.steps_detailed[0].operation, undefined);
+});
+
+test('steps: imperative prose without both operands stays unparsed', () => {
+  const r = ledgerRoutine(['Multiply the tallage.', 'Note: review tallages annually.']);
+  for (const det of r.steps_detailed) {
+    assert.equal(det.operation, undefined);
+    assert.equal(det.expression, undefined);
+    assert.equal(det.output, undefined);
+    assert.equal(det.interpretation_status, undefined);
+  }
+});
+
+// ---------- explicit worked-calculation promotion regressions ----------
+// Worked illustrations carry per-step calculation expressions with stated
+// results but no operation field. Arithmetic, call-form, and past-tense
+// lookup expressions promote to structured steps with the step label as the
+// output variable and the bare amount kept as a stated result — never
+// dropped, never invented.
+
+test('steps: explicit arithmetic expression promotes with label output and stated result', () => {
+  const r = explicitLedgerRoutine([
+    { sequence: 2, instruction: '2. Zone scaling', expression: '$1,050.00 × 1.00', output: '$1,050.00' },
+  ]);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, 'expression');
+  assert.equal(det.expression, '$1,050.00 × 1.00');
+  assert.equal(det.output, 'Zone scaling');
+  assert.deepEqual(det.stated_results, [{ output: 'Zone scaling', value: '$1,050.00' }]);
+  assert.equal(det.interpretation_status, 'inferred');
+});
+
+test('steps: explicit call-form expression promotes instead of staying unparsed', () => {
+  const r = explicitLedgerRoutine([
+    { sequence: 8, instruction: '8. Final tallage', expression: 'RoundHalfUp($1,066.078125, 2)', output: '$1,066.08' },
+  ]);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, 'expression');
+  assert.equal(det.output, 'Final tallage');
+  assert.deepEqual(det.stated_results, [{ output: 'Final tallage', value: '$1,066.08' }]);
+});
+
+test('steps: explicit arithmetic keeps its expression over a rounding-word label', () => {
+  const r = explicitLedgerRoutine([
+    { sequence: 7, instruction: '7. Net before rounding', expression: '$1,122.1875 - $56.109375', output: '$1,066.078125' },
+  ]);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, 'expression');
+  assert.equal(det.output, 'Net before rounding');
+  assert.deepEqual(det.stated_results, [{ output: 'Net before rounding', value: '$1,066.078125' }]);
+});
+
+test('steps: explicit past-tense lookup promotes with key and stated value', () => {
+  const r = explicitLedgerRoutine([
+    { sequence: 1, instruction: '1. Base tallage', expression: 'Selected tallage for LXV', output: '$1,050.00' },
+  ]);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, 'lookup');
+  assert.equal(det.output, 'Base tallage');
+  assert.deepEqual(det.inputs, ['LXV']);
+  assert.deepEqual(det.stated_results, [{ output: 'Base tallage', value: '$1,050.00' }]);
+});
+
+test('steps: explicit prose expression without evidence stays unparsed with output kept', () => {
+  const r = explicitLedgerRoutine([
+    { sequence: 1, instruction: '1. Base tallage', expression: 'the applicable tallage', output: '$1,050.00' },
+  ]);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, undefined);
+  assert.equal(det.expression, 'the applicable tallage');
+  assert.equal(det.output, '$1,050.00');
+  assert.equal(det.interpretation_status, undefined);
 });

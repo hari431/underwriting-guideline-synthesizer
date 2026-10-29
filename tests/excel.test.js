@@ -71,12 +71,13 @@ function sharedStringItems(stringsXml) {
 }
 
 // Decode a worksheet to rows of cell values via the shared string table.
+// Empty self-closed <c/> cells decode as '' in column order.
 function sheetRowsAsValues(sheetXml, stringsXml) {
   const items = sharedStringItems(stringsXml);
   const rows = [];
   for (const m of sheetXml.matchAll(/<row r="(\d+)">(.*?)<\/row>/gs)) {
-    const cells = [...m[2].matchAll(/<c r="[A-Z]+\d+" t="s"(?: s="\d+")?><v>(\d+)<\/v><\/c>/g)]
-      .map((c) => items[Number(c[1])] ?? '');
+    const cells = [...m[2].matchAll(/<c r="[A-Z]+\d+"(?: t="s"(?: s="\d+")?><v>(\d+)<\/v><\/c>|\/>)/g)]
+      .map((c) => (c[1] === undefined ? '' : (items[Number(c[1])] ?? '')));
     rows.push(cells);
   }
   return rows;
@@ -118,7 +119,7 @@ function expectedLocation(sheetName) {
 function rowCellStyles(sheetXml, rowNum) {
   const m = sheetXml.match(new RegExp(`<row r="${rowNum}">(.*?)</row>`, 's'));
   if (!m) return null;
-  return [...m[1].matchAll(/<c r="[A-Z]+\d+" t="s"(?: s="(\d+)")?><v>\d+<\/v><\/c>/g)]
+  return [...m[1].matchAll(/<c r="[A-Z]+\d+"(?: t="s"(?: s="(\d+)")?><v>\d+<\/v><\/c>|\/>)/g)]
     .map((c) => c[1] ?? null);
 }
 
@@ -2054,4 +2055,157 @@ test('excel: nested conditional falls back to a verbatim row without review', ()
   assert.equal(steps.body.length, 1);
   assert.equal(steps.body[0][1], 'Harbor fee');
   assert.match(steps.body[0][4], /if tide high.*else base amount if tide low/);
+});
+
+test('excel: blank summary metadata writes empty cells, never shared-string numeric lookalikes', () => {
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'synthetic.pdf', pageCount: 1 }),
+      tables: [{
+        name: 'Ledger Tariff', sourcePages: [1], evidenceText: 'ev',
+        headers: ['Ledger Code'], rows: [['LXV'], ['LXW'], ['LXX']],
+      }],
+      routines: [{
+        name: 'Ledger Calc', kind: 'formula', sourcePages: [1],
+        evidenceText: 'ev', expressionText: 'tallage = base * 2',
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const tableXml = sheetXmlByName(zip, workbook, 'Table Summary');
+  // Purpose (D), Applicability (E), Notes (K), Review status (O) are empty:
+  // the XML must carry empty cells, not shared-string references that read
+  // as literal numbers without shared-string resolution.
+  for (const ref of ['D2', 'E2', 'K2', 'O2']) {
+    assert.ok(tableXml.includes(`<c r="${ref}"/>`), `expected empty cell ${ref}`);
+    assert.ok(!tableXml.includes(`<c r="${ref}" t=`), `blank ${ref} must not reference a shared string`);
+  }
+  const values = sheetRowsAsValues(tableXml, strings);
+  assert.equal(values[1][3], '');
+  assert.equal(values[1][14], '');
+  assert.equal(values[1][12], '3');
+  assert.equal(values[1][13], '1');
+  const routineXml = sheetXmlByName(zip, workbook, 'Routine Summary');
+  for (const ref of ['D2', 'E2', 'M2', 'N2']) {
+    assert.ok(routineXml.includes(`<c r="${ref}"/>`), `expected empty cell ${ref}`);
+  }
+  const routineValues = sheetRowsAsValues(routineXml, strings);
+  assert.equal(routineValues[1][12], '');
+});
+
+test('excel: genuine numeric metadata still exports as its own value', () => {
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'synthetic.pdf', pageCount: 1 }),
+      tables: [{
+        name: 'Ledger Tariff', sourcePages: [1], evidenceText: 'ev',
+        headers: ['Ledger Code'], rows: [['LXV']],
+        purpose: '3', notes: '3 ledgers reviewed',
+      }],
+      routines: [],
+    })
+  );
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Table Summary'), strings);
+  assert.equal(values[1][3], '3');
+  assert.equal(values[1][10], '3 ledgers reviewed');
+});
+
+test('excel: worked inputs resolve via header prefixes and cell codes', () => {
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'synthetic.pdf', pageCount: 1 }),
+      tables: [
+        {
+          name: 'Table L. Base Tallage by Ledger Class', sourcePages: [1], evidenceText: 'ev',
+          headers: ['Ledger class code', 'Ledger class', 'Base tallage'],
+          rows: [['LKV', 'Harbor Skiff', '800.00']],
+        },
+        {
+          name: 'Table Z. Zone Factors', sourcePages: [1], evidenceText: 'ev',
+          headers: ['Zone code', 'Zone narrative', 'Factor'],
+          rows: [['ZSH', 'Suburban Harbor', '1.00']],
+        },
+        {
+          name: 'Table T. Tenure Factors', sourcePages: [1], evidenceText: 'ev',
+          headers: ['Tenure band', 'Definition', 'Factor'],
+          rows: [['TNX-3', '4 or more years', '0.90']],
+        },
+        {
+          name: 'Tally rule', sourcePages: [1], evidenceText: 'ev',
+          headers: ['Policy ledger count', 'Tally rate'],
+          rows: [['1 to 2', '0%'], ['3 to 10', '5%']],
+        },
+      ],
+      routines: [{
+        name: 'Ledger Worked Case', kind: 'worked_example', sourcePages: [1],
+        evidenceText: 'synthetic worked illustration with expected values',
+        dependsOn: [
+          'Table L. Base Tallage by Ledger Class', 'Table Z. Zone Factors',
+          'Table T. Tenure Factors', 'Tally rule',
+        ],
+        inputs: [
+          'Ledger class Harbor Skiff LKV',
+          'Zone Suburban Harbor ZSH',
+          'Tenure 4 completed years TNX-3',
+          'Policy ledger count 4 ledgers',
+          'Mystery factor XQZ',
+        ],
+        outputs: ['$1.00 per ledger'],
+        steps: [{ sequence: 1, instruction: '1. Base tallage', expression: 'Selected tallage for LKV', output: '$800.00' }],
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Ledger Worked Case'), strings);
+  const inputs = sectionRows(values, 'Inputs');
+  assert.deepEqual(inputs.header, ['Input', 'Source', 'Lookup keys']);
+  const byInput = new Map(inputs.body.map((row) => [row[0], row[1]]));
+  assert.equal(byInput.get('Ledger class Harbor Skiff LKV'), 'Table L. Base Tallage by Ledger Class');
+  assert.equal(byInput.get('Zone Suburban Harbor ZSH'), 'Table Z. Zone Factors');
+  assert.equal(byInput.get('Tenure 4 completed years TNX-3'), 'Table T. Tenure Factors');
+  assert.equal(byInput.get('Policy ledger count 4 ledgers'), 'Tally rule');
+  assert.equal(byInput.get('Mystery factor XQZ'), 'unresolved — verify');
+});
+
+test('excel: input codes shared by two tables stay unresolved', () => {
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'synthetic.pdf', pageCount: 1 }),
+      tables: [
+        {
+          name: 'Table A. Harbor Tallage', sourcePages: [1], evidenceText: 'ev',
+          headers: ['Harbor code', 'Tallage'], rows: [['QZX', '10.00']],
+        },
+        {
+          name: 'Table B. Inland Tallage', sourcePages: [1], evidenceText: 'ev',
+          headers: ['Inland code', 'Tallage'], rows: [['QZX', '12.00']],
+        },
+      ],
+      routines: [{
+        name: 'Ledger Worked Case', kind: 'worked_example', sourcePages: [1],
+        evidenceText: 'synthetic worked illustration with expected values',
+        dependsOn: ['Table A. Harbor Tallage', 'Table B. Inland Tallage'],
+        inputs: ['Harbor note QZX'],
+        outputs: ['$1.00 per ledger'],
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Ledger Worked Case'), strings);
+  const inputs = sectionRows(values, 'Inputs');
+  assert.equal(inputs.body[0][0], 'Harbor note QZX');
+  assert.equal(inputs.body[0][1], 'unresolved — verify');
 });
