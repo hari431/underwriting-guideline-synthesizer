@@ -436,3 +436,325 @@ test('validate: declared inputs used nowhere warn as possible drift', () => {
   assert.ok(!issues.some((i) => i.target_id === 'R1' && /"used_var"/.test(i.message) && /used nowhere/.test(i.message)));
   assert.ok(!issues.some((i) => i.target_id === 'R2' && /used nowhere/.test(i.message)));
 });
+
+test('validate: currency amounts and multi-statement formulas are interpretable; colons stay review', () => {
+  assert.equal(classifyFormula('total = max($750.00, round_half_up(subtotal, 2))'), 'ok');
+  assert.equal(classifyFormula('a = x * y; b = a - z'), 'ok');
+  assert.equal(classifyFormula('gross = subtotal + levy; final = max($750.00, gross)'), 'ok');
+  assert.equal(classifyFormula('rate = base * (1:0 - credit)'), 'review');
+  assert.equal(classifyFormula('a = x * y; APPLY legacy curve'), 'review');
+});
+
+test('validate: ambiguous table references name candidates instead of claiming no match', () => {
+  const job = jobWith({
+    tables: [
+      { name: 'Harbor Dues Tariff HB-DUES Part A', sourcePages: [1], evidenceText: 'e', headers: ['K'], rows: [['a']] },
+      { name: 'Harbor Dues Tariff HB-DUES Part B', sourcePages: [1], evidenceText: 'e', headers: ['K'], rows: [['b']] },
+    ],
+    routines: [{ name: 'R', kind: 'formula', sourcePages: [1], evidenceText: 'e', expressionText: 'a = 1', dependsOn: ['HB-DUES'] }],
+  });
+  const issues = validateJob(job);
+  const dep = issues.find((i) => /depends on "HB-DUES"/.test(i.message));
+  assert.ok(dep, `expected ambiguity warning, got: ${issues.map((i) => i.message).join(' | ')}`);
+  assert.match(dep.message, /matches multiple tables/);
+  assert.match(dep.message, /Part A/);
+  assert.match(dep.message, /Part B/);
+});
+
+test('validate: same-step assignments and retrievals resolve; keys stay unresolved', () => {
+  const job = jobWith({
+    tables: [{ name: 'Fee Schedule', sourcePages: [1], evidenceText: 'Fee Schedule with fees in dollars', headers: ['Code', 'Fee'], rows: [['F1', '10']] }],
+    routines: [{
+      name: 'R', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'e',
+      steps: [
+        {
+          sequence: 1, operation: 'expression',
+          instruction: 'Retrieve harbor rate HarborRate from Fee Schedule matching PORT-01. Gross total = HarborRate * units',
+          expression: 'Gross total = HarborRate * units', inputs: ['HarborRate', 'PORT-01', 'units'], output: 'Gross total',
+        },
+        {
+          sequence: 2, operation: 'expression',
+          instruction: 'Add the surcharge: Net total = Gross total + SurchargeAmt',
+          expression: 'Net total = Gross total + SurchargeAmt', inputs: ['Gross total', 'SurchargeAmt'], output: 'Net total',
+        },
+      ],
+    }],
+  });
+  const issues = validateJob(job);
+  const msgs = issues.map((i) => i.message).join(' | ');
+  assert.ok(!/HarborRate/.test(msgs), `retrieved value must resolve: ${msgs}`);
+  assert.ok(!/Gross total/.test(msgs), `prior step output must resolve: ${msgs}`);
+  assert.ok(issues.some((i) => /"PORT-01"/.test(i.message) && /flagged as unresolved/.test(i.message)), `lookup key must stay unresolved: ${msgs}`);
+  assert.ok(issues.some((i) => /"units"/.test(i.message) && /flagged as unresolved/.test(i.message)), `undefined symbol must stay unresolved: ${msgs}`);
+  assert.ok(issues.some((i) => /"SurchargeAmt"/.test(i.message) && /flagged as unresolved/.test(i.message)), `undefined symbol must stay unresolved: ${msgs}`);
+});
+
+test('validate: hyphen-subtraction operands count as used; codes stay whole', () => {
+  const job = jobWith({
+    routines: [{
+      name: 'R', kind: 'formula', sourcePages: [1], evidenceText: 'e',
+      expressionText: 'net = base x (1.0 + (load-1.0)-credit)',
+      inputs: ['base', 'load', 'credit'], outputs: ['net'],
+    }],
+  });
+  const issues = validateJob(job);
+  assert.ok(!issues.some((i) => /used nowhere/.test(i.message)), `subtraction operands are used: ${issues.map((i) => i.message).join(' | ')}`);
+});
+
+test('validate: code-shaped cell values resolve references; plain words do not', () => {
+  const job = jobWith({
+    tables: [{
+      name: 'Rider Matrix', sourcePages: [1], evidenceText: 'e', headers: ['Rider ID', 'Fee'],
+      rows: [['RID-001', '10'], ['RID-002', '20'], ['None', '0']],
+    }],
+    routines: [{
+      name: 'R', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'e',
+      steps: [{ sequence: 1, instruction: 'rider_total = RID-001 + RID-002', operation: 'expression', expression: 'rider_total = RID-001 + RID-002', inputs: ['RID-001', 'RID-002', 'RID-999'], output: 'rider_total' }],
+    }],
+  });
+  const issues = validateJob(job);
+  const msgs = issues.map((i) => i.message).join(' | ');
+  assert.ok(!/"RID-001"/.test(msgs), `defined code must resolve: ${msgs}`);
+  assert.ok(!/"RID-002"/.test(msgs), `defined code must resolve: ${msgs}`);
+  assert.ok(issues.some((i) => /"RID-999"/.test(i.message) && /flagged as unresolved/.test(i.message)), `undefined code must warn: ${msgs}`);
+});
+
+test('validate: overlapping range bands warn; disjoint and mixed columns stay silent', () => {
+  const overlap = jobWith({
+    tables: [{
+      name: 'Bands', sourcePages: [1], evidenceText: 'e', headers: ['Band', 'Factor'],
+      rows: [['$1,000 to $2,500', '1.05'], ['$2,501 to $5,000', '1.00'], ['$5,000 to $9,999', '0.96']],
+    }],
+  });
+  const overlapIssues = validateJob(overlap).filter((i) => /overlapping range bands/.test(i.message));
+  assert.equal(overlapIssues.length, 1);
+  assert.match(overlapIssues[0].message, /\$2,501 to \$5,000/);
+  assert.match(overlapIssues[0].message, /\$5,000 to \$9,999/);
+
+  const disjoint = jobWith({
+    tables: [{
+      name: 'Bands', sourcePages: [1], evidenceText: 'e', headers: ['Band', 'Factor'],
+      rows: [['$1,000 to $2,500', '1.05'], ['$2,501 to $5,000', '1.00']],
+    }],
+  });
+  assert.ok(!validateJob(disjoint).some((i) => /overlapping range bands/.test(i.message)));
+
+  const mixed = jobWith({
+    tables: [{
+      name: 'Bands', sourcePages: [1], evidenceText: 'e', headers: ['Band', 'Factor'],
+      rows: [['1 to 3 Units', '1.05'], ['Any', '1.00'], ['1 to 3 Units', '0.96']],
+    }],
+  });
+  assert.ok(!validateJob(mixed).some((i) => /overlapping range bands/.test(i.message)));
+});
+
+test('validate: non-numeric values in otherwise-numeric columns warn', () => {
+  const job = jobWith({
+    tables: [{
+      name: 'Factors', sourcePages: [1], evidenceText: 'e', headers: ['Tier', 'Factor'],
+      rows: [['T1', '0.85'], ['T2', '0.92'], ['T3', '1.00'], ['T4', 'Hold for review']],
+    }],
+  });
+  const issues = validateJob(job).filter((i) => /non-numeric value/.test(i.message));
+  assert.equal(issues.length, 1);
+  assert.match(issues[0].message, /"Hold for review"/);
+  assert.match(issues[0].message, /"Factor"/);
+
+  const texty = jobWith({
+    tables: [{
+      name: 'Factors', sourcePages: [1], evidenceText: 'e', headers: ['Tier', 'Note'],
+      rows: [['T1', 'low'], ['T2', 'high'], ['T3', 'mid'], ['T4', 'hold']],
+    }],
+  });
+  assert.ok(!validateJob(texty).some((i) => /non-numeric value/.test(i.message)));
+});
+
+test('validate: uncertain decoding is flagged; clock times stay silent', () => {
+  const fffd = String.fromCharCode(0xfffd);
+  const job = jobWith({
+    tables: [{
+      name: `Rates${fffd}`, sourcePages: [1], evidenceText: 'e', headers: ['A'], rows: [['1']],
+    }],
+    routines: [
+      { name: 'R1', kind: 'formula', sourcePages: [1], evidenceText: 'e', expressionText: 'a = b * (1:0 - c)' },
+      { name: 'R2', kind: 'formula', sourcePages: [1], evidenceText: 'e', expressionText: 'a = b * 2', notes: 'Reviewed at 10:30 daily.' },
+    ],
+  });
+  const issues = validateJob(job);
+  assert.ok(issues.some((i) => i.target_type === 'table' && /uncertain decoding/.test(i.message)), 'replacement char must flag');
+  assert.ok(issues.some((i) => i.target_id === 'R1' && /uncertain decoding/.test(i.message) && /1:0/.test(i.message)), 'colon decimal must flag');
+  assert.ok(!issues.some((i) => i.target_id === 'R2' && /uncertain decoding/.test(i.message)), 'clock time must stay silent');
+});
+
+test('validate: reported contradictions surface without choosing a winner', () => {
+  const job = jobWith({
+    routines: [
+      { name: 'R1', kind: 'formula', sourcePages: [1], evidenceText: 'e', expressionText: 'a = b * 2', notes: 'Alternative formula c = b + 2 preserved as conflicting; verify which applies.' },
+      { name: 'R2', kind: 'formula', sourcePages: [1], evidenceText: 'e', expressionText: 'a = b * 2', notes: 'Source value preserved verbatim for analyst review.' },
+    ],
+  });
+  const issues = validateJob(job);
+  const hit = issues.find((i) => i.target_id === 'R1' && /possible contradiction/.test(i.message));
+  assert.ok(hit, `conflict note must surface: ${issues.map((i) => i.message).join(' | ')}`);
+  assert.match(hit.message, /without choosing one/);
+  assert.ok(!issues.some((i) => i.target_id === 'R2' && /possible contradiction/.test(i.message)));
+});
+
+test('validate: same condition with different branches warns; identical branches stay silent', () => {
+  const job = jobWith({
+    routines: [
+      {
+        name: 'R1', kind: 'condition', sourcePages: [1], evidenceText: 'e',
+        conditions: [
+          { condition: 'Harbor draft exceeds 30 feet', true_branch: 'Apply deep-draft fee' },
+          { condition: 'Harbor draft exceeds 30 feet', true_branch: 'Waive the fee' },
+        ],
+      },
+      {
+        name: 'R2', kind: 'condition', sourcePages: [1], evidenceText: 'e',
+        conditions: [
+          { condition: 'Harbor draft exceeds 30 feet', true_branch: 'Apply deep-draft fee' },
+          { condition: 'Harbor draft exceeds 30 feet', true_branch: 'Apply deep-draft fee' },
+        ],
+      },
+    ],
+  });
+  const issues = validateJob(job);
+  assert.ok(issues.some((i) => i.target_id === 'R1' && /different branches/.test(i.message) && /possible contradiction/.test(i.message)));
+  assert.ok(!issues.some((i) => i.target_id === 'R2' && /different branches/.test(i.message)));
+});
+
+test('validate: cross-routine step definitions of one output warn', () => {
+  const job = jobWith({
+    routines: [
+      {
+        name: 'R1', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'e',
+        steps: [{ sequence: 1, instruction: 'shared_total = a + b', operation: 'assignment', expression: 'shared_total = a + b', output: 'shared_total' }],
+      },
+      {
+        name: 'R2', kind: 'calculation_steps', sourcePages: [2], evidenceText: 'e',
+        steps: [{ sequence: 1, instruction: 'shared_total = a * b', operation: 'assignment', expression: 'shared_total = a * b', output: 'shared_total' }],
+      },
+    ],
+  });
+  const issues = validateJob(job);
+  const hit = issues.find((i) => i.target_id === 'R2' && /both assign "shared_total" with different formulas/.test(i.message));
+  assert.ok(hit, `expected cross-routine conflict, got: ${issues.map((i) => i.message).join(' | ')}`);
+  assert.match(hit.message, /possible contradiction/);
+});
+
+test('validate: series member skipped by an enumerating step warns; scattered uses stay silent', () => {
+  const job = jobWith({
+    tables: [{
+      name: 'Rider Matrix', sourcePages: [1], evidenceText: 'Rider matrix in dollars', headers: ['Rider ID', 'Fee'],
+      rows: [['RID-001', '10'], ['RID-002', '20'], ['RID-003', '30'], ['RID-004', '40']],
+    }],
+    routines: [{
+      name: 'R', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'e',
+      steps: [{ sequence: 1, instruction: 'rider_total = RID-001 + RID-002 + RID-003', operation: 'expression', expression: 'rider_total = RID-001 + RID-002 + RID-003', inputs: ['RID-001', 'RID-002', 'RID-003'], output: 'rider_total' }],
+    }],
+  });
+  const issues = validateJob(job);
+  const hit = issues.find((i) => i.target_type === 'table' && /"RID-004"/.test(i.message));
+  assert.ok(hit, `expected series omission warning, got: ${issues.map((i) => i.message).join(' | ')}`);
+  assert.match(hit.message, /3 of 4 "RID-" codes are used/);
+  assert.match(hit.message, /verify whether the omission is intended/);
+
+  const scattered = jobWith({
+    tables: [{
+      name: 'Zone Table', sourcePages: [1], evidenceText: 'Zone table in dollars', headers: ['Zone', 'Factor'],
+      rows: [['ZONE_1', '1.0'], ['ZONE_2', '1.1'], ['ZONE_3', '1.2'], ['ZONE_4', '1.3'], ['ZONE_5', '1.4']],
+    }],
+    routines: [{
+      name: 'R', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'e',
+      steps: [
+        { sequence: 1, instruction: 'a = ZONE_1 + ZONE_2', operation: 'expression', expression: 'a = ZONE_1 + ZONE_2', inputs: ['ZONE_1', 'ZONE_2'], output: 'a' },
+        { sequence: 2, instruction: 'b = ZONE_4 + ZONE_5', operation: 'expression', expression: 'b = ZONE_4 + ZONE_5', inputs: ['ZONE_4', 'ZONE_5'], output: 'b' },
+      ],
+    }],
+  });
+  assert.ok(!validateJob(scattered).some((i) => /"ZONE_3"/.test(i.message) && /omission is intended/.test(i.message)));
+});
+
+test('validate: series coverage ignores notes and self-matches; full use stays silent', () => {
+  const job = jobWith({
+    tables: [{
+      name: 'Rider Matrix', sourcePages: [1], evidenceText: 'Rider matrix in dollars', headers: ['Rider ID', 'Fee'],
+      rows: [['RID-001', '10'], ['RID-002', '20'], ['RID-003', '30']],
+    }],
+    routines: [{
+      name: 'R', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'e',
+      notes: 'RID-003 is intentionally excluded from the aggregation.',
+      steps: [{ sequence: 1, instruction: 'rider_total = RID-001 + RID-002', operation: 'expression', expression: 'rider_total = RID-001 + RID-002', inputs: ['RID-001', 'RID-002'], output: 'rider_total' }],
+    }],
+  });
+  // Only two siblings co-occur, below the enumeration gate: silent either way.
+  assert.ok(!validateJob(job).some((i) => /"RID-003"/.test(i.message) && /omission is intended/.test(i.message)));
+
+  const full = jobWith({
+    tables: [{
+      name: 'Rider Matrix', sourcePages: [1], evidenceText: 'Rider matrix in dollars', headers: ['Rider ID', 'Fee'],
+      rows: [['RID-001', '10'], ['RID-002', '20'], ['RID-003', '30']],
+    }],
+    routines: [{
+      name: 'R', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'e',
+      steps: [{ sequence: 1, instruction: 'rider_total = RID-001 + RID-002 + RID-003', operation: 'expression', expression: 'rider_total = RID-001 + RID-002 + RID-003', inputs: ['RID-001', 'RID-002', 'RID-003'], output: 'rider_total' }],
+    }],
+  });
+  assert.ok(!validateJob(full).some((i) => /omission is intended/.test(i.message)));
+});
+
+test('validate: conditional language in unstructured steps warns without guessing the fallback', () => {
+  const job = jobWith({
+    routines: [{
+      name: 'R', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'e',
+      steps: [
+        { sequence: 1, instruction: 'Levy = round(subtotal x 0.025). This levy applies strictly to ZONE_A properties.', operation: 'expression', expression: 'Levy = round(subtotal x 0.025)', inputs: ['subtotal'], output: 'Levy' },
+        { sequence: 2, instruction: 'total = base + fee; 0 otherwise', operation: 'expression', expression: 'total = base + fee', inputs: ['base', 'fee'], output: 'total' },
+        { sequence: 3, instruction: 'net = gross - discount where discount = 5', operation: 'expression', expression: 'net = gross - discount', inputs: ['gross', 'discount'], output: 'net' },
+      ],
+    }],
+  });
+  const issues = validateJob(job);
+  assert.ok(issues.some((i) => /Step 1 states an applicability condition/.test(i.message) && /no structured branch/.test(i.message)), `step 1 must warn: ${issues.map((i) => i.message).join(' | ')}`);
+  assert.ok(issues.some((i) => /Step 2 states an applicability condition/.test(i.message)), 'step 2 must warn');
+  assert.ok(!issues.some((i) => /Step 3 states an applicability condition/.test(i.message)), 'definitional where-clause must stay silent');
+});
+
+test('validate: structured conditions shield steps from the unstructured-condition warning', () => {
+  const job = jobWith({
+    routines: [{
+      name: 'R', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'e',
+      conditions: ['If total is below 100, set total to 100; otherwise total stands.'],
+      steps: [
+        { sequence: 1, instruction: 'If total is below 100, set total to 100; otherwise total stands.', operation: 'condition', expression: '', inputs: ['total'], output: 'total' },
+        { sequence: 2, instruction: 'Levy = round(subtotal x 0.025). This levy applies strictly to ZONE_A properties.', operation: 'expression', expression: 'Levy = round(subtotal x 0.025)', inputs: ['subtotal'], output: 'Levy' },
+        'Ask someone else to review the schedule.',
+      ],
+    }],
+  });
+  const issues = validateJob(job);
+  assert.ok(!issues.some((i) => /applicability condition/.test(i.message)), `structured and prose-only steps must stay silent: ${issues.map((i) => i.message).join(' | ')}`);
+});
+
+test('validate: short rows warn misalignment; explicit blanks keep column attribution', () => {
+  const job = jobWith({
+    tables: [{
+      name: 'Factors', sourcePages: [1], evidenceText: 'Factor table in dollars', headers: ['Tier', 'Low', 'High'],
+      rows: [['T1', '0.85', '0.90'], ['T2', '0.92']],
+    }],
+  });
+  const issues = validateJob(job);
+  const hit = issues.find((i) => /row 2 has 2 value\(s\) for 3 columns/.test(i.message));
+  assert.ok(hit, `expected misalignment warning, got: ${issues.map((i) => i.message).join(' | ')}`);
+  assert.match(hit.message, /may sit under the wrong header/);
+  assert.ok(!issues.some((i) => /blank cell\(s\) in column/.test(i.message)), 'short rows must not blame a trailing column');
+
+  const explicit = jobWith({
+    tables: [{
+      name: 'Factors', sourcePages: [1], evidenceText: 'Factor table in dollars', headers: ['Tier', 'Low', 'High'],
+      rows: [['T1', '0.85', '0.90'], ['T2', '', '0.95'], ['T3', '0.80', '0.88'], ['T4', '0.81', '0.89']],
+    }],
+  });
+  assert.ok(validateJob(explicit).some((i) => /blank cell\(s\) in column "Low"/.test(i.message)), 'explicit blanks keep column attribution');
+});

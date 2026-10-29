@@ -1679,3 +1679,69 @@ test('excel: Table Summary shows table aliases for traceability', () => {
   assert.equal(values[1][1], 'Synthetic Widget Multipliers');
   assert.equal(values[1][2], 'SYN-CODE Part A');
 });
+
+test('excel: multi-word outputs and x multiply expand with chained tracing', () => {
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'synthetic.pdf', pageCount: 2 }),
+      routines: [{
+        name: 'Harbor Fee Pipeline', kind: 'calculation_steps', sourcePages: [1, 2], evidenceText: 'synthetic pipeline',
+        steps: [
+          { sequence: 1, instruction: 'Base harbor fee', operation: 'expression', expression: 'Harbor base = units * unit_fee', inputs: ['units', 'unit_fee'], output: 'Harbor base' },
+          { sequence: 2, instruction: 'Loaded fee', operation: 'expression', expression: 'Harbor loaded = Harbor base x load_factor', inputs: ['Harbor base', 'load_factor'], output: 'Harbor loaded' },
+        ],
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Harbor Fee Pipeline'), strings);
+  const steps = sectionRows(values, 'Steps');
+  assert.deepEqual(steps.header, ['Step #', 'Instruction', 'Op', '(', 'Operand', ')', 'Line Comment']);
+  assert.deepEqual(steps.body, [
+    ['1.1', 'Harbor base', '<--', '', 'units', '', 'Start Harbor base from units (source step 1)'],
+    ['1.2', '', '*', '', 'unit_fee', '', 'Apply * unit_fee to continue Harbor base from prior step (source step 1)'],
+    ['2.1', 'Harbor loaded', '<--', '', 'Harbor base', '', 'uses Harbor base from step 1.1'],
+    ['2.2', '', 'x', '', 'load_factor', '', 'Apply x load_factor to continue Harbor loaded from prior step (source step 2)'],
+  ]);
+});
+
+test('excel: multi-assignment steps render ordered groups; spaced calls stay whole', () => {
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'synthetic.pdf', pageCount: 1 }),
+      routines: [{
+        name: 'Harbor Totals', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'synthetic totals',
+        steps: [
+          {
+            sequence: 1, operation: 'expression',
+            instruction: 'Sum the riders: Harbor riders = HD-R1+HD-R2 Harbor subtotal = Harbor core + Harbor riders',
+            expression: 'Harbor subtotal = Harbor core + Harbor riders',
+            inputs: ['Harbor core', 'HD-R1', 'HD-R2'], output: 'Harbor subtotal',
+          },
+          {
+            sequence: 2, operation: 'expression',
+            instruction: 'Round the average',
+            expression: 'Harbor mean = round_half_up ( Harbor subtotal / 2 , 0 )',
+            inputs: ['Harbor subtotal'], output: 'Harbor mean',
+          },
+        ],
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Harbor Totals'), strings);
+  const steps = sectionRows(values, 'Steps');
+  assert.deepEqual(steps.body, [
+    ['1.1', 'Harbor riders', '<--', '', 'HD-R1', '', 'Start Harbor riders from HD-R1 (source step 1)'],
+    ['1.2', '', '+', '', 'HD-R2', '', 'Apply + HD-R2 to continue Harbor riders from prior step (source step 1)'],
+    ['1.3', 'Harbor subtotal', '<--', '', 'Harbor core', '', 'Start Harbor subtotal from Harbor core (source step 1)'],
+    ['1.4', '', '+', '', 'Harbor riders', '', 'uses Harbor riders from step 1.1'],
+    ['2', 'Harbor mean', '<--', '', 'round_half_up ( Harbor subtotal / 2 , 0 )', '', 'Assign round_half_up ( Harbor subtotal / 2 , 0 ) to Harbor mean (source step 2)'],
+  ]);
+});

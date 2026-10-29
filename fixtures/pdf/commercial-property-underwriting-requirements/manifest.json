@@ -1,0 +1,21 @@
+{
+  "fixture_format": 1,
+  "name": "commercial-property-underwriting-requirements",
+  "source_filename": "Commercial Property Underwriting and Rquirements.pdf",
+  "source_bytes": 159740,
+  "source_sha256": "190dd123f87970db6f2f4004428dc634e811b5db7ebf5b2a264b6d23339435e0",
+  "page_count": 31,
+  "text_chars": 47523,
+  "extraction_source": {
+    "job_id": "8c321adc-6190-4e17-8cbb-08e3803f1709",
+    "document_filename": "Commercial Property Underwriting and Rquirements.pdf"
+  },
+  "artifacts": [
+    "manifest.json",
+    "pages.json",
+    "extraction.json",
+    "job.json"
+  ],
+  "notes": "Offline fixture: pages.json is local PDF text (no model); extraction.json is the raw extractor output; job.json is the normalized+validated job snapshot used to regenerate the workbook without PDF reprocessing or model/API calls.",
+  "created_at": "2026-10-29T04:44:09.206Z"
+}

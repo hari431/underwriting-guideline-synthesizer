@@ -63,6 +63,13 @@ export function createRatingTable({
     seenLabels.add(label.toLowerCase());
     normAliases.push(label);
   }
+  // Asset codes embedded in the display name answer as aliases too, so
+  // references to the code resolve without inventing labels.
+  for (const label of embeddedNameAliases(displayName)) {
+    if (seenLabels.has(label.toLowerCase())) continue;
+    seenLabels.add(label.toLowerCase());
+    normAliases.push(label);
+  }
   return {
     id: id ?? table_id ?? null,
     name: displayName,
@@ -414,9 +421,40 @@ function normalizeOneStep(entry, index) {
     }
     if (Object.keys(cells).length > 0) out.cells = cells;
   }
+  promoteInstructionAssignments(out);
   enrichSparseStep(out);
   sanitizeExplicitStep(out);
   return out;
+}
+
+// When a step's instruction states several assignments in source order but
+// its structured expression carries only the last one, promote the full
+// ordered sequence into the expression so every assignment keeps its row
+// group and order downstream. Evidence-gated: the instruction must parse
+// cleanly to at least two assignments and its last segment must equal the
+// structured expression (or the expression must be empty on an
+// assignment-like step); anything else keeps the model's structure with
+// the instruction retained verbatim. Generic syntax, never step contents.
+function promoteInstructionAssignments(out) {
+  if (!out || !String(out.instruction ?? '').trim()) return;
+  const expr = String(out.expression ?? '').trim();
+  if (expr && splitTopLevel(expr, ';').filter((s) => String(s ?? '').trim()).length > 1) return;
+  const scanned = parseTrailingAssignments(out.instruction);
+  if (!scanned || scanned.segments.length < 2) return;
+  const norm = (s) => String(s ?? '').replace(/\s+/g, ' ').trim().replace(/\.\s*$/, '').toLowerCase();
+  const last = scanned.segments[scanned.segments.length - 1];
+  if (!expr) {
+    const op = String(out.operation ?? '').toLowerCase();
+    if (op && op !== 'expression' && op !== 'assignment') return;
+    out.expression = scanned.expression;
+    if (!String(out.output ?? '').trim()) out.output = scanned.output;
+    if (!out.operation) out.operation = 'expression';
+    return;
+  }
+  const existing = splitAssignmentSegment(expr);
+  if (!existing) return;
+  if (norm(existing.output) !== norm(last.output) || norm(existing.rhs) !== norm(last.rhs)) return;
+  out.expression = scanned.expression;
 }
 
 // Fill a sparse explicit step object from its own instruction text: when the
@@ -668,6 +706,19 @@ function identifiersOf(text) {
   return out;
 }
 
+// A standalone `x`/`X` between two operand-like neighbors reads as
+// multiplication (`Base x Factor`), while a variable named x (`y = x * 2`)
+// is untouched: both neighbors must be operand characters, so an `x` after
+// `=`, an operator, or at the edge stays a variable. Generic operator
+// position, never variable names. Applied only to assignment right-hand
+// sides and arithmetic evidence — never to bare prose, where dimensions
+// (`2 x 4`) and plain words must stay literal.
+const INFIX_X_MULTIPLY = /(?<=[A-Za-z0-9_)\]%])\s+[xX]\s+(?=[A-Za-z0-9_($])/g;
+
+export function normalizeInfixMultiply(text) {
+  return String(text ?? '').replace(INFIX_X_MULTIPLY, ' * ');
+}
+
 function splitMainClause(text) {
   const t = String(text ?? '');
   const idx = t.search(/,\s*(where|with)\b/i);
@@ -709,6 +760,169 @@ function isStandaloneEquals(s, i) {
     && next !== '=' && next !== '>';
 }
 
+// Directive verbs opening an assignment statement (`Calculate out = ...`):
+// stripped before output extraction so the verb never joins the output
+// name, while genuine multi-word variables (`Ledger total`) keep their full
+// name. Generic wording, never variable names.
+const OUTPUT_LEAD_VERBS = /^(?:calculate[sd]?|calculating|compute[sd]?|computing|determine[sd]?|determining|derive[sd]?|deriving|evaluate[sd]?|evaluating|set|let)\s+/i;
+
+// Trailing plain-word run before `=` (one to three words): `out`,
+// `Ledger total`. Runs of four or more words are truncated phrases, not
+// evidenced outputs, and runs containing articles, prepositions, or
+// connectives (`where y`, `the base`) are prose — both yield null so the
+// text stays unparsed instead of mis-splitting.
+function trailingOutputRun(left) {
+  const orig = String(left ?? '');
+  const s = orig.replace(/\s+$/, '').replace(OUTPUT_LEAD_VERBS, '');
+  const m = /(?:^|[:;,()\s])([A-Za-z_]\w*(?:[ \t]+[A-Za-z_]\w*)*)$/.exec(s);
+  if (!m) return null;
+  const output = m[1].replace(/[ \t]+/g, ' ').trim();
+  if (!output) return null;
+  const words = output.split(' ');
+  if (words.length > 3) return null;
+  // Multi-word runs containing articles, prepositions, or connectives are
+  // prose (`the base`); single tokens only refuse true connectives, so
+  // one-letter variables (`a`, `x`) stay valid outputs.
+  const stopWords = words.length > 1 ? NON_CAPTURE_WORDS : NON_IDENTIFIER_WORDS;
+  if (words.some((w) => stopWords.has(w.toLowerCase()))) return null;
+  // Locate the run in the original (pre-strip) text so segment slicing and
+  // the arithmetic-operand check use true positions.
+  const locator = new RegExp(`${words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+')}\\s*$`);
+  const at = locator.exec(orig);
+  return { output, start: at ? at.index : 0 };
+}
+
+// Split one `output = rhs` assignment segment. The output is the trailing
+// plain-word run before a standalone `=` (single or multi-word source
+// variables alike); hyphenated or dotted codes (`LX-NET = ...`) and
+// operator-bearing left sides (`a + b = ...`) stay unparsed instead of
+// partially matching. Returns { output, rhs } or null for comparisons,
+// prose, and incomplete fragments. Generic syntax, never variable names.
+export function splitAssignmentSegment(segment) {
+  const seg = String(segment ?? '').trim().replace(/\.\s*$/, '').trim();
+  if (!seg || !seg.includes('=')) return null;
+  const equals = [];
+  for (let i = 0; i < seg.length; i += 1) {
+    if (isStandaloneEquals(seg, i)) equals.push(i);
+  }
+  if (equals.length !== 1) return null;
+  const left = seg.slice(0, equals[0]);
+  const rhs = seg.slice(equals[0] + 1).trim().replace(/[.,]\s*$/, '').trim();
+  if (!rhs || !/[A-Za-z0-9_₹$€£¥]/.test(rhs)) return null;
+  if (/^[=<>!]/.test(rhs) || /[+*/×÷%-]\s*$/.test(rhs)) return null;
+  const run = trailingOutputRun(left);
+  if (!run) return null;
+  // The output must not be the trailing operand of arithmetic left of `=`
+  // (`a + b = ...` is a result form, not an assignment to `b`); prose
+  // punctuation before the run (`... rounding: out = ...`) is fine.
+  if (/[+*/×÷%-]\s*$/.test(left.slice(0, run.start))) return null;
+  return { output: run.output, rhs };
+}
+
+// Split an instruction stating several assignments without `;` separators
+// (`Alpha = a+b Beta final = Alpha+c`): every standalone `=` evidences an
+// output (the trailing plain-word run before it) and each segment spans
+// from one output start to the next, in source order. Returns the segment
+// list or null when any boundary is uncertain — prose between assignments,
+// an operator-tailed right-hand side, or an output-looking fragment that
+// reaches into the previous right-hand side all fail safe to null.
+function scanInstructionAssignments(main) {
+  const s = String(main ?? '');
+  if (s.includes(';')) return null;
+  const equals = [];
+  for (let i = 0; i < s.length; i += 1) {
+    if (isStandaloneEquals(s, i)) equals.push(i);
+  }
+  if (equals.length < 2) return null;
+  const outputs = [];
+  for (const eq of equals) {
+    const run = trailingOutputRun(s.slice(0, eq));
+    if (!run) return null;
+    // The run must not be the trailing operand of arithmetic (`a + b = ...`
+    // is a result form, not an assignment to `b`).
+    const sincePrevEq = s.slice(outputs.length > 0 ? outputs[outputs.length - 1].eq + 1 : 0, run.start);
+    if (/[+*/×÷%-]\s*$/.test(sincePrevEq)) return null;
+    outputs.push({ ...run, eq });
+  }
+  // Every output must begin after the previous `=`; otherwise the run
+  // reached back into earlier text and the boundary is uncertain.
+  for (let i = 1; i < outputs.length; i += 1) {
+    if (outputs[i].start <= outputs[i - 1].eq) return null;
+  }
+  const segments = [];
+  for (let i = 0; i < outputs.length; i += 1) {
+    const start = outputs[i].start;
+    const end = i + 1 < outputs.length ? outputs[i + 1].start : s.length;
+    if (end <= outputs[i].eq) return null;
+    const rhs = s.slice(outputs[i].eq + 1, end).trim().replace(/[.,]\s*$/, '').trim();
+    if (!rhs || !/[A-Za-z0-9_₹$€£¥]/.test(rhs)) return null;
+    if (/^[=<>!]/.test(rhs) || /[+*/×÷%-]\s*$/.test(rhs)) return null;
+    const between = s.slice(outputs[i].eq + 1, end);
+    if (between.includes('=')) return null;
+    segments.push({ output: outputs[i].output, rhs });
+  }
+  return segments;
+}
+
+// Collect input variables from an assignment right-hand side into
+// `inputs` (source order, deduplicated). Consecutive words with no
+// operator between them form one multi-word variable (`Ledger core`),
+// since adjacent words cannot be separate variables in valid arithmetic;
+// connectives (`and`, `or`) break runs, function names (a run directly
+// followed by `(`) are skipped, and same-step `defined` outputs never
+// count. Generic syntax, never variable names.
+function assignmentInputVars(rhs, definedLower, seenLower, inputs) {
+  const s = String(rhs ?? '');
+  const wordRe = /[A-Za-z_][A-Za-z0-9_]*(?:[-.][A-Za-z0-9_]+)*/g;
+  let run = [];
+  let lastEnd = -1;
+  const flush = (afterPos) => {
+    if (run.length === 0) return;
+    let words = run;
+    run = [];
+    if (/^\s*\(/.test(s.slice(afterPos))) words = words.slice(0, -1);
+    if (words.length === 0) return;
+    const phrase = words.join(' ');
+    const key = phrase.toLowerCase();
+    if (definedLower.has(key) || seenLower.has(key)) return;
+    seenLower.add(key);
+    inputs.push(phrase);
+  };
+  let m;
+  while ((m = wordRe.exec(s)) !== null) {
+    if (lastEnd >= 0) {
+      const gap = s.slice(lastEnd, m.index);
+      if (!/^[ \t]+$/.test(gap) || /^\s*\(/.test(s.slice(lastEnd))) flush(lastEnd);
+    }
+    const bare = !m[0].includes('-') && !m[0].includes('.') && NON_IDENTIFIER_WORDS.has(m[0].toLowerCase());
+    if (bare) {
+      flush(m.index);
+      lastEnd = m.index + m[0].length;
+      continue;
+    }
+    run.push(m[0]);
+    lastEnd = m.index + m[0].length;
+  }
+  flush(lastEnd < 0 ? 0 : lastEnd);
+}
+
+// Build the { segments, expression, output, inputs } result shared by the
+// `;`-separated and scanned assignment paths. Right-hand sides keep their
+// source text (including `x` multiply); inputs derive from a normalized
+// copy so infix `x` never becomes a variable. Within-step definitions and
+// function names never count as inputs.
+function buildAssignmentResult(segments) {
+  if (!segments || segments.length === 0) return null;
+  const defined = new Set(segments.map((s) => s.output.toLowerCase()));
+  for (const s of segments) s.rhs = splitHyphenSubtraction(s.rhs, defined);
+  const expression = segments.map((s) => `${s.output} = ${s.rhs}`).join('; ');
+  const output = segments[segments.length - 1].output;
+  const seen = new Set();
+  const inputs = [];
+  for (const s of segments) assignmentInputVars(normalizeInfixMultiply(s.rhs), defined, seen, inputs);
+  return { segments, expression, output, inputs };
+}
+
 // Function names called in an expression (`round_half_up(...)`, `min(...)`):
 // identifiers immediately followed by an opening parenthesis. Such names
 // are invocations, never variable references, so they are excluded from
@@ -721,17 +935,18 @@ function functionNamesIn(text) {
   return out;
 }
 
-// An unspaced hyphen between identifier parts (`Premstep6-Discncb`) reads
-// as subtraction only when either side names a value defined by the same
-// step; otherwise it stays a hyphenated code (`OD-01`). Inserts spaces
-// around such hyphens so tokenizers split the subtraction while codes
-// stay whole. Generic: driven by same-step outputs, never by names.
-// Exported for the Excel renderer, which applies the same split.
+// An unspaced hyphen between identifier parts (`Premstep6-Discncb`,
+// `fee_factor-1.0`) reads as subtraction only when either side names a value
+// defined by the same step; otherwise it stays a hyphenated code (`OD-01`,
+// `HD-001`). Inserts spaces around such hyphens so tokenizers split the
+// subtraction while codes stay whole. Generic: driven by same-step
+// outputs, never by names. Exported for the Excel renderer and the
+// validator, which apply the same split.
 export function splitHyphenSubtraction(rhs, definedLower) {
   const defined = definedLower instanceof Set ? definedLower
     : new Set((Array.isArray(definedLower) ? definedLower : []).map((s) => String(s ?? '').toLowerCase()));
   if (defined.size === 0) return String(rhs ?? '');
-  return String(rhs ?? '').replace(/([A-Za-z0-9_]+)-([A-Za-z_][A-Za-z0-9_]*)/g, (m, left, right) => {
+  return String(rhs ?? '').replace(/([A-Za-z0-9_]+)-([A-Za-z0-9_][A-Za-z0-9_]*)/g, (m, left, right) => {
     if (defined.has(String(left).toLowerCase()) || defined.has(String(right).toLowerCase())) {
       return `${left} - ${right}`;
     }
@@ -746,69 +961,60 @@ function identifiersExcludingFunctions(text) {
 }
 
 // Parse explicit `output = rhs` assignments stated anywhere in a step body:
-// after a colon (`Compute base: out=a*b`), with lookup context, or several
-// assignments separated by top-level semicolons (`a=x*y; b=a-z`). Each
-// `;`-separated segment must carry exactly one standalone `=` with a valid
-// output identifier and a non-empty right-hand side; anything else yields
-// null so prose, comparisons, and incomplete fragments stay unparsed.
-// Returns { segments: [{ output, rhs }], expression, output, inputs } or
-// null. Inputs exclude same-step intermediate outputs and function names
-// so within-step definitions never warn as unresolved references.
+// after a colon (`Compute base: out=a*b`), with lookup context, several
+// assignments separated by top-level semicolons (`a=x*y; b=a-z`), or
+// several assignments stated in sequence without separators
+// (`Alpha = a+b Beta final = Alpha+c`). Outputs may be single or
+// multi-word source variables. Each segment must carry exactly one
+// standalone `=` with a valid output and a non-empty right-hand side;
+// anything else yields null so prose, comparisons, and incomplete
+// fragments stay unparsed. Returns
+// { segments: [{ output, rhs }], expression, output, inputs } or null.
+// Inputs exclude same-step intermediate outputs and function names so
+// within-step definitions never warn as unresolved references.
 function parseTrailingAssignments(body) {
   const main = splitMainClause(String(body ?? ''));
   if (!main || !main.includes('=')) return null;
-  const rawSegments = splitTopLevel(main, ';');
-  const segments = [];
-  for (const raw of rawSegments) {
-    const seg = String(raw ?? '').trim().replace(/\.\s*$/, '').trim();
-    if (!seg) continue;
-    const equals = [];
-    for (let i = 0; i < seg.length; i += 1) {
-      if (isStandaloneEquals(seg, i)) equals.push(i);
+  const rawSegments = splitTopLevel(main, ';').map((s) => String(s ?? '').trim()).filter(Boolean);
+  if (rawSegments.length > 1) {
+    // `;`-separated statements: every segment must parse; anything else
+    // fails the whole body rather than guessing across fragments.
+    const segments = [];
+    for (const raw of rawSegments) {
+      const split = splitAssignmentSegment(raw);
+      if (!split) return null;
+      segments.push(split);
     }
-    if (equals.length !== 1) return null;
-    const eqAt = equals[0];
-    const left = seg.slice(0, eqAt);
-    const rhs = seg.slice(eqAt + 1).trim();
-    if (!rhs || !/[A-Za-z0-9_₹$€£¥]/.test(rhs)) return null;
-    // The output is a whole token immediately before `=`: hyphenated or
-    // dotted codes (`LX-NET = ...`) do not partially match (`NET`), they
-    // stay unparsed instead of misparsing.
-    const outMatch = /(?:^|[^A-Za-z0-9_.-])([A-Za-z_]\w*)\s*$/.exec(left);
-    if (!outMatch || !acceptableCapture(outMatch[1])) return null;
-    segments.push({ output: outMatch[1], rhs });
+    return buildAssignmentResult(segments);
   }
-  if (segments.length === 0) return null;
-  const defined = new Set(segments.map((s) => s.output.toLowerCase()));
-  // Normalize subtraction hyphens before building the expression so the
-  // stored text, inputs, and workbook rows all split the same way.
-  for (const s of segments) s.rhs = splitHyphenSubtraction(s.rhs, defined);
-  const expression = segments.map((s) => `${s.output} = ${s.rhs}`).join('; ');
-  const output = segments[segments.length - 1].output;
-  const seen = new Set();
-  const inputs = [];
-  for (const s of segments) {
-    for (const v of identifiersExcludingFunctions(s.rhs)) {
-      const key = v.toLowerCase();
-      if (defined.has(key) || seen.has(key)) continue;
-      seen.add(key);
-      inputs.push(v);
-    }
-  }
-  return { segments, expression, output, inputs };
+  const single = splitAssignmentSegment(rawSegments[0] ?? '');
+  if (single) return buildAssignmentResult([single]);
+  const scanned = scanInstructionAssignments(main);
+  if (scanned) return buildAssignmentResult(scanned);
+  return null;
 }
 
-// Parse an explicit top-level assignment `output = rhs`. Returns null unless
-// the text starts with a single identifier, '=', and a non-empty RHS.
-// Exported for the Excel routine-step renderer (display only); the normalized
-// model behavior is unchanged.
+// Parse an explicit top-level assignment `output = rhs`. The output leads
+// the text (one to three plain words: `out`, `Ledger total`); prose,
+// comparisons, and incomplete fragments yield null. Right-hand sides keep
+// their source text while inputs derive from a normalized copy, so infix
+// `x` multiply and function names never become variables. Exported for the
+// Excel routine-step renderer and routine input/output derivation.
 export function parseAssignmentOperands(text) {
   const t = String(text ?? '').trim();
   if (!t || /^(if|else|when|otherwise)\b/i.test(t)) return null;
-  const main = splitMainClause(t);
-  const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+?)\s*$/.exec(main);
+  const main = splitMainClause(t).replace(/^\s+/, '').replace(OUTPUT_LEAD_VERBS, '');
+  const m = /^\s*([A-Za-z_]\w*(?:[ \t]+[A-Za-z_]\w*)*)\s*=(?![=>])\s*([\s\S]+?)\s*$/.exec(main);
   if (!m || !m[2].trim()) return null;
-  return { inputs: identifiersOf(m[2]), outputs: [m[1]] };
+  const output = m[1].replace(/[ \t]+/g, ' ').trim();
+  const words = output.split(' ');
+  if (words.length > 3) return null;
+  const stopWords = words.length > 1 ? NON_CAPTURE_WORDS : NON_IDENTIFIER_WORDS;
+  if (words.some((w) => stopWords.has(w.toLowerCase()))) return null;
+  if (/^[=<>!]/.test(m[2].trim())) return null;
+  const inputs = [];
+  assignmentInputVars(normalizeInfixMultiply(m[2]), new Set([output.toLowerCase()]), new Set(), inputs);
+  return { inputs, outputs: [output] };
 }
 
 function stripStepLabel(text) {
@@ -842,6 +1048,27 @@ function normalizeTableText(value) {
     .toLowerCase();
 }
 
+// Asset codes embedded in a table's display name: a parenthesized code
+// (`... (SYN-BASE)`) and a trailing qualified code
+// (`... SYN-CRED Part A`, with generic document-structure qualifiers).
+// Parenthesized ranges or prose (`(RID-001 to RID-008)`) and ordinary
+// trailing words (`... Matrix`) never match, so they contribute no alias.
+// Generic code shapes, never table names.
+const TRAILING_QUALIFIER = '(?:Part|Section|Appendix|Schedule|Annex|Phase|Stage)';
+
+function embeddedNameAliases(displayName) {
+  const out = [];
+  const s = String(displayName ?? '');
+  for (const m of s.matchAll(/\(([A-Z][A-Z0-9_.-]*)\)/g)) {
+    if (m[1].length >= 2) out.push(m[1]);
+  }
+  const trail = new RegExp(
+    `((?=[A-Z0-9_.-]*[A-Z])[A-Z0-9]+[-_.][A-Z0-9_.-]*(?:\\s+${TRAILING_QUALIFIER}\\s+[A-Z0-9]+)?)\\s*$`
+  ).exec(s);
+  if (trail) out.push(trail[1].replace(/\s+/g, ' ').trim());
+  return [...new Set(out)];
+}
+
 function isWordBoundaryPrefix(longer, shorter) {
   if (!longer.startsWith(shorter) || longer.length === shorter.length) return false;
   return !/[a-z0-9]/.test(longer[shorter.length] ?? '');
@@ -866,6 +1093,35 @@ function tableMatchNames(table) {
   return [...new Set(names.map((n) => String(n ?? '').trim()).filter(Boolean))];
 }
 
+// Every table a mention could refer to, in resolution-priority order: the
+// exact id/name/alias match first, else word-boundary prefix matches in
+// either direction, else keyword-subset matches. Callers needing one
+// confident table use resolveTableReference; callers reporting ambiguity
+// use the full list. Generic matching, never table names.
+export function findTableCandidates(tables, mention) {
+  const raw = String(mention ?? '').trim();
+  if (!raw) return [];
+  const key = raw.toLowerCase();
+  const keyNorm = normalizeTableText(raw);
+  const list = Array.isArray(tables) ? tables : [];
+  const exact = list.find((t) =>
+    String(t?.id ?? '').trim().toLowerCase() === key
+    || tableMatchNames(t).some((n) => n.toLowerCase() === key || normalizeTableText(n) === keyNorm));
+  if (exact) return [exact];
+  const prefixCandidates = list.filter((t) => tableMatchNames(t).some((n) => {
+    const nameNorm = normalizeTableText(n);
+    if (!nameNorm || !keyNorm || nameNorm === keyNorm) return false;
+    return isWordBoundaryPrefix(nameNorm, keyNorm) || isWordBoundaryPrefix(keyNorm, nameNorm);
+  }));
+  if (prefixCandidates.length > 0) return prefixCandidates;
+  const keywords = tableMentionKeywords(raw);
+  if (keywords.length === 0) return [];
+  return list.filter((t) => {
+    const words = new Set(tableMatchNames(t).flatMap((n) => normalizeTableText(n).split(/[^a-z0-9]+/).filter(Boolean)));
+    return keywords.every((k) => words.has(k));
+  });
+}
+
 // Resolve a table mention to an extracted table: exact id/name/alias match
 // first (dash-insensitive), else a unique word-boundary prefix in either
 // direction (short "Table 1" to long "Table 1 - ..." and long mentions to
@@ -873,29 +1129,8 @@ function tableMatchNames(table) {
 // aliases ("Base property table" to "Table A - Base property rate").
 // Returns the table or null when there is no single confident match.
 export function resolveTableReference(tables, mention) {
-  const raw = String(mention ?? '').trim();
-  if (!raw) return null;
-  const key = raw.toLowerCase();
-  const keyNorm = normalizeTableText(raw);
-  const list = Array.isArray(tables) ? tables : [];
-  const exact = list.find((t) =>
-    String(t?.id ?? '').trim().toLowerCase() === key
-    || tableMatchNames(t).some((n) => n.toLowerCase() === key || normalizeTableText(n) === keyNorm));
-  if (exact) return exact;
-  const prefixCandidates = list.filter((t) => tableMatchNames(t).some((n) => {
-    const nameNorm = normalizeTableText(n);
-    if (!nameNorm || !keyNorm || nameNorm === keyNorm) return false;
-    return isWordBoundaryPrefix(nameNorm, keyNorm) || isWordBoundaryPrefix(keyNorm, nameNorm);
-  }));
-  if (prefixCandidates.length === 1) return prefixCandidates[0];
-  if (prefixCandidates.length > 1) return null;
-  const keywords = tableMentionKeywords(raw);
-  if (keywords.length === 0) return null;
-  const keywordMatches = list.filter((t) => {
-    const words = new Set(tableMatchNames(t).flatMap((n) => normalizeTableText(n).split(/[^a-z0-9]+/).filter(Boolean)));
-    return keywords.every((k) => words.has(k));
-  });
-  return keywordMatches.length === 1 ? keywordMatches[0] : null;
+  const candidates = findTableCandidates(tables, mention);
+  return candidates.length === 1 ? candidates[0] : null;
 }
 
 // Whitespace-delimited code tokens of a routine id or name, lowercased with
@@ -977,18 +1212,44 @@ export function definedConstantTerms(routines) {
   return out;
 }
 
+// A code-shaped cell value: uppercase letter-led groups joined by
+// separators (`RID-001`, `AREA_1`, `FEE-WAIVE`). Plain words (`None`, `Any`),
+// numbers, and prose never match, so only references to coded values
+// resolve against row contents.
+const CODE_CELL_VALUE = /^[A-Z][A-Z0-9]*([-_.][A-Z0-9]+)+$/;
+
+function codeCellTerms(table, out) {
+  for (const row of table?.rows ?? []) {
+    for (const cell of row ?? []) {
+      const s = String(cell ?? '').trim();
+      if (!s || s.length > 24 || /\s/.test(s)) continue;
+      const parts = s.includes('/') || s.includes(',') || s.includes(';')
+        ? s.split(/[/,;]/).map((p) => p.trim())
+        : [s];
+      for (const part of parts) {
+        if (CODE_CELL_VALUE.test(part)) out.push(part);
+      }
+    }
+  }
+}
+
 // Lowercased id/name/alias/header/label terms identifying extracted
-// tables, for matching references against defined table structure.
+// tables, plus code-shaped cell values, for matching references against
+// defined table structure.
 export function tableReferenceTerms(tables) {
+  const terms = [];
+  for (const t of Array.isArray(tables) ? tables : []) {
+    terms.push(
+      t?.id,
+      t?.name,
+      ...(t?.aliases ?? []),
+      ...(t?.headers ?? []),
+      ...(t?.columns ?? []).map((c) => c?.label ?? c?.original_label)
+    );
+    codeCellTerms(t, terms);
+  }
   return new Set(
-    (Array.isArray(tables) ? tables : [])
-      .flatMap((t) => [
-        t?.id,
-        t?.name,
-        ...(t?.aliases ?? []),
-        ...(t?.headers ?? []),
-        ...(t?.columns ?? []).map((c) => c?.label ?? c?.original_label),
-      ])
+    terms
       .filter((s) => s !== undefined && s !== null)
       .map((s) => String(s).trim().toLowerCase())
       .filter(Boolean)
@@ -1368,7 +1629,9 @@ function isWorkedAmountToken(token) {
 // currency amounts ("₹1,000,000 IDV" to "IDV"), and trailing amount clauses
 // ("Net Premium: ₹37,531.00" to "Net Premium") are stripped. Pure values
 // ("20.00%", "0.750%") yield '' so they never become reusable inputs.
-// Ambiguous descriptive text is otherwise retained verbatim for review.
+// A per-unit amount qualifier ("Harbor Fee per $100") is part of the label
+// and is kept, so the term still matches the source column. Ambiguous
+// descriptive text is otherwise retained verbatim for review.
 // Exported for the Excel renderer (see cleanStepOutputValue).
 export function cleanStepInputValue(raw) {
   let s = String(raw ?? '').trim();
@@ -1380,7 +1643,10 @@ export function cleanStepInputValue(raw) {
     const stripped = tok.replace(/^[:;|@,()[\]{}"'`]+|[:;|@,()[\]{}"'`]+$/g, '');
     if (!stripped) continue;
     if (/^[₹$€£¥%‰]+$/.test(stripped)) continue;
-    if (isWorkedAmountToken(stripped)) continue;
+    if (isWorkedAmountToken(stripped)) {
+      const prev = kept.length > 0 ? String(kept[kept.length - 1]).toLowerCase() : '';
+      if (prev !== 'per' && prev !== '/') continue;
+    }
     kept.push(stripped);
   }
   const out = kept.join(' ').replace(/\s+/g, ' ').trim();
@@ -1388,13 +1654,14 @@ export function cleanStepInputValue(raw) {
   return out;
 }
 
-// Explicit arithmetic evidence: an operator joining two sides, or an
-// assignment form ("Basis = 1") with a target and a right-hand side.
-// Descriptive prose without either is not arithmetic.
+// Explicit arithmetic evidence: an operator joining two sides (infix `x`
+// counts: `Base x Factor`), or an assignment form ("Basis = 1") with a
+// target and a right-hand side. Descriptive prose without either is not
+// arithmetic.
 function hasArithmeticEvidence(expr) {
   const s = String(expr ?? '').trim();
   if (!s) return false;
-  if (splitArithmeticOperands(s)) return true;
+  if (splitArithmeticOperands(normalizeInfixMultiply(s))) return true;
   const eq = /^(.*?)\s*=\s*(.+?)\s*$/.exec(s.replace(/\.\s*$/, ''));
   return Boolean(eq && eq[1].trim() && eq[2].trim());
 }
@@ -2101,10 +2368,16 @@ function deriveConditionDetail(text) {
 // Normalize a model-provided routine kind to its canonical form:
 // case/separator variants collapse ('Calculation Steps' to
 // 'calculation_steps'); phrases naming eligibility rules are conditions;
-// a generic calculation/procedure follows its evidenced structure (steps,
-// else expression, else conditions). Unrecognized kinds pass through
-// verbatim so validation keeps warning about them. Generic: driven by
-// common words and shape, never by names.
+// generic multi-step wordings (pipeline, sequence, workflow, rule, ...)
+// follow the evidenced structure (steps, else expression, else
+// conditions). Unrecognized kinds pass through verbatim so validation
+// keeps warning about them. Generic: driven by common words and shape,
+// never by names.
+const STRUCTURAL_KIND_WORDS = new Set([
+  'calculation', 'procedure', 'process', 'pipeline', 'sequence', 'sequential',
+  'workflow', 'chain', 'chained', 'stage', 'stages', 'rule', 'rules', 'business',
+]);
+
 function normalizeRoutineKind(kind, evidence = {}) {
   const raw = String(kind ?? 'formula');
   const key = raw.trim().toLowerCase().replace(/[\s-]+/g, '_');
@@ -2112,7 +2385,7 @@ function normalizeRoutineKind(kind, evidence = {}) {
   if (!key) return raw;
   const words = new Set(key.split(/[^a-z0-9]+/).filter(Boolean));
   if (words.has('eligibility')) return 'condition';
-  if (words.has('calculation') || words.has('procedure')) return structuralRoutineKind(evidence);
+  if ([...words].some((w) => STRUCTURAL_KIND_WORDS.has(w))) return structuralRoutineKind(evidence);
   if (words.has('condition') || words.has('conditional')) return 'condition';
   if (words.has('formula')) return 'formula';
   return raw;

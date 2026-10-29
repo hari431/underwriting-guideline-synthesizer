@@ -1,0 +1,1375 @@
+{
+  "document": {
+    "filename": "Commercial Property Underwriting and Rquirements.pdf",
+    "page_count": 31
+  },
+  "tables": [
+    {
+      "id": "T1",
+      "name": "Base Physical Damage Rates by Territory (TBL-BASE-RATE)",
+      "aliases": [
+        "TBL-BASE-RATE"
+      ],
+      "source_pages": [
+        18
+      ],
+      "source_type": "",
+      "source_location": "",
+      "evidence_text": "4.1 Base Physical Damage Rates by Territory (TBL-BASE-RATE) Base rates (Rbase) represent the unadjusted annual pure loss cost expressed per $100 of Total Insured Value (TIV). Rates vary by territorial rating zone and coverage scope.",
+      "headers": [
+        "Territory Code",
+        "Zone Class",
+        "Special Form (All-Risk)",
+        "Broad Form",
+        "Basic Named Peril"
+      ],
+      "columns": [
+        {
+          "label": "Territory Code",
+          "original_label": "Territory Code",
+          "order": 1
+        },
+        {
+          "label": "Zone Class",
+          "original_label": "Zone Class",
+          "order": 2
+        },
+        {
+          "label": "Special Form (All-Risk)",
+          "original_label": "Special Form (All-Risk)",
+          "order": 3
+        },
+        {
+          "label": "Broad Form",
+          "original_label": "Broad Form",
+          "order": 4
+        },
+        {
+          "label": "Basic Named Peril",
+          "original_label": "Basic Named Peril",
+          "order": 5
+        }
+      ],
+      "rows": [
+        [
+          "ZONE_1",
+          "Metro Core",
+          "$0.1450",
+          "$0.1250",
+          "$0.1050"
+        ],
+        [
+          "ZONE_2",
+          "Suburban / Urban",
+          "$0.1650",
+          "$0.1420",
+          "$0.1180"
+        ],
+        [
+          "ZONE_3",
+          "Developed Regional",
+          "$0.1850",
+          "$0.1580",
+          "$0.1320"
+        ],
+        [
+          "ZONE_4",
+          "Semi-Rural Industrial",
+          "$0.2250",
+          "$0.1920",
+          "$0.1600"
+        ],
+        [
+          "ZONE_5",
+          "Wildland / Coastal Edge",
+          "$0.2850",
+          "$0.2450",
+          "$0.2050"
+        ]
+      ],
+      "purpose": "",
+      "applicability": "",
+      "effective_period": "",
+      "footnotes": [],
+      "notes": "",
+      "continuation": null,
+      "review_status": "",
+      "confidence": null
+    },
+    {
+      "id": "T2",
+      "name": "Construction Class Relativity Factors (TBL-CONST-REL)",
+      "aliases": [
+        "TBL-CONST-REL"
+      ],
+      "source_pages": [
+        19
+      ],
+      "source_type": "",
+      "source_location": "",
+      "evidence_text": "4.2 Construction Class Relativity Factors (TBL-CONST-REL) Construction relativity factors (Fconst) adjust the baseline rate according to structural combustibility and fire resistance ratings (ISO Construction Classes 1 through 6).",
+      "headers": [
+        "Construction Class",
+        "ISO Class",
+        "Office / Merc.",
+        "Retail",
+        "Ind. / Mfg.",
+        "Habitational"
+      ],
+      "columns": [
+        {
+          "label": "Construction Class",
+          "original_label": "Construction Class",
+          "order": 1
+        },
+        {
+          "label": "ISO Class",
+          "original_label": "ISO Class",
+          "order": 2
+        },
+        {
+          "label": "Office / Merc.",
+          "original_label": "Office / Merc.",
+          "order": 3
+        },
+        {
+          "label": "Retail",
+          "original_label": "Retail",
+          "order": 4
+        },
+        {
+          "label": "Ind. / Mfg.",
+          "original_label": "Ind. / Mfg.",
+          "order": 5
+        },
+        {
+          "label": "Habitational",
+          "original_label": "Habitational",
+          "order": 6
+        }
+      ],
+      "rows": [
+        [
+          "FRAME",
+          "Class 1",
+          "1.450000",
+          "1.550000",
+          "1.750000",
+          "1.500000"
+        ],
+        [
+          "JOISTED_MASONRY",
+          "Class 2",
+          "1.200000",
+          "1.280000",
+          "1.420000",
+          "1.250000"
+        ],
+        [
+          "NON_COMBUSTIBLE",
+          "Class 3",
+          "1.000000",
+          "1.050000",
+          "1.150000",
+          "1.050000"
+        ],
+        [
+          "MASONRY_NON_COMB",
+          "Class 4",
+          "0.880000",
+          "0.920000",
+          "0.900000"
+        ],
+        [
+          "MODIFIED_FIRE_RESIST",
+          "Class 5",
+          "0.720000",
+          "0.760000",
+          "0.840000",
+          "0.750000"
+        ],
+        [
+          "FIRE_RESISTIVE",
+          "Class 6",
+          "0.580000",
+          "0.620000",
+          "0.680000",
+          "0.600000"
+        ]
+      ],
+      "purpose": "",
+      "applicability": "",
+      "effective_period": "",
+      "footnotes": [],
+      "notes": "Source row MASONRY_NON_COMB Class 4 shows only three factor values (0.880000 0.920000 0.900000) versus four factor columns; preserved verbatim as shown without inventing missing value; flagged for analyst review.",
+      "continuation": null,
+      "review_status": "",
+      "confidence": null
+    },
+    {
+      "id": "T3",
+      "name": "Occupancy Hazard Relativity Loadings (TBL-OCC-LOAD)",
+      "aliases": [
+        "TBL-OCC-LOAD"
+      ],
+      "source_pages": [
+        20
+      ],
+      "source_type": "",
+      "source_location": "",
+      "evidence_text": "4.3 Occupancy Hazard Relativity Loadings (TBL-OCC-LOAD) Occupancy hazard factors (Focc) scale base physical damage rates based on the combustibility of contents and business activities.",
+      "headers": [
+        "Occupancy Category",
+        "Combustibility Hazard",
+        "Occupancy Factor (Focc)",
+        "Special Operational Surcharge"
+      ],
+      "columns": [
+        {
+          "label": "Occupancy Category",
+          "original_label": "Occupancy Category",
+          "order": 1
+        },
+        {
+          "label": "Combustibility Hazard",
+          "original_label": "Combustibility Hazard",
+          "order": 2
+        },
+        {
+          "label": "Occupancy Factor (Focc)",
+          "original_label": "Occupancy Factor (Focc)",
+          "order": 3
+        },
+        {
+          "label": "Special Operational Surcharge",
+          "original_label": "Special Operational Surcharge",
+          "order": 4
+        }
+      ],
+      "rows": [
+        [
+          "OFFICE",
+          "LIGHT",
+          "1.000000",
+          "None"
+        ],
+        [
+          "RETAIL",
+          "ORDINARY_1",
+          "1.150000",
+          "+0.10 if high-value theft target"
+        ],
+        [
+          "MERCANTILE",
+          "ORDINARY_2",
+          "1.280000",
+          "None"
+        ],
+        [
+          "WAREHOUSE",
+          "ORDINARY_2",
+          "1.350000",
+          "+0.15 if rack storage>20ft"
+        ],
+        [
+          "MANUFACTURING",
+          "EXTRA_1",
+          "1.650000",
+          "+0.25 if metalworking/welding"
+        ],
+        [
+          "MANUFACTURING",
+          "EXTRA_2",
+          "2.100000",
+          "+0.50 if chemical processing"
+        ],
+        [
+          "RESTAURANT",
+          "ORDINARY_2",
+          "1.450000",
+          "+0.30 if commercial deep frying"
+        ],
+        [
+          "HABITATIONAL",
+          "LIGHT",
+          "1.100000",
+          "None"
+        ]
+      ],
+      "purpose": "",
+      "applicability": "",
+      "effective_period": "",
+      "footnotes": [],
+      "notes": "",
+      "continuation": null,
+      "review_status": "",
+      "confidence": null
+    },
+    {
+      "id": "T4",
+      "name": "Public Protection Classification Multipliers (Mppc) - TBL-PROT-CRED Part A",
+      "aliases": [
+        "TBL-PROT-CRED Part A"
+      ],
+      "source_pages": [
+        21
+      ],
+      "source_type": "",
+      "source_location": "",
+      "evidence_text": "4.4.1 Part A: Public Protection Classification Multipliers (Mppc) Municipal PPC Grade Protection Multiplier (Mppc) Operational Underwriting Constraint",
+      "headers": [
+        "Municipal PPC Grade",
+        "Protection Multiplier (Mppc)",
+        "Operational Underwriting Constraint"
+      ],
+      "columns": [
+        {
+          "label": "Municipal PPC Grade",
+          "original_label": "Municipal PPC Grade",
+          "order": 1
+        },
+        {
+          "label": "Protection Multiplier (Mppc)",
+          "original_label": "Protection Multiplier (Mppc)",
+          "order": 2
+        },
+        {
+          "label": "Operational Underwriting Constraint",
+          "original_label": "Operational Underwriting Constraint",
+          "order": 3
+        }
+      ],
+      "rows": [
+        [
+          "Class 1 to 2",
+          "0.850000",
+          "Elite municipal fire service; continuous dispatch telemetry."
+        ],
+        [
+          "Class 3 to 4",
+          "0.920000",
+          "High-standard municipal service; fully staffed career department."
+        ],
+        [
+          "Class 5 to 6",
+          "1.000000",
+          "Standard baseline municipal rating; composite career/volunteer."
+        ],
+        [
+          "Class 7 to 8",
+          "1.150000",
+          "Substandard municipal response; volunteer force or extended travel."
+        ],
+        [
+          "Class 9",
+          "1.350000",
+          "Critical suppression deficiencies; mandatory referral UW-REF-004."
+        ],
+        [
+          "Class 10",
+          "Terminate Rating",
+          "Mandatory rejection trigger UW-REJ-001."
+        ]
+      ],
+      "purpose": "",
+      "applicability": "",
+      "effective_period": "",
+      "footnotes": [],
+      "notes": "",
+      "continuation": null,
+      "review_status": "",
+      "confidence": null
+    },
+    {
+      "id": "T5",
+      "name": "Automatic Sprinkler System Credits (Cspk) - TBL-PROT-CRED Part B",
+      "aliases": [
+        "TBL-PROT-CRED Part B"
+      ],
+      "source_pages": [
+        21
+      ],
+      "source_type": "",
+      "source_location": "",
+      "evidence_text": "4.4.2 Part B: Automatic Sprinkler System Credits (Cspk) Sprinkler System Type Floor Area Protected Sprinkler Credit (Cspk) Certification Requirement",
+      "headers": [
+        "Sprinkler System Type",
+        "Floor Area Protected",
+        "Sprinkler Credit (Cspk)",
+        "Certification Requirement"
+      ],
+      "columns": [
+        {
+          "label": "Sprinkler System Type",
+          "original_label": "Sprinkler System Type",
+          "order": 1
+        },
+        {
+          "label": "Floor Area Protected",
+          "original_label": "Floor Area Protected",
+          "order": 2
+        },
+        {
+          "label": "Sprinkler Credit (Cspk)",
+          "original_label": "Sprinkler Credit (Cspk)",
+          "order": 3
+        },
+        {
+          "label": "Certification Requirement",
+          "original_label": "Certification Requirement",
+          "order": 4
+        }
+      ],
+      "rows": [
+        [
+          "WET_PIPE",
+          "100.0% Protected",
+          "0.400000 (40% Credit)",
+          "Annual certified NFPA 25 inspection tag."
+        ],
+        [
+          "WET_PIPE",
+          "75.0% to 99.9%",
+          "0.250000 (25% Credit)",
+          "Certified partial coverage."
+        ],
+        [
+          "DRY_PIPE",
+          "100.0% Protected",
+          "0.350000 (35% Credit)",
+          "Required for unheated refrigerated space."
+        ],
+        [
+          "PRE_ACTION",
+          "100.0% Protected",
+          "0.450000 (45% Credit)",
+          "Telecommunications / server rooms."
+        ],
+        [
+          "DELUGE",
+          "100.0% Protected",
+          "0.500000 (50% Credit)",
+          "Extra-hazard chemical / flammable loading."
+        ],
+        [
+          "NONE",
+          "Any",
+          "0.000000",
+          "Baseline un-sprinklered building."
+        ]
+      ],
+      "purpose": "",
+      "applicability": "",
+      "effective_period": "",
+      "footnotes": [],
+      "notes": "",
+      "continuation": null,
+      "review_status": "",
+      "confidence": null
+    },
+    {
+      "id": "T6",
+      "name": "Catastrophic Peril Surcharges (TBL-CAT-PERIL)",
+      "aliases": [
+        "TBL-CAT-PERIL"
+      ],
+      "source_pages": [
+        22
+      ],
+      "source_type": "",
+      "source_location": "",
+      "evidence_text": "4.5 Catastrophic Peril Surcharges (TBL-CAT-PERIL) Catastrophic peril rates are added to account for severe natural hazard exposures.",
+      "headers": [
+        "Peril Code",
+        "Territory Zone",
+        "Roof Geometry",
+        "Building Stories",
+        "Peril Rate per $100"
+      ],
+      "columns": [
+        {
+          "label": "Peril Code",
+          "original_label": "Peril Code",
+          "order": 1
+        },
+        {
+          "label": "Territory Zone",
+          "original_label": "Territory Zone",
+          "order": 2
+        },
+        {
+          "label": "Roof Geometry",
+          "original_label": "Roof Geometry",
+          "order": 3
+        },
+        {
+          "label": "Building Stories",
+          "original_label": "Building Stories",
+          "order": 4
+        },
+        {
+          "label": "Peril Rate per $100",
+          "original_label": "Peril Rate per $100",
+          "order": 5
+        }
+      ],
+      "rows": [
+        [
+          "EQ-SEIS",
+          "ZONE_1/ZONE_2",
+          "Any",
+          "Any",
+          "$0.0350"
+        ],
+        [
+          "EQ-SEIS",
+          "ZONE_4/ZONE_5",
+          "Any",
+          "Any",
+          "$0.0850"
+        ],
+        [
+          "WIND-CAT",
+          "ZONE_5",
+          "FLAT",
+          "1 to 3 Stories",
+          "$0.0650"
+        ],
+        [
+          "WIND-CAT",
+          "ZONE_5",
+          "LOW_SLOPE",
+          "1 to 3 Stories",
+          "$0.0550"
+        ],
+        [
+          "WIND-CAT",
+          "ZONE_5",
+          "STEEP_SLOPE",
+          "1 to 3 Stories",
+          "$0.0450"
+        ],
+        [
+          "WIND-CAT",
+          "ZONE_5",
+          "DOME",
+          "1 to 3 Stories",
+          "$0.0350"
+        ],
+        [
+          "WIND-CAT",
+          "ZONE_5",
+          "Any",
+          "≥4Stories",
+          "$0.0950"
+        ],
+        [
+          "WIND-CAT",
+          "All Other Zones",
+          "Any",
+          "Any",
+          "$0.0200"
+        ]
+      ],
+      "purpose": "",
+      "applicability": "",
+      "effective_period": "",
+      "footnotes": [],
+      "notes": "Roof Geometry values LOW_SLOPE, STEEP_SLOPE, DOME in this grid differ verbatim from DATA-018 allowed values (FLAT, PITCHED, MANSARD, SAWTOOTH); preserved verbatim and flagged for review. Building Stories value preserved verbatim as ≥4Stories.",
+      "continuation": null,
+      "review_status": "",
+      "confidence": null
+    },
+    {
+      "id": "T7",
+      "name": "Deductible Relativity Factors (TBL-DED-REL)",
+      "aliases": [
+        "TBL-DED-REL"
+      ],
+      "source_pages": [
+        23
+      ],
+      "source_type": "",
+      "source_location": "",
+      "evidence_text": "4.6 Deductible Relativity Factors (TBL-DED-REL) Deductible relativity factors (Fded) reflect policyholder risk retention and scale the base physical damage premium.",
+      "headers": [
+        "Deductible Range Band",
+        "Deductible Factor (Fded)",
+        "Eligibility & Underwriting Notes"
+      ],
+      "columns": [
+        {
+          "label": "Deductible Range Band",
+          "original_label": "Deductible Range Band",
+          "order": 1
+        },
+        {
+          "label": "Deductible Factor (Fded)",
+          "original_label": "Deductible Factor (Fded)",
+          "order": 2
+        },
+        {
+          "label": "Eligibility & Underwriting Notes",
+          "original_label": "Eligibility & Underwriting Notes",
+          "order": 3
+        }
+      ],
+      "rows": [
+        [
+          "$1,000 to $2,500",
+          "1.050000",
+          "Base standard deductible band; small commercial accounts."
+        ],
+        [
+          "$2,501 to $5,000",
+          "1.000000",
+          "Standard policy baseline reference tier (Fded = 1.0)."
+        ],
+        [
+          "$5,001 to $10,000",
+          "0.960000",
+          "Available to all standard risks."
+        ],
+        [
+          "$10,000 to $25,000",
+          "0.920000",
+          "Preferred deductible for accounts with TIV >$5,000,000."
+        ],
+        [
+          "$25,000 to $50,000",
+          "0.880000",
+          "Large commercial deductible tier; mandatory referral UW-REF-012."
+        ],
+        [
+          "$50,001 to $100,000",
+          "0.820000",
+          "Industrial risk tier; requires underwriter approval."
+        ],
+        [
+          "$100,001 to $250,000",
+          "0.750000",
+          "Maximum allowed self-insured retention limit."
+        ]
+      ],
+      "purpose": "",
+      "applicability": "",
+      "effective_period": "",
+      "footnotes": [],
+      "notes": "",
+      "continuation": null,
+      "review_status": "",
+      "confidence": null
+    },
+    {
+      "id": "T8",
+      "name": "Commercial Endorsements Matrix (END-001 to END-008)",
+      "aliases": [],
+      "source_pages": [
+        28
+      ],
+      "source_type": "",
+      "source_location": "",
+      "evidence_text": "6.1 Commercial Endorsements Matrix (END-001 to END-008) Optional modular endorsements provide specialized coverage extensions.",
+      "headers": [
+        "End. ID",
+        "Endorsement Name",
+        "Rating Formula / Tariff Basis",
+        "Underwriting Constraints"
+      ],
+      "columns": [
+        {
+          "label": "End. ID",
+          "original_label": "End. ID",
+          "order": 1
+        },
+        {
+          "label": "Endorsement Name",
+          "original_label": "Endorsement Name",
+          "order": 2
+        },
+        {
+          "label": "Rating Formula / Tariff Basis",
+          "original_label": "Rating Formula / Tariff Basis",
+          "order": 3
+        },
+        {
+          "label": "Underwriting Constraints",
+          "original_label": "Underwriting Constraints",
+          "order": 4
+        }
+      ],
+      "rows": [
+        [
+          "END-001",
+          "Equipment Breakdown",
+          "Flat $0.025 per $100 of Building Limit (DATA-039).",
+          "Mandatory pressure vessel inspection certification."
+        ],
+        [
+          "END-002",
+          "Ordinance or Law (Cov A, B, C)",
+          "12.50% loading applied to Core Physical Damage Premium (Premium core).",
+          "Requires building construction year≥1975."
+        ],
+        [
+          "END-003",
+          "Outdoor Signs & Fixtures",
+          "Flat $125.00 for $25,000 limit; $0.45 per $100 excess.",
+          "Tied down and wind-rated installation."
+        ],
+        [
+          "END-004",
+          "Business Interruption Extended Period",
+          "Flat $350.00 plus 5.0% of BI Premium.",
+          "Extends period of restoration from 120 days to 365 days."
+        ],
+        [
+          "END-005",
+          "Spoilage Coverage",
+          "$0.35 per $100 of refrigerated stock value.",
+          "Requires on-site back-up generator with automatic transfer switch."
+        ],
+        [
+          "END-006",
+          "Utility Services – Direct Damage",
+          "Flat $185.00 for $50,000 standard limit.",
+          "Underground utility service connection required."
+        ],
+        [
+          "END-007",
+          "Sewer, Drain & Sump Overflow",
+          "Flat $220.00 for $25,000 occurrence limit.",
+          "Automatic backflow prevention valve required."
+        ],
+        [
+          "END-008",
+          "Debris Removal Extension",
+          "2.50% loading applied to total property limit.",
+          "Additional $50,000 buffer above policy limit."
+        ]
+      ],
+      "purpose": "",
+      "applicability": "",
+      "effective_period": "",
+      "footnotes": [],
+      "notes": "",
+      "continuation": null,
+      "review_status": "",
+      "confidence": null
+    }
+  ],
+  "routines": [
+    {
+      "id": "R1",
+      "name": "Commercial Property Rating Pipeline CALC-STEP-01 to CALC-STEP-14",
+      "kind": "calculation_steps",
+      "source_pages": [
+        24,
+        25,
+        26,
+        27
+      ],
+      "source_type": "",
+      "source_location": "",
+      "evidence_text": "The calculation engine executes a sequential 14-step routine. Floating-point values are retained to six (6) decimal places during execution. Stage I: Unadjusted Base Core Rating (Steps 1 to 4) – Step 1: Base Physical Damage Rate determination (Rbase). – Step 2: Construction Class relativity adjustment (Fconst). – Step 3: Occupancy Hazard loading (Focc). – Step 4: Public Protection Classification modification (Mppc). Stage II: Protection & Secondary Adjustments (Steps 5 to 7) – Step 5: Automatic Sprinkler System credit application (Cspk). – Step 6: Deductible Relativity factor scaling (Fded). – Step 7: Coinsurance compliance check and penalty evaluation. Stage III: Discretionary & Surcharge Layers (Steps 8 to 11) – Step 8: Underwriting Experience Modification Factor application (EMF). – Step 9: Environmental and Congestion Surcharge loading. – Step 10: Catastrophic Peril rate addition (Rcat). – Step 11: Final Building Core Premium aggregation. Stage IV: Endorsements, Levies & Final Rounding (Steps 12 to 14) – Step 12: Commercial Endorsements and Extensions aggregation. – Step 13: Municipal Fire Assessment Levy calculation. – Step 14: Total Policy Premium formulation and statutory minimum floor check.",
+      "expression_text": "",
+      "conditions": [],
+      "conditions_detailed": [],
+      "steps": [
+        "Retrieve unadjusted base rate Rbase from Table TBL-BASE-RATE (Page 17) matching DATA-038 and DATA-006. Ratestep1 = Rbase",
+        "Retrieve Fconst from Table TBL-CONST-REL (Page 18) based on DATA-013 and DATA-021. Rate step2 = Ratestep1 x Fconst",
+        "Retrieve Focc from Table TBL-OCC-LOAD (Page 19). Rate step3 = Rate step2 x Focc",
+        "Retrieve Mppc from Table TBL-PROT-CRED Part A (Page 20) matching DATA-028. Ratestep4 = Rate step3 x Mppc",
+        "Retrieve sprinkler credit Cspk from Table TBL-PROT-CRED Part B (Page 20). The credit is applied as a direct multiplicative discount against the running rate: Ratestep5 = Ratestep4 x (1.0 - Cspk)",
+        "Retrieve Fded from Table TBL-DED-REL (Page 22) matching DATA-044. Rate step6 = Ratestep5 x Fded",
+        "Evaluate Coinsurance compliance and apply site congestion loading: Coinsurance Penalty Factor = Declared_TIV / True_Replacement_Cost x (Coinsurance_Required/100) Ratestep7 = Rate step6 x site_congestion_factor x max(1.0, Coinsurance Penalty Factor)",
+        "Apply the underwriter schedule rating credit or debit (DATA-045): Rate step8 = Ratestep7 x DATA-045",
+        "Apply statutory environmental surcharge factor Senv: Rate step9 = Rate step8 x (1.0 + Senv) Where Senv = 0.045000 for risks situated in ZONE_4 and ZONE_5; 0.000000 otherwise.",
+        "Retrieve catastrophic peril rate Rcat from Table TBL-CAT-PERIL (Page 21) based on seismic and windstorm exposure. Rate step10 = Rate step9 + Rcat",
+        "Compute core physical damage premium by applying Rate step10 per $100 of Total Insured Value (DATA-042): Premiumcore = round_half_up ( DATA-042 / 100 x Rate step10 , 2 )",
+        "Sum all active optional endorsement premiums detailed in Section 6: Premium endorsements = END-001+END-002+END-003+END-005+END-006+END-007+END-008 Premium subtotal = Premiumcore + Premium endorsements",
+        "Calculate mandatory municipal fire department assessment: Levy fire = round_half_up(Premium subtotal x 0.025,2) This levy applies strictly to properties located in municipal zones ZONE_1 and ZONE_2.",
+        "Compute final total gross premium and enforce statutory minimum retained premium: Premiumgross = Premium subtotal + Levy fire Premium final = max($750.00, round_half_up(Premiumgross,2))"
+      ],
+      "steps_detailed": [
+        {
+          "sequence": 1,
+          "instruction": "Retrieve unadjusted base rate Rbase from Table TBL-BASE-RATE (Page 17) matching DATA-038 and DATA-006. Ratestep1 = Rbase",
+          "operation": "lookup",
+          "expression": "Ratestep1 = Rbase",
+          "operand": "TBL-BASE-RATE",
+          "inputs": [
+            "DATA-038",
+            "DATA-006",
+            "Territory Code",
+            "Zone Class",
+            "Special Form All-Risk",
+            "Broad Form",
+            "Basic Named Peril"
+          ],
+          "output": "Ratestep1",
+          "original_text": "Retrieve unadjusted base rate Rbase from Table TBL-BASE-RATE (Page 17) matching DATA-038 and DATA-006. Ratestep1 = Rbase"
+        },
+        {
+          "sequence": 2,
+          "instruction": "Retrieve Fconst from Table TBL-CONST-REL (Page 18) based on DATA-013 and DATA-021. Rate step2 = Ratestep1 x Fconst",
+          "operation": "expression",
+          "expression": "Rate step2 = Ratestep1 x Fconst",
+          "operand": "TBL-CONST-REL",
+          "inputs": [
+            "Ratestep1",
+            "Fconst",
+            "DATA-013",
+            "DATA-021",
+            "Construction Class",
+            "Office / Merc.",
+            "Retail",
+            "Ind. / Mfg.",
+            "Habitational"
+          ],
+          "output": "Rate step2",
+          "original_text": "Retrieve Fconst from Table TBL-CONST-REL (Page 18) based on DATA-013 and DATA-021. Rate step2 = Ratestep1 x Fconst"
+        },
+        {
+          "sequence": 3,
+          "instruction": "Retrieve Focc from Table TBL-OCC-LOAD (Page 19). Rate step3 = Rate step2 x Focc",
+          "operation": "expression",
+          "expression": "Rate step3 = Rate step2 x Focc",
+          "operand": "TBL-OCC-LOAD",
+          "inputs": [
+            "Rate step2",
+            "Focc",
+            "Occupancy Category",
+            "Combustibility Hazard",
+            "Occupancy Factor Focc"
+          ],
+          "output": "Rate step3",
+          "original_text": "Retrieve Focc from Table TBL-OCC-LOAD (Page 19). Rate step3 = Rate step2 x Focc"
+        },
+        {
+          "sequence": 4,
+          "instruction": "Retrieve Mppc from Table TBL-PROT-CRED Part A (Page 20) matching DATA-028. Ratestep4 = Rate step3 x Mppc",
+          "operation": "expression",
+          "expression": "Ratestep4 = Rate step3 x Mppc",
+          "operand": "TBL-PROT-CRED",
+          "inputs": [
+            "Rate step3",
+            "Mppc",
+            "DATA-028",
+            "Municipal PPC Grade",
+            "Protection Multiplier Mppc"
+          ],
+          "output": "Ratestep4",
+          "original_text": "Retrieve Mppc from Table TBL-PROT-CRED Part A (Page 20) matching DATA-028. Ratestep4 = Rate step3 x Mppc"
+        },
+        {
+          "sequence": 5,
+          "instruction": "Retrieve sprinkler credit Cspk from Table TBL-PROT-CRED Part B (Page 20). The credit is applied as a direct multiplicative discount against the running rate: Ratestep5 = Ratestep4 x (1.0 - Cspk)",
+          "operation": "expression",
+          "expression": "Ratestep5 = Ratestep4 x (1.0 - Cspk)",
+          "operand": "TBL-PROT-CRED",
+          "inputs": [
+            "Ratestep4",
+            "Cspk",
+            "Sprinkler System Type",
+            "Floor Area Protected",
+            "Sprinkler Credit Cspk"
+          ],
+          "output": "Ratestep5",
+          "original_text": "Retrieve sprinkler credit Cspk from Table TBL-PROT-CRED Part B (Page 20). The credit is applied as a direct multiplicative discount against the running rate: Ratestep5 = Ratestep4 x (1.0 - Cspk)"
+        },
+        {
+          "sequence": 6,
+          "instruction": "Retrieve Fded from Table TBL-DED-REL (Page 22) matching DATA-044. Rate step6 = Ratestep5 x Fded",
+          "operation": "expression",
+          "expression": "Rate step6 = Ratestep5 x Fded",
+          "operand": "TBL-DED-REL",
+          "inputs": [
+            "Ratestep5",
+            "Fded",
+            "DATA-044",
+            "Deductible Range Band",
+            "Deductible Factor Fded"
+          ],
+          "output": "Rate step6",
+          "original_text": "Retrieve Fded from Table TBL-DED-REL (Page 22) matching DATA-044. Rate step6 = Ratestep5 x Fded"
+        },
+        {
+          "sequence": 7,
+          "instruction": "Evaluate Coinsurance compliance and apply site congestion loading: Coinsurance Penalty Factor = Declared_TIV / True_Replacement_Cost x (Coinsurance_Required/100) Ratestep7 = Rate step6 x site_congestion_factor x max(1.0, Coinsurance Penalty Factor)",
+          "operation": "expression",
+          "expression": "Coinsurance Penalty Factor = Declared_TIV / True_Replacement_Cost x (Coinsurance_Required/100); Ratestep7 = Rate step6 x site_congestion_factor x max(1.0, Coinsurance Penalty Factor)",
+          "inputs": [
+            "Rate step6",
+            "site_congestion_factor",
+            "Declared_TIV",
+            "True_Replacement_Cost",
+            "Coinsurance_Required"
+          ],
+          "output": "Ratestep7",
+          "original_text": "Evaluate Coinsurance compliance and apply site congestion loading: Coinsurance Penalty Factor = Declared_TIV / True_Replacement_Cost x (Coinsurance_Required/100) Ratestep7 = Rate step6 x site_congestion_factor x max(1.0, Coinsurance Penalty Factor)"
+        },
+        {
+          "sequence": 8,
+          "instruction": "Apply the underwriter schedule rating credit or debit (DATA-045): Rate step8 = Ratestep7 x DATA-045",
+          "operation": "expression",
+          "expression": "Rate step8 = Ratestep7 x DATA-045",
+          "inputs": [
+            "Ratestep7",
+            "DATA-045"
+          ],
+          "output": "Rate step8",
+          "original_text": "Apply the underwriter schedule rating credit or debit (DATA-045): Rate step8 = Ratestep7 x DATA-045"
+        },
+        {
+          "sequence": 9,
+          "instruction": "Apply statutory environmental surcharge factor Senv: Rate step9 = Rate step8 x (1.0 + Senv) Where Senv = 0.045000 for risks situated in ZONE_4 and ZONE_5; 0.000000 otherwise.",
+          "operation": "expression",
+          "expression": "Rate step9 = Rate step8 x (1.0 + Senv)",
+          "inputs": [
+            "Rate step8",
+            "Senv"
+          ],
+          "output": "Rate step9",
+          "original_text": "Apply statutory environmental surcharge factor Senv: Rate step9 = Rate step8 x (1.0 + Senv) Where Senv = 0.045000 for risks situated in ZONE_4 and ZONE_5; 0.000000 otherwise."
+        },
+        {
+          "sequence": 10,
+          "instruction": "Retrieve catastrophic peril rate Rcat from Table TBL-CAT-PERIL (Page 21) based on seismic and windstorm exposure. Rate step10 = Rate step9 + Rcat",
+          "operation": "expression",
+          "expression": "Rate step10 = Rate step9 + Rcat",
+          "operand": "TBL-CAT-PERIL",
+          "inputs": [
+            "Rate step9",
+            "Rcat",
+            "Peril Code",
+            "Territory Zone",
+            "Roof Geometry",
+            "Building Stories",
+            "Peril Rate per $100"
+          ],
+          "output": "Rate step10",
+          "original_text": "Retrieve catastrophic peril rate Rcat from Table TBL-CAT-PERIL (Page 21) based on seismic and windstorm exposure. Rate step10 = Rate step9 + Rcat"
+        },
+        {
+          "sequence": 11,
+          "instruction": "Compute core physical damage premium by applying Rate step10 per $100 of Total Insured Value (DATA-042): Premiumcore = round_half_up ( DATA-042 / 100 x Rate step10 , 2 )",
+          "operation": "expression",
+          "expression": "Premiumcore = round_half_up ( DATA-042 / 100 x Rate step10 , 2 )",
+          "inputs": [
+            "DATA-042",
+            "Rate step10"
+          ],
+          "output": "Premiumcore",
+          "original_text": "Compute core physical damage premium by applying Rate step10 per $100 of Total Insured Value (DATA-042): Premiumcore = round_half_up ( DATA-042 / 100 x Rate step10 , 2 )"
+        },
+        {
+          "sequence": 12,
+          "instruction": "Sum all active optional endorsement premiums detailed in Section 6: Premium endorsements = END-001+END-002+END-003+END-005+END-006+END-007+END-008 Premium subtotal = Premiumcore + Premium endorsements",
+          "operation": "expression",
+          "expression": "Premium endorsements = END-001+END-002+END-003+END-005+END-006+END-007+END-008; Premium subtotal = Premiumcore + Premium endorsements",
+          "inputs": [
+            "Premiumcore",
+            "END-001",
+            "END-002",
+            "END-003",
+            "END-005",
+            "END-006",
+            "END-007",
+            "END-008"
+          ],
+          "output": "Premium subtotal",
+          "original_text": "Sum all active optional endorsement premiums detailed in Section 6: Premium endorsements = END-001+END-002+END-003+END-005+END-006+END-007+END-008 Premium subtotal = Premiumcore + Premium endorsements"
+        },
+        {
+          "sequence": 13,
+          "instruction": "Calculate mandatory municipal fire department assessment: Levy fire = round_half_up(Premium subtotal x 0.025,2) This levy applies strictly to properties located in municipal zones ZONE_1 and ZONE_2.",
+          "operation": "expression",
+          "expression": "Levy fire = round_half_up(Premium subtotal x 0.025,2)",
+          "inputs": [
+            "Premium subtotal"
+          ],
+          "output": "Levy fire",
+          "original_text": "Calculate mandatory municipal fire department assessment: Levy fire = round_half_up(Premium subtotal x 0.025,2) This levy applies strictly to properties located in municipal zones ZONE_1 and ZONE_2."
+        },
+        {
+          "sequence": 14,
+          "instruction": "Compute final total gross premium and enforce statutory minimum retained premium: Premiumgross = Premium subtotal + Levy fire Premium final = max($750.00, round_half_up(Premiumgross,2))",
+          "operation": "expression",
+          "expression": "Premium final = max($750.00, round_half_up(Premiumgross,2))",
+          "inputs": [
+            "Premium subtotal",
+            "Levy fire",
+            "Premiumgross"
+          ],
+          "output": "Premium final",
+          "original_text": "Compute final total gross premium and enforce statutory minimum retained premium: Premiumgross = Premium subtotal + Levy fire Premium final = max($750.00, round_half_up(Premiumgross,2))"
+        }
+      ],
+      "depends_on": [
+        "TBL-BASE-RATE",
+        "TBL-CONST-REL",
+        "TBL-OCC-LOAD",
+        "TBL-PROT-CRED",
+        "TBL-DED-REL",
+        "TBL-CAT-PERIL"
+      ],
+      "dependencies": [],
+      "inputs": [],
+      "outputs": [],
+      "purpose": "",
+      "applicability": "",
+      "execution_context": "",
+      "notes": "site_congestion_factor is used in CALC-STEP-07 but defined nowhere in source; kept verbatim and flagged as undefined for review. Declared_TIV, True_Replacement_Cost, Coinsurance_Required symbols in Coinsurance Penalty Factor are kept verbatim; no source definition maps them to DATA fields; flagged as undefined for review. CALC-STEP-12 endorsement sum explicitly lists END-001+END-002+END-003+END-005+END-006+END-007+END-008 and omits END-004; preserved verbatim and flagged for review as END-004 is defined in endorsements matrix but excluded from aggregation. Conflicting alternative formula BR-PROT-02 (Rprelim = Rbase x (1.0 + (Focc-1.0)-Creditsprot)) preserved separately; flagged as conflicting with sequential multiplicative Steps 3-5. Golden test expected values preserved verbatim: TC-CP-01 Rbase = $0.1650; Fconst = 0.58; Focc = 1.00; Mppc = 0.92; Cspk = 0.40; Fded = 1.00; Premium final = $5,417.80. TC-CP-02 Rbase = $0.1450; Fconst = 1.28; Focc = 1.15; Mppc = 0.92; Cspk = 0.00; Fded = 1.05; Premium final = $7,249.45. Expected values that cannot be derived from stated inputs with given steps are flagged for analyst review.",
+      "review_status": "",
+      "confidence": null
+    },
+    {
+      "id": "R2",
+      "name": "BR-PROT-02 – Additive Protection Adjustments",
+      "kind": "formula",
+      "source_pages": [
+        20
+      ],
+      "source_type": "",
+      "source_location": "",
+      "evidence_text": "4.3.1 Business Rule: BR-PROT-02 – Additive Protection Adjustments Notwithstanding algorithmic sequence guidelines, protection credits and occupancy hazard surcharges must be evaluated additively against the base rate during preliminary rate composition: Rprelim = Rbase x (1.0 + (Focc-1.0)-Creditsprot)",
+      "expression_text": "Rprelim = Rbase x (1.0 + (Focc-1.0)-Creditsprot)",
+      "conditions": [],
+      "conditions_detailed": [],
+      "steps": [],
+      "steps_detailed": [],
+      "depends_on": [
+        "TBL-OCC-LOAD",
+        "TBL-PROT-CRED"
+      ],
+      "dependencies": [],
+      "inputs": [
+        "Rbase",
+        "Focc",
+        "Creditsprot"
+      ],
+      "outputs": [
+        "Rprelim"
+      ],
+      "purpose": "",
+      "applicability": "",
+      "execution_context": "",
+      "notes": "Alternative/conflicting formula for same rate composition as CALC-STEP-03 to CALC-STEP-05 sequential multiplicative chain (Rate step3 = Rate step2 x Focc; Ratestep5 = Ratestep4 x (1.0-Cspk)); preserved verbatim and flagged as conflict for review instead of choosing one. Symbol Creditsprot defined nowhere else; kept verbatim and flagged as undefined.",
+      "review_status": "",
+      "confidence": null
+    }
+  ],
+  "issues": [
+    {
+      "id": "V1",
+      "severity": "warning",
+      "target_type": "table",
+      "target_id": "T2",
+      "message": "Table \"Construction Class Relativity Factors (TBL-CONST-REL)\" has 1 row(s) with column counts differing from headers.",
+      "source_pages": [
+        19
+      ]
+    },
+    {
+      "id": "V2",
+      "severity": "warning",
+      "target_type": "table",
+      "target_id": "T2",
+      "message": "Table \"Construction Class Relativity Factors (TBL-CONST-REL)\" row 4 has 5 value(s) for 6 columns; verify which column each value belongs to — values after a gap may sit under the wrong header.",
+      "source_pages": [
+        19
+      ]
+    },
+    {
+      "id": "V3",
+      "severity": "warning",
+      "target_type": "table",
+      "target_id": "T3",
+      "message": "Table \"Occupancy Hazard Relativity Loadings (TBL-OCC-LOAD)\" has unclear units or value semantics; verify currency, percentage, or factor meaning against the source.",
+      "source_pages": [
+        20
+      ]
+    },
+    {
+      "id": "V4",
+      "severity": "warning",
+      "target_type": "table",
+      "target_id": "T4",
+      "message": "Table \"Public Protection Classification Multipliers (Mppc) - TBL-PROT-CRED Part A\" has unclear units or value semantics; verify currency, percentage, or factor meaning against the source.",
+      "source_pages": [
+        21
+      ]
+    },
+    {
+      "id": "V5",
+      "severity": "warning",
+      "target_type": "table",
+      "target_id": "T4",
+      "message": "Table \"Public Protection Classification Multipliers (Mppc) - TBL-PROT-CRED Part A\" has non-numeric value(s) (\"Terminate Rating\") in otherwise-numeric column \"Protection Multiplier (Mppc)\"; verify against the source.",
+      "source_pages": [
+        21
+      ]
+    },
+    {
+      "id": "V6",
+      "severity": "warning",
+      "target_type": "table",
+      "target_id": "T7",
+      "message": "Table \"Deductible Relativity Factors (TBL-DED-REL)\" has unclear units or value semantics; verify currency, percentage, or factor meaning against the source.",
+      "source_pages": [
+        23
+      ]
+    },
+    {
+      "id": "V7",
+      "severity": "warning",
+      "target_type": "table",
+      "target_id": "T7",
+      "message": "Table \"Deductible Relativity Factors (TBL-DED-REL)\" has overlapping range bands in column \"Deductible Range Band\" (\"$5,001 to $10,000\" and \"$10,000 to $25,000\" both cover 10000); verify the boundary against the source.",
+      "source_pages": [
+        23
+      ]
+    },
+    {
+      "id": "V8",
+      "severity": "warning",
+      "target_type": "table",
+      "target_id": "T8",
+      "message": "Table \"Commercial Endorsements Matrix (END-001 to END-008)\" lists \"END-004\" in column \"End. ID\" but no routine references it while 7 of 8 \"END-\" codes are used; verify whether the omission is intended.",
+      "source_pages": [
+        28
+      ]
+    },
+    {
+      "id": "V9",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R1",
+      "message": "Routine \"Commercial Property Rating Pipeline CALC-STEP-01 to CALC-STEP-14\" depends on \"TBL-PROT-CRED\", which matches multiple tables (\"Public Protection Classification Multipliers (Mppc) - TBL-PROT-CRED Part A\", \"Automatic Sprinkler System Credits (Cspk) - TBL-PROT-CRED Part B\"); verify which table applies.",
+      "source_pages": [
+        24,
+        25,
+        26,
+        27
+      ]
+    },
+    {
+      "id": "V10",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R1",
+      "message": "Step 9 states an applicability condition (\"Apply statutory environmental surcharge factor Senv: Rate step9 = Rate step8 x (1.0 + Senv) Where S…\") with no structured branch; verify the condition and its fallback against the source.",
+      "source_pages": [
+        24,
+        25,
+        26,
+        27
+      ]
+    },
+    {
+      "id": "V11",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R1",
+      "message": "Step 13 states an applicability condition (\"Calculate mandatory municipal fire department assessment: Levy fire = round_half_up(Premium subtota…\") with no structured branch; verify the condition and its fallback against the source.",
+      "source_pages": [
+        24,
+        25,
+        26,
+        27
+      ]
+    },
+    {
+      "id": "V12",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R1",
+      "message": "Step 1 references \"DATA-038\", which matches no defined input, step output, routine output, table, column, routine, or constant; flagged as unresolved.",
+      "source_pages": [
+        24,
+        25,
+        26,
+        27
+      ]
+    },
+    {
+      "id": "V13",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R1",
+      "message": "Step 1 references \"DATA-006\", which matches no defined input, step output, routine output, table, column, routine, or constant; flagged as unresolved.",
+      "source_pages": [
+        24,
+        25,
+        26,
+        27
+      ]
+    },
+    {
+      "id": "V14",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R1",
+      "message": "Step 2 references \"DATA-013\", which matches no defined input, step output, routine output, table, column, routine, or constant; flagged as unresolved.",
+      "source_pages": [
+        24,
+        25,
+        26,
+        27
+      ]
+    },
+    {
+      "id": "V15",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R1",
+      "message": "Step 2 references \"DATA-021\", which matches no defined input, step output, routine output, table, column, routine, or constant; flagged as unresolved.",
+      "source_pages": [
+        24,
+        25,
+        26,
+        27
+      ]
+    },
+    {
+      "id": "V16",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R1",
+      "message": "Step 4 references \"DATA-028\", which matches no defined input, step output, routine output, table, column, routine, or constant; flagged as unresolved.",
+      "source_pages": [
+        24,
+        25,
+        26,
+        27
+      ]
+    },
+    {
+      "id": "V17",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R1",
+      "message": "Step 6 references \"DATA-044\", which matches no defined input, step output, routine output, table, column, routine, or constant; flagged as unresolved.",
+      "source_pages": [
+        24,
+        25,
+        26,
+        27
+      ]
+    },
+    {
+      "id": "V18",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R1",
+      "message": "Step 7 references \"site_congestion_factor\", which matches no defined input, step output, routine output, table, column, routine, or constant; flagged as unresolved.",
+      "source_pages": [
+        24,
+        25,
+        26,
+        27
+      ]
+    },
+    {
+      "id": "V19",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R1",
+      "message": "Step 7 references \"Declared_TIV\", which matches no defined input, step output, routine output, table, column, routine, or constant; flagged as unresolved.",
+      "source_pages": [
+        24,
+        25,
+        26,
+        27
+      ]
+    },
+    {
+      "id": "V20",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R1",
+      "message": "Step 7 references \"True_Replacement_Cost\", which matches no defined input, step output, routine output, table, column, routine, or constant; flagged as unresolved.",
+      "source_pages": [
+        24,
+        25,
+        26,
+        27
+      ]
+    },
+    {
+      "id": "V21",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R1",
+      "message": "Step 7 references \"Coinsurance_Required\", which matches no defined input, step output, routine output, table, column, routine, or constant; flagged as unresolved.",
+      "source_pages": [
+        24,
+        25,
+        26,
+        27
+      ]
+    },
+    {
+      "id": "V22",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R1",
+      "message": "Step 8 references \"DATA-045\", which matches no defined input, step output, routine output, table, column, routine, or constant; flagged as unresolved.",
+      "source_pages": [
+        24,
+        25,
+        26,
+        27
+      ]
+    },
+    {
+      "id": "V23",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R1",
+      "message": "Step 11 references \"DATA-042\", which matches no defined input, step output, routine output, table, column, routine, or constant; flagged as unresolved.",
+      "source_pages": [
+        24,
+        25,
+        26,
+        27
+      ]
+    },
+    {
+      "id": "V24",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R1",
+      "message": "Routine \"Commercial Property Rating Pipeline CALC-STEP-01 to CALC-STEP-14\" notes report a possible contradiction (\"Conflicting alternative formula BR-PROT-02 (Rprelim = Rbase x (1.0 + (Focc-1.0)-Creditsprot)) preserved separately;\"); verify which definition applies — flagged without choosing one.",
+      "source_pages": [
+        24,
+        25,
+        26,
+        27
+      ]
+    },
+    {
+      "id": "V25",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R2",
+      "message": "Routine \"BR-PROT-02 – Additive Protection Adjustments\" depends on \"TBL-PROT-CRED\", which matches multiple tables (\"Public Protection Classification Multipliers (Mppc) - TBL-PROT-CRED Part A\", \"Automatic Sprinkler System Credits (Cspk) - TBL-PROT-CRED Part B\"); verify which table applies.",
+      "source_pages": [
+        20
+      ]
+    },
+    {
+      "id": "V26",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R2",
+      "message": "Routine \"BR-PROT-02 – Additive Protection Adjustments\" notes report a possible contradiction (\"Alternative/conflicting formula for same rate composition as CALC-STEP-03 to CALC-STEP-05 sequential multiplicative cha…\"); verify which definition applies — flagged without choosing one.",
+      "source_pages": [
+        20
+      ]
+    }
+  ],
+  "status": "review",
+  "updated_at": "2026-10-29T06:09:22.271Z"
+}

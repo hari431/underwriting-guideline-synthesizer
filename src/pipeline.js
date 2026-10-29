@@ -27,6 +27,22 @@ export async function processPdf(
     if (err instanceof ModelDisabledError) err.details = { filename, pageCount };
     throw err;
   }
+  const job = buildJobFromExtraction(
+    { tables, routines },
+    { filename, pageCount }
+  );
+  return { job, source: recordingPath ? 'recorded' : 'live', extraction: { tables, routines } };
+}
+
+/**
+ * Deterministic post-extraction stages shared by the live pipeline and the
+ * offline fixture loader: normalize -> separate -> expand -> group ->
+ * validate. Pure local computation; never calls the model/API.
+ */
+export function buildJobFromExtraction(
+  { tables = [], routines = [] } = {},
+  { filename = 'upload.pdf', pageCount = 0 } = {}
+) {
   let job = normalizeJob(
     createJob({
       document: createDocument({ filename, pageCount }),
@@ -86,7 +102,7 @@ export async function processPdf(
     );
   }
   job = normalizeJob(job);
-  return { job, source: recordingPath ? 'recorded' : 'live', extraction: { tables, routines } };
+  return job;
 }
 
 /**

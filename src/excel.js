@@ -17,7 +17,7 @@
 // Cover and the summaries link each asset name to its detail worksheet.
 // Fixed ZIP timestamps keep builds byte-deterministic.
 import { deflateRawSync } from 'node:zlib';
-import { cleanStepInputValue, cleanStepOutputValue, normalizeVariableKey, parseAssignmentOperands, resolveTableReference, sanitizeExplicitStep, splitHyphenSubtraction, splitTopLevel, tableReferenceTerms } from './models.js';
+import { cleanStepInputValue, cleanStepOutputValue, normalizeVariableKey, parseAssignmentOperands, resolveTableReference, sanitizeExplicitStep, splitAssignmentSegment, splitHyphenSubtraction, splitTopLevel, tableReferenceTerms } from './models.js';
 
 // ---------- CRC32 + minimal ZIP writer ----------
 
@@ -880,16 +880,19 @@ function lookupOperand(det, tables) {
 }
 
 // Right-hand side of an assignment step: strip an optional 'Calculate' verb
-// and sentence-final period, then split 'output = rhs'. An explicit output
-// paired with a right-hand-side-only expression (no '=') also yields
-// { output, rhs } so model-provided calculations render as clean
-// `output <-- rhs` rows. Multi-assignment expressions (top-level `;`)
-// return null here: the expansion below renders each segment as its own
-// row group instead. Returns null when no plain assignment is evidenced
-// (prose, comparisons, and conditionals fall back to the verbatim text).
+// and sentence-final period, then split 'output = rhs'. The evidenced
+// structured output leads when the expression opens with it (single or
+// multi-word source variables alike); otherwise a leading plain assignment
+// still splits. An explicit output paired with a right-hand-side-only
+// expression (no '=') also yields { output, rhs } so model-provided
+// calculations render as clean `output <-- rhs` rows. Multi-assignment
+// expressions (top-level `;`) return null here: the expansion below renders
+// each segment as its own row group instead. Returns null when no plain
+// assignment is evidenced (prose, comparisons, and conditionals fall back
+// to the verbatim text).
 function splitAssignment(det) {
   const raw = String(det?.expression ?? '');
-  const outputRaw = String(det?.output ?? '');
+  const outputRaw = String(det?.output ?? '').trim();
   if (!raw.trim()) {
     const operand = String(det?.operand ?? '');
     if (outputRaw && operand.trim()) return { output: outputRaw, rhs: operand.trim() };
@@ -898,9 +901,15 @@ function splitAssignment(det) {
   if (splitTopLevel(raw, ';').length > 1) return null;
   const clean = raw.replace(/^\s*calculate\s+/i, '').replace(/\.\s*$/, '').trim();
   if (/^(if|else|when|otherwise)\b/i.test(clean)) return null;
-  const m = /^\s*([A-Za-z_]\w*)\s*=\s*([\s\S]+?)\s*$/.exec(clean);
-  if (m && m[2].trim() && !/^[=<>!]/.test(m[2].trim())) {
-    return { output: outputRaw || m[1], rhs: m[2].trim() };
+  if (outputRaw && /^[A-Za-z_][\w]*(?:[ .-]+[A-Za-z0-9_]+){0,3}$/.test(outputRaw)) {
+    const leader = new RegExp(`^\\s*${outputRaw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+')}\\s*=(?![=>])\\s*([\\s\\S]+?)\\s*$`).exec(clean);
+    if (leader && leader[1].trim() && !/^[=<>!]/.test(leader[1].trim())) {
+      return { output: outputRaw, rhs: leader[1].trim() };
+    }
+  }
+  const split = splitAssignmentSegment(clean);
+  if (split) {
+    return { output: outputRaw || split.output, rhs: split.rhs };
   }
   if (outputRaw && !clean.includes('=')) return { output: outputRaw, rhs: clean };
   return null;
@@ -1088,12 +1097,16 @@ function synthesizedExpressionEntries(r) {
   const segments = splitTopLevel(raw, ';')
     .map((s) => String(s ?? '').trim().replace(/\.\s*$/, '').trim())
     .filter(Boolean);
+  // The routine's own declared inputs when stated, else derived: explicit
+  // structure beats re-derivation for tracing and hyphen decisions.
+  const declaredInputs = (r.inputs ?? []).map((v) => String(v ?? '').trim()).filter(Boolean);
   const entries = [];
   for (const segment of segments) {
-    const clean = segment.replace(/^\s*calculate\s+(?=[A-Za-z_]\w*\s*=)/i, '').trim();
+    const clean = segment.replace(/^\s*calculate\s+(?=(?:[A-Za-z_]\w*\s+){0,2}[A-Za-z_]\w*\s*=)/i, '').trim();
     const parsed = parseAssignmentOperands(clean);
-    const rhs = parsed ? clean.replace(/^\s*[A-Za-z_]\w*\s*=\s*/, '') : '';
-    if (!parsed || !parsed.outputs[0] || !rhs.trim() || /^[=<>!]/.test(rhs.trim())) {
+    const split = parsed ? splitAssignmentSegment(clean) : null;
+    const rhs = split ? split.rhs : '';
+    if (!parsed || !parsed.outputs[0] || !split || !rhs.trim() || /^[=<>!]/.test(rhs.trim())) {
       return [{ seq: '1', instruction: raw, operation: '', operand: '', output: '', det: null }];
     }
     entries.push({
@@ -1102,7 +1115,7 @@ function synthesizedExpressionEntries(r) {
       operation: '<--',
       operand: rhs.trim(),
       output: parsed.outputs[0],
-      det: { inputs: parsed.inputs, output: parsed.outputs[0] },
+      det: { inputs: declaredInputs.length > 0 ? declaredInputs : parsed.inputs, output: parsed.outputs[0] },
     });
   }
   if (entries.length === 0) {
@@ -1114,19 +1127,29 @@ function synthesizedExpressionEntries(r) {
 // ---------- Rating-step expansion (generic) ----------
 
 // Tokenize an arithmetic right-hand side into operands, operators, and
-// parentheses. Identifiers may carry dots (source keys) or hyphens (coded
-// step outputs such as LX-01); numbers keep their exact text. A hyphen
+// parentheses. Identifiers may carry dots (source keys), hyphens (coded
+// step outputs such as LX-01), or single spaces (multi-word source
+// variables such as `Ledger total`); numbers keep their exact text. A hyphen
 // inside a code is part of the operand because the identifier match runs
-// first; a spaced hyphen still tokenizes as minus. Returns null on any
-// unfamiliar character so the caller keeps the verbatim single row instead
-// of inventing an interpretation. A function invocation (`name(...)` with
-// no space before the paren) tokenizes as one operand so calls split
-// around their arguments without parsing inside them; currency-prefixed
+// first; a spaced hyphen still tokenizes as minus. A standalone `x`/`X`
+// between two operands reads as multiplication while a variable named x
+// stays an operand: the reading follows the token position, never the
+// name. Returns null on any unfamiliar character so the caller keeps the
+// verbatim single row instead of inventing an interpretation. A function
+// invocation (`name(...)`, with or without a space before the paren)
+// tokenizes as one operand so calls split around their arguments without
+// parsing inside them — except amount-only parens (`Zone Rate (4.50%)`),
+// which stay detached for the phrase-operand path; currency-prefixed
 // amounts (`$37.50`) tokenize as one value operand.
 function tokenizeArithmetic(rhs) {
   const tokens = [];
   const text = String(rhs ?? '');
+  let expectOperand = true;
   let i = 0;
+  const operandStartAhead = (at) => {
+    const rest = text.slice(at).replace(/^\s+/, '');
+    return /^[A-Za-z_(\-₹$€£¥\d]/.test(rest) || /^\.\d/.test(rest);
+  };
   while (i < text.length) {
     const ch = text[i];
     if (/\s/.test(ch)) {
@@ -1135,23 +1158,59 @@ function tokenizeArithmetic(rhs) {
     }
     if (ch === '(') {
       tokens.push({ type: 'lparen', value: '(' });
+      expectOperand = true;
       i += 1;
       continue;
     }
     if (ch === ')') {
       tokens.push({ type: 'rparen', value: ')' });
+      expectOperand = false;
       i += 1;
       continue;
     }
-    const idMatch = /[A-Za-z_][A-Za-z0-9_]*(?:[-.][A-Za-z0-9_]+)*/.exec(text.slice(i));
+    const idMatch = /[A-Za-z_][A-Za-z0-9_]*(?:[-.][A-Za-z0-9_]+)*(?: +[A-Za-z_][A-Za-z0-9_]*(?:[-.][A-Za-z0-9_]+)*)*/.exec(text.slice(i));
     if (idMatch && idMatch.index === 0) {
       let value = idMatch[0];
       let next = i + value.length;
-      // A directly attached paren group is a call's argument list, kept
-      // whole as one invocation operand; unbalanced parens fail safe.
-      if (text[next] === '(') {
+      // A spaced `x`/`X` inside the match is the multiply operator, not
+      // part of the identifier: emit the left operand plus the operator
+      // and re-scan the rest, so hyphenated codes after it (`LX-01`)
+      // still tokenize whole.
+      if (expectOperand) {
+        const innerX = /\s+[xX]\s+/.exec(value);
+        if (innerX) {
+          tokens.push({ type: 'operand', value: value.slice(0, innerX.index) });
+          tokens.push({ type: 'op', value: innerX[0].trim() });
+          expectOperand = true;
+          i += innerX.index + innerX[0].length;
+          continue;
+        }
+        // A trailing lone `x`/`X` before another operand is also the
+        // multiply lexeme (`Base x (1.0 - C)`).
+        const tailX = /\s+[xX]$/.exec(value);
+        if (tailX && operandStartAhead(next)) {
+          tokens.push({ type: 'operand', value: value.slice(0, tailX.index) });
+          tokens.push({ type: 'op', value: tailX[0].trim() });
+          expectOperand = true;
+          i = next;
+          continue;
+        }
+      }
+      // A lone `x`/`X` after an operand and before another operand is the
+      // source's multiply lexeme, kept verbatim in the Op column.
+      if ((value === 'x' || value === 'X') && !expectOperand && operandStartAhead(next)) {
+        tokens.push({ type: 'op', value });
+        expectOperand = true;
+        i = next;
+        continue;
+      }
+      // An attached (or spaced, non-amount) paren group is a call's
+      // argument list, kept whole as one invocation operand; unbalanced
+      // parens fail safe.
+      const gap = /^(\s*)\(/.exec(text.slice(next));
+      if (gap) {
         let depth = 0;
-        let j = next;
+        let j = next + gap[1].length;
         for (; j < text.length; j += 1) {
           if (text[j] === '(') depth += 1;
           else if (text[j] === ')') {
@@ -1160,21 +1219,27 @@ function tokenizeArithmetic(rhs) {
           }
         }
         if (depth !== 0) return null;
-        value += text.slice(next, j + 1);
-        next = j + 1;
+        const inner = text.slice(next + gap[1].length + 1, j);
+        if (gap[1].length === 0 || !isAmountParen(inner)) {
+          value += text.slice(next, j + 1);
+          next = j + 1;
+        }
       }
       tokens.push({ type: 'operand', value });
+      expectOperand = false;
       i = next;
       continue;
     }
     if (ch === '+' || ch === '-' || ch === '*' || ch === '/' || ch === '%' || ch === '×' || ch === '÷') {
       tokens.push({ type: 'op', value: ch });
+      expectOperand = true;
       i += 1;
       continue;
     }
     const numMatch = /(?:[₹$€£¥]\s*)?\d+(?:\.\d+)?%?/.exec(text.slice(i));
     if (numMatch && numMatch.index === 0) {
       tokens.push({ type: 'operand', value: numMatch[0] });
+      expectOperand = false;
       i += numMatch[0].length;
       continue;
     }
@@ -1184,7 +1249,7 @@ function tokenizeArithmetic(rhs) {
 }
 
 function isIdentifierOperand(value) {
-  return /^[+-]?[A-Za-z_][A-Za-z0-9_.-]*$/.test(String(value ?? '').trim());
+  return /^[+-]?[A-Za-z_][\w.-]*(?: +[A-Za-z_][\w.-]*)*$/.test(String(value ?? '').trim());
 }
 
 // Amount-like parenthetical group: numbers, currency, percents, and
@@ -1598,11 +1663,13 @@ function expandMultiAssignment(det) {
   if (parts.length < 2) return null;
   const parsed = [];
   for (const part of parts) {
-    const m = /^\s*([A-Za-z_]\w*)\s*=\s*([\s\S]+?)\s*$/.exec(part);
-    if (!m || !m[2].trim()) return null;
-    parsed.push({ output: m[1], rhs: m[2].trim() });
+    const split = splitAssignmentSegment(part);
+    if (!split) return null;
+    parsed.push(split);
   }
-  const defined = new Set(parsed.map((p) => p.output.toLowerCase()));
+  const defined = new Set(
+    [...parsed.map((p) => p.output), ...(det?.inputs ?? [])].map((s) => String(s ?? '').toLowerCase())
+  );
   const specs = [];
   for (const p of parsed) {
     const rhs = splitHyphenSubtraction(p.rhs, defined);
@@ -1648,7 +1715,7 @@ function expandOneRatingEntry(entry) {
     const split = splitAssignment(det);
     const output = split?.output || String(entry.output ?? entry.instruction ?? '');
     const rawRhs = split?.rhs ?? String(entry.operand ?? '');
-    const rhs = splitHyphenSubtraction(rawRhs, [output]);
+    const rhs = splitHyphenSubtraction(rawRhs, [output, ...(det?.inputs ?? [])]);
     if (output && rhs.trim()) {
       const expanded = expandArithmetic(output, rhs);
       if (expanded && expanded.length > 1) {
@@ -1724,7 +1791,8 @@ function expandOneRatingEntry(entry) {
   }
   if (entry.operation === '<--' && entry.output && String(entry.operand ?? '').trim()
     && (!det || !String(det.operation ?? '').trim())) {
-    const expanded = expandArithmetic(entry.output, entry.operand);
+    const operand = splitHyphenSubtraction(String(entry.operand ?? ''), [entry.output, ...(det?.inputs ?? [])]);
+    const expanded = expandArithmetic(entry.output, operand);
     if (expanded && expanded.length > 1) {
       return expanded.map((row, idx) => ({
         ...row,

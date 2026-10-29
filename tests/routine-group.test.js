@@ -150,6 +150,25 @@ test('routine-group: pipeline groups the recorded step chain and flags it for ve
   assert.equal(job.issues.filter((i) => i.severity === 'error').length, 0);
 });
 
+test('routine-group: independent business rules and alternative formulas never join a chain', () => {
+  const routines = normalizeRoutines([
+    ...syntheticChain(),
+    {
+      name: 'ALT-ADD: Synthetic alternative composition', kind: 'business_rule', sourcePages: [2],
+      evidenceText: 'Synthetic alternative formula for the same composition.',
+      expressionText: 'alt_total = base_rate + flat_fee', inputs: ['base_rate', 'flat_fee'], outputs: ['alt_total'],
+    },
+  ]);
+  assert.equal(routines[3].kind, 'formula');
+  const { routines: out, groupings } = groupStepRoutines(routines);
+  assert.equal(groupings.length, 1);
+  assert.equal(out.length, 2);
+  assert.equal(out[0].kind, 'calculation_steps');
+  assert.equal(out[0].steps.length, 3);
+  assert.equal(out[1].name, 'ALT-ADD: Synthetic alternative composition');
+  assert.equal(out[1].kind, 'formula');
+});
+
 test('routine-group: multi-statement steps drop their own intermediates from step inputs', () => {
   const routines = normalizeRoutines([
     chainRoutine(1, 'rate1 = base_rate', { inputs: ['base_rate'], outputs: ['rate1'] }),

@@ -1121,3 +1121,82 @@ test('steps: REVIEW with evidenced code shows code-only Instruction and descript
   const evidence = evidenceBlock(values);
   assert.ok(evidence.some((row) => row[0] === 'Step 2 text' && row[1] === line));
 });
+
+test('steps: multi-word assignment outputs keep their full name; verbs do not join them', () => {
+  const r = ledgerRoutine([
+    'Step 1: Ledger step2 = Ledgerstep1 x Feeconst',
+    'Step 2: Calculate ledger_net = ledger_gross - ledger_fee',
+  ]);
+  assert.equal(r.steps_detailed[0].output, 'Ledger step2');
+  assert.equal(r.steps_detailed[0].expression, 'Ledger step2 = Ledgerstep1 x Feeconst');
+  assert.deepEqual(r.steps_detailed[0].inputs, ['Ledgerstep1', 'Feeconst']);
+  assert.equal(r.steps_detailed[1].output, 'ledger_net');
+  assert.deepEqual(r.steps_detailed[1].inputs, ['ledger_gross', 'ledger_fee']);
+});
+
+test('steps: infix x reads as multiply but a variable named x survives', () => {
+  const r = ledgerRoutine([
+    'Step 1: net = base x factor',
+    'Step 2: y = x * 2',
+  ]);
+  assert.equal(r.steps_detailed[0].expression, 'net = base x factor');
+  assert.deepEqual(r.steps_detailed[0].inputs, ['base', 'factor']);
+  assert.equal(r.steps_detailed[1].expression, 'y = x * 2');
+  assert.deepEqual(r.steps_detailed[1].inputs, ['x']);
+});
+
+test('steps: unseparated assignments in one instruction parse in source order', () => {
+  const r = ledgerRoutine([
+    'Step 1: Sum the riders: Ledger riders = LX-R1+LX-R2 Ledger subtotal = Ledger core + Ledger riders',
+  ]);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, 'expression');
+  assert.equal(det.output, 'Ledger subtotal');
+  assert.equal(det.expression, 'Ledger riders = LX-R1+LX-R2; Ledger subtotal = Ledger core + Ledger riders');
+  assert.deepEqual(det.inputs, ['LX-R1', 'LX-R2', 'Ledger core']);
+});
+
+test('steps: ambiguous instruction boundaries never promote into the expression', () => {
+  const instruction = 'Blend: Gross levy = subtotal + fire levy final = max(minimum, gross)';
+  const r = ledgerRoutine([{
+    sequence: 1,
+    instruction,
+    operation: 'expression',
+    expression: 'levy final = max(minimum, gross)',
+    inputs: ['minimum', 'gross'],
+    output: 'levy final',
+  }]);
+  const det = r.steps_detailed[0];
+  // The first assignment's boundary is uncertain ("subtotal +" tails into
+  // the next output), so the structured expression stays exactly as stated.
+  assert.equal(det.expression, 'levy final = max(minimum, gross)');
+  assert.equal(det.output, 'levy final');
+  assert.equal(det.instruction, instruction);
+});
+
+test('steps: instruction assignments promote into a single-assignment expression in order', () => {
+  const r = ledgerRoutine([{
+    sequence: 1,
+    instruction: 'Sum the riders: Ledger riders = LX-R1+LX-R2 Ledger subtotal = Ledger core + Ledger riders',
+    operation: 'expression',
+    expression: 'Ledger subtotal = Ledger core + Ledger riders',
+    inputs: ['Ledger core', 'LX-R1', 'LX-R2'],
+    output: 'Ledger subtotal',
+  }]);
+  const det = r.steps_detailed[0];
+  assert.equal(det.expression, 'Ledger riders = LX-R1+LX-R2; Ledger subtotal = Ledger core + Ledger riders');
+  assert.equal(det.output, 'Ledger subtotal');
+  assert.equal(det.instruction, 'Sum the riders: Ledger riders = LX-R1+LX-R2 Ledger subtotal = Ledger core + Ledger riders');
+});
+
+test('steps: promotion never fires when the expression disagrees with the instruction', () => {
+  const r = ledgerRoutine([{
+    sequence: 1,
+    instruction: 'Blend: Ledger riders = LX-R1+LX-R2 Ledger subtotal = Ledger core + Ledger riders',
+    operation: 'expression',
+    expression: 'Ledger subtotal = Ledger core - Ledger riders',
+    inputs: ['Ledger core', 'Ledger riders'],
+    output: 'Ledger subtotal',
+  }]);
+  assert.equal(r.steps_detailed[0].expression, 'Ledger subtotal = Ledger core - Ledger riders');
+});

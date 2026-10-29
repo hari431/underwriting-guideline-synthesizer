@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createJob, createDocument, normalizeJob, resolveTableReference } from '../src/models.js';
+import { cleanStepInputValue, createJob, createDocument, normalizeJob, resolveTableReference } from '../src/models.js';
 
 test('normalizeJob assigns stable sequential IDs and preserves evidence', () => {
   const job = normalizeJob(
@@ -595,4 +595,44 @@ test('models: table name and title are preserved as aliases for resolution', () 
   assert.equal(resolveTableReference(job.tables, 'SYN-CODE Part A')?.id, job.tables[0].id);
   assert.equal(resolveTableReference(job.tables, 'Synthetic Widget Multipliers')?.id, job.tables[0].id);
   assert.equal(resolveTableReference(job.tables, 'Plain Table')?.id, job.tables[1].id);
+});
+
+test('models: codes embedded in display names become aliases; ranges and prose do not', () => {
+  const job = normalizeJob(
+    createJob({
+      tables: [
+        { name: 'Widget Base Rates (SYN-BASE)', sourcePages: [1], evidenceText: 'ev', headers: ['K'], rows: [['1']] },
+        { name: 'Widget Credits - SYN-CRED Part A', sourcePages: [1], evidenceText: 'ev', headers: ['K'], rows: [['1']] },
+        { name: 'Rider Matrix (RID-001 to RID-008)', sourcePages: [1], evidenceText: 'ev', headers: ['K'], rows: [['1']] },
+        { name: 'Plain Matrix', sourcePages: [1], evidenceText: 'ev', headers: ['K'], rows: [['1']] },
+      ],
+    })
+  );
+  assert.deepEqual(job.tables[0].aliases, ['SYN-BASE']);
+  assert.deepEqual(job.tables[1].aliases, ['SYN-CRED Part A']);
+  assert.deepEqual(job.tables[2].aliases, []);
+  assert.deepEqual(job.tables[3].aliases, []);
+  assert.equal(resolveTableReference(job.tables, 'SYN-BASE')?.id, job.tables[0].id);
+  assert.equal(resolveTableReference(job.tables, 'SYN-CRED Part A')?.id, job.tables[1].id);
+});
+
+test('models: pipeline and business-rule kinds follow evidenced structure; unknown kinds pass through', () => {
+  const job = normalizeJob(
+    createJob({
+      routines: [
+        { name: 'P', kind: 'rating_pipeline', sourcePages: [1], evidenceText: 'e', steps: ['Do first', 'Do second'] },
+        { name: 'B', kind: 'business_rule', sourcePages: [1], evidenceText: 'e', expressionText: 'out = a + b' },
+        { name: 'C', kind: 'underwriting rule', sourcePages: [1], evidenceText: 'e', conditions: ['IF x THEN y'] },
+        { name: 'M', kind: 'mystery', sourcePages: [1], evidenceText: 'e' },
+      ],
+    })
+  );
+  assert.deepEqual(job.routines.map((r) => r.kind), ['calculation_steps', 'formula', 'condition', 'mystery']);
+});
+
+test('models: per-unit amounts stay in input labels; worked amounts still strip', () => {
+  assert.equal(cleanStepInputValue('Harbor Fee per $100'), 'Harbor Fee per $100');
+  assert.equal(cleanStepInputValue('Zone Rate (4.50%)'), 'Zone Rate');
+  assert.equal(cleanStepInputValue('Net Premium: \u20B937,531.00'), 'Net Premium');
+  assert.equal(cleanStepInputValue('20.00%'), '');
 });

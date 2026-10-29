@@ -4,7 +4,7 @@
 // each feeding the next routine's inputs (or naming it as a dependency).
 // Anything ambiguous passes through untouched; callers flag each grouping
 // for analyst verification. Generic syntax and structure, never names.
-import { normalizeVariableKey, resolveRoutineReference } from './models.js';
+import { normalizeVariableKey, resolveRoutineReference, splitAssignmentSegment } from './models.js';
 
 // A numbered step name: a non-empty stem, an optional separator, a trailing
 // number, and an optional rest (`: description`). Lazy stem so `PIPE-STEP-01:
@@ -89,24 +89,8 @@ function hasStandaloneAssignment(text) {
 function expressionOutputs(text) {
   const defined = [];
   for (const raw of splitTopLevelLocal(String(text ?? ''), ';')) {
-    const seg = raw.trim().replace(/\.\s*$/, '').trim();
-    if (!seg) continue;
-    let eqAt = -1;
-    for (let j = 0; j < seg.length; j += 1) {
-      if (standaloneEqualsAt(seg, j)) {
-        if (eqAt >= 0) {
-          eqAt = -1;
-          break;
-        }
-        eqAt = j;
-      }
-    }
-    if (eqAt < 0) continue;
-    const left = seg.slice(0, eqAt);
-    const rhs = seg.slice(eqAt + 1).trim();
-    if (!rhs) continue;
-    const m = /(?:^|[^A-Za-z0-9_.-])([A-Za-z_]\w*)\s*$/.exec(left);
-    if (m) defined.push(m[1]);
+    const split = splitAssignmentSegment(raw);
+    if (split) defined.push(split.output);
   }
   return defined;
 }
