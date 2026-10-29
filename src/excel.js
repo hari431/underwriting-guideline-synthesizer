@@ -907,6 +907,18 @@ function splitAssignment(det) {
       return { output: outputRaw, rhs: leader[1].trim() };
     }
   }
+  // Multi-output steps (`output: "A, B"`): try each comma/semicolon part as
+  // the leader so the evidenced assignment renders; anything else keeps the
+  // existing fallbacks below. Generic structure, never variable names.
+  if (outputRaw && /[,;]/.test(outputRaw)) {
+    for (const part of outputRaw.split(/[,;]/).map((p) => p.trim()).filter(Boolean)) {
+      if (!/^[A-Za-z_][\w]*(?:[ .-]+[A-Za-z0-9_]+){0,3}$/.test(part)) continue;
+      const leader = new RegExp(`^\\s*${part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+')}\\s*=(?![=>])\\s*([\\s\\S]+?)\\s*$`).exec(clean);
+      if (leader && leader[1].trim() && !/^[=<>!]/.test(leader[1].trim())) {
+        return { output: part, rhs: leader[1].trim() };
+      }
+    }
+  }
   const split = splitAssignmentSegment(clean);
   if (split) {
     return { output: outputRaw || split.output, rhs: split.rhs };
@@ -1041,6 +1053,11 @@ function renderRatingStep(text, origDet, tables) {
     if (splitTopLevel(String(det.expression ?? ''), ';').length > 1) {
       return { instruction, operation: '', operand: '', output: String(det.output ?? ''), det };
     }
+    // A bare evaluated equality with no evidenced output renders as one `=`
+    // row with both sides verbatim; the unstated target stays flagged by
+    // validation instead of becoming REVIEW.
+    const bare = !String(det.output ?? '').trim() ? splitBareEquality(det.expression) : null;
+    if (bare) return { instruction: bare.lhs, operation: '=', operand: bare.rhs, output: '', det };
     return { instruction, operation: '', operand: '', output: '', det: null };
   }
   if (det && word === 'rounding') {
@@ -1236,7 +1253,7 @@ function tokenizeArithmetic(rhs) {
       i += 1;
       continue;
     }
-    const numMatch = /(?:[₹$€£¥]\s*)?\d+(?:\.\d+)?%?/.exec(text.slice(i));
+    const numMatch = /(?:[₹$€£¥]\s*)?(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)%?/.exec(text.slice(i));
     if (numMatch && numMatch.index === 0) {
       tokens.push({ type: 'operand', value: numMatch[0] });
       expectOperand = false;
@@ -1524,12 +1541,114 @@ function extractBranchValue(branch) {
 // Instruction column; conditions stay in Operand and branch assignments keep
 // the `output <-- value` form. Returns null when no confident branch
 // structure is evidenced, leaving the single verbatim row in place.
-function expandConditionEntry(entry) {
+// Explicit conditional formula (`output = value if condition else other`,
+// the assignment form of an IF/ELSE): returns a canonical IF/THEN/ELSE
+// clause for the shared conditional renderer, or null when the shape is
+// not evidenced. Only depth-0 if/else split, so parenthesized conditions
+// never break apart; nested conditionals stay verbatim for review.
+function conditionalRhsClause(output, rhs) {
+  const target = String(output ?? '').trim();
+  const s = String(rhs ?? '');
+  if (!target || !s) return null;
+  const tokens = [...s.matchAll(/\b(if|else)\b/gi)];
+  const depthAt = (at) => {
+    let depth = 0;
+    for (let i = 0; i < at; i += 1) {
+      const ch = s[i];
+      if (ch === '(' || ch === '[' || ch === '{') depth += 1;
+      else if (ch === ')' || ch === ']' || ch === '}') depth = Math.max(0, depth - 1);
+    }
+    return depth;
+  };
+  const ifTok = tokens.find((t) => t[1].toLowerCase() === 'if' && depthAt(t.index) === 0);
+  if (!ifTok) return null;
+  const elseTok = tokens.find((t) => t[1].toLowerCase() === 'else' && t.index > ifTok.index && depthAt(t.index) === 0);
+  if (!elseTok) return null;
+  const value = s.slice(0, ifTok.index).trim();
+  const condition = s.slice(ifTok.index + ifTok[0].length, elseTok.index).trim();
+  const other = s.slice(elseTok.index + elseTok[0].length).trim();
+  if (!value || !condition || !other) return null;
+  if (/\b(if|else)\b/i.test(value) || /\b(if|else)\b/i.test(condition)) return null;
+  const offset = elseTok.index + elseTok[0].length;
+  const depthInOther = (tok) => depthAt(offset + tok.index) === 0;
+  const otherIfs = [...other.matchAll(/\bif\b/gi)].filter(depthInOther);
+  const otherElses = [...other.matchAll(/\belse\b/gi)].filter(depthInOther);
+  if (otherIfs.length === 0) {
+    return `IF ${condition} THEN ${target} = ${value} ELSE ${target} = ${other}`;
+  }
+  // An else branch restating one more guard (`... else B if C2`) is an
+  // ELSEIF, not prose: only the single-guard shape qualifies, so deeper
+  // nesting still falls through to the verbatim row.
+  if (otherIfs.length !== 1 || otherElses.length !== 0) return null;
+  const secondValue = other.slice(0, otherIfs[0].index).trim();
+  const secondCondition = other.slice(otherIfs[0].index + otherIfs[0][0].length).trim();
+  if (!secondValue || !secondCondition) return null;
+  if (/\b(if|else)\b/i.test(secondValue) || /\b(if|else)\b/i.test(secondCondition)) return null;
+  return `IF ${condition} THEN ${target} = ${value} ELSEIF ${secondCondition} THEN ${target} = ${secondValue}`;
+}
+
+// Split a bare evaluated equality (`2 x $150.00 = $300.00`) into its two
+// verbatim sides for one `=` row. Anything without exactly one top-level
+// `=` (or with an empty side) stays null for the verbatim row.
+function splitBareEquality(expression) {
+  const clean = String(expression ?? '').trim().replace(/\.\s*$/, '').trim();
+  if (!clean || clean.includes(';')) return null;
+  const m = /^([\s\S]+?)\s*=(?![=>])\s*([\s\S]+?)\s*$/.exec(clean);
+  if (!m || !m[1].trim() || !m[2].trim()) return null;
+  if (/^[=<>!]/.test(m[2].trim())) return null;
+  if (m[2].includes('=')) return null;
+  return { lhs: m[1].trim(), rhs: m[2].trim() };
+}
+
+// Render a bare comparison check (`Out > threshold`) as one row naming the
+// variable under Instruction with the comparator under Op. Branch wording
+// still expands through expandConditionEntry; only branchless checks land
+// here. Returns null unless the expression is one variable, one comparator,
+// and a stated threshold.
+function expandCheckEntry(entry) {
+  const det = entry?.det ?? null;
+  const raw = String(det?.expression ?? '').trim();
+  if (!raw || /=|;/.test(raw)) return null;
+  const m = /^(.+?)\s*(>=|<=|>|<)\s*(.+?)\s*$/.exec(raw);
+  if (!m) return null;
+  const lhs = m[1].trim();
+  const op = m[2];
+  const rhs = m[3].trim();
+  if (!lhs || !rhs) return null;
+  if (op === '>' && /-$/.test(lhs)) return null;
+  if (op === '<' && /^[-=]/.test(rhs)) return null;
+  return [{
+    instruction: lhs,
+    op,
+    open: '',
+    operand: rhs,
+    close: '',
+    output: '',
+    kind: 'check',
+    commentInputs: [lhs],
+    rhs: raw,
+  }];
+}
+
+function expandConditionEntry(entry, clauseOverride) {
   const det = entry?.det ?? null;
   const output = String(entry?.output ?? det?.output ?? '');
-  const clause = String(det?.expression ?? '').trim()
+  const fromEntry = String(det?.expression ?? '').trim()
     || extractRatingConditionClause(entry?.instruction ?? '')
     || '';
+  let clause = clauseOverride === undefined || clauseOverride === null ? fromEntry : String(clauseOverride);
+  if (clause && !parseRatingConditionChain(clause)) {
+    // Assignment-wrapped conditional (`Out = A if C else B`): canonicalize
+    // through the shared conditional-form parser so condition operations
+    // with explicit formulas render branches instead of REVIEW.
+    const assign = /^(.+?)\s*=\s*([\s\S]+)$/.exec(clause);
+    const lhs = assign ? assign[1].trim() : '';
+    const rhs = assign ? assign[2].trim() : '';
+    const canon = lhs && rhs && !/=/.test(lhs) && !/^[=<>!]/.test(rhs)
+      ? conditionalRhsClause(lhs, rhs)
+      : null;
+    if (canon) clause = canon;
+  }
   const parsed = clause ? parseRatingConditionChain(clause.replace(/[.;]+$/, '').trim() || clause) : null;
   if (!parsed) return null;
   const stages = (parsed.stages ?? []).filter((s) => String(s?.branch ?? '').trim());
@@ -1663,15 +1782,28 @@ function expandMultiAssignment(det) {
   if (parts.length < 2) return null;
   const parsed = [];
   for (const part of parts) {
-    const split = splitAssignmentSegment(part);
-    if (!split) return null;
-    parsed.push(split);
+    // Four-word outputs match what chained-equality parsing evidences;
+    // anything longer still fails safe to the verbatim row.
+    const split = splitAssignmentSegment(part, 4);
+    if (split) {
+      parsed.push(split);
+      continue;
+    }
+    // A bare evaluated part (`(1.000 - X) = 0.960`) renders as its own
+    // `=` row; anything else still fails safe to the verbatim row.
+    const bare = splitBareEquality(part);
+    if (!bare) return null;
+    parsed.push({ output: '', rhs: '', bare });
   }
   const defined = new Set(
     [...parsed.map((p) => p.output), ...(det?.inputs ?? [])].map((s) => String(s ?? '').toLowerCase())
   );
   const specs = [];
   for (const p of parsed) {
+    if (p.bare) {
+      specs.push({ instruction: p.bare.lhs, op: '=', open: '', operand: p.bare.rhs, close: '', output: '', kind: 'arithmetic-bare', commentInputs: [], rhs: '', det });
+      continue;
+    }
     const rhs = splitHyphenSubtraction(p.rhs, defined);
     const rows = expandAssignmentSegment(p.output, rhs);
     if (!rows) return null;
@@ -1685,7 +1817,7 @@ function expandMultiAssignment(det) {
 // anything unparsed stay single; arithmetic with operators and confident
 // conditionals expand. Never invents values: unparseable text keeps its
 // verbatim single row.
-function expandOneRatingEntry(entry) {
+function expandOneRatingEntryInner(entry) {
   const det = entry?.det ?? null;
   const word = String(det?.operation ?? '').toLowerCase();
   if (det && isLookupOperation(det.operation)) {
@@ -1717,6 +1849,11 @@ function expandOneRatingEntry(entry) {
     const rawRhs = split?.rhs ?? String(entry.operand ?? '');
     const rhs = splitHyphenSubtraction(rawRhs, [output, ...(det?.inputs ?? [])]);
     if (output && rhs.trim()) {
+      const condClause = conditionalRhsClause(output, rhs);
+      if (condClause) {
+        const condRows = expandConditionEntry(entry, condClause);
+        if (condRows) return condRows.map((row) => ({ ...row, det }));
+      }
       const expanded = expandArithmetic(output, rhs);
       if (expanded && expanded.length > 1) {
         return expanded.map((row, idx) => ({
@@ -1815,6 +1952,8 @@ function expandOneRatingEntry(entry) {
   if (det && isConditionOperation(det.operation)) {
     const expanded = expandConditionEntry(entry);
     if (expanded) return expanded.map((row) => ({ ...row, det }));
+    const check = expandCheckEntry(entry);
+    if (check) return check.map((row) => ({ ...row, det }));
   }
   if (det && word === 'rounding') {
     return [{
@@ -1865,6 +2004,35 @@ function expandOneRatingEntry(entry) {
 // pushRoutineEvidence). Returns null when no code display is evidenced —
 // no code cell, or the instruction does not open with the code as a whole
 // token — leaving the row unchanged.
+// Append one `=` row per stated worked value carried by the source step, so
+// chained evaluations keep their evidenced results beside the calculation
+// rows. Pure display: the stored step already carries stated_results.
+function appendStatedResultRows(specs, entry) {
+  const results = entry?.det?.stated_results;
+  if (!Array.isArray(results)) return specs;
+  for (const r of results) {
+    const output = String(r?.output ?? '').trim();
+    const value = String(r?.value ?? '').trim();
+    if (!output || !value) continue;
+    specs.push({
+      instruction: output,
+      op: '=',
+      open: '',
+      operand: value,
+      close: '',
+      output,
+      kind: 'stated-result',
+      commentInputs: [],
+      det: entry.det,
+    });
+  }
+  return specs;
+}
+
+function expandOneRatingEntry(entry) {
+  return appendStatedResultRows(expandOneRatingEntryInner(entry), entry);
+}
+
 function splitCodeInstruction(instruction, det) {
   const code = String(det?.cells?.code ?? '').trim();
   const text = String(instruction ?? '').trim();
@@ -1940,6 +2108,14 @@ function fallbackRatingComment(spec, tables) {
       const target = output || operand;
       return target ? `Round ${target} (${orig})` : `Rounding (${orig})`;
     }
+    case 'check': {
+      const target = String(spec.instruction ?? '').trim();
+      const comparison = target && spec.op && spec.operand
+        ? `${target} ${spec.op} ${spec.operand}` : '';
+      return comparison ? `Check ${comparison} (${orig})` : `Comparison check (${orig})`;
+    }
+    case 'stated-result':
+      return `Stated result (${orig})`;
     case 'explicit-op':
       if (operand) return `Apply ${spec.op} ${operand} (${orig})`;
       return `Operation ${spec.op} (${orig})`;
@@ -1991,6 +2167,18 @@ function ratingRoutineSheetRows(r, routineIssues, ctx = {}) {
   pushRoutineHeader(rows, r);
   const routines = ctx.routines ?? [];
   const tables = ctx.tables ?? [];
+  // Worked examples keep their stated inputs beside their steps (the legacy
+  // layout showed them; other stepwise routines never had this section).
+  if (String(r?.kind ?? '') === 'worked_example') {
+    const inputSources = resolveInputSources(r, routines, tables);
+    if (inputSources.length > 0) {
+      rows.push(['Inputs']);
+      rows.push(['Input', 'Source', 'Lookup keys']);
+      for (const e of inputSources) {
+        rows.push([e.input, e.source, e.keys]);
+      }
+    }
+  }
   const stepEntries = buildRatingStepEntries(r, tables);
   if (stepEntries.length > 0) {
     rows.push(['Steps']);
@@ -2022,7 +2210,7 @@ function ratingRoutineSheetRows(r, routineIssues, ctx = {}) {
       const comment = needsReview ? unparsedReviewComment(spec) : (traced || fallbackRatingComment(spec, tables));
       const op = needsReview ? UNPARSED_OP_MARK : spec.op;
       rows.push([spec.newSeq, spec.instruction, op, spec.open, spec.operand, spec.close, comment]);
-      if (spec.output && spec.kind !== 'arithmetic-cont') {
+      if (spec.output && spec.kind !== 'arithmetic-cont' && spec.kind !== 'stated-result') {
         priorOutputs.set(
           normalizeVariableKey(spec.output),
           { seq: spec.newSeq ?? '', table: priorTableForStep(spec.det ?? null, tables) }

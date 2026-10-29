@@ -110,6 +110,20 @@ test('extract: prompt separates reusable tables, adjacent grids, and genuine ste
   }
 });
 
+test('extract: prompt structures worked examples as ordered calculation steps', () => {
+  const prompt = buildExtractionPrompt([{ page: 1, text: 'sample' }]);
+  for (const term of ['worked_example', 'one entry per', 'explicit calculation', 'table lookups with keys', 'underivable value flags']) {
+    assert.ok(prompt.includes(term), `prompt missing worked-step guidance: ${term}`);
+  }
+});
+
+test('extract: prompt keeps prerequisite definitions in one ordered routine', () => {
+  const prompt = buildExtractionPrompt([{ page: 1, text: 'sample' }]);
+  for (const term of ['prerequisite', 'intermediate value', 'adjacent source', 'execution order', 'one routine per formula']) {
+    assert.ok(prompt.includes(term), `prompt missing prerequisite guidance: ${term}`);
+  }
+});
+
 test('extract: prompt preserves grid-row cells with column roles, never as operations', () => {
   const prompt = buildExtractionPrompt([{ page: 1, text: 'sample' }]);
   for (const term of ['cells {', 'verbatim cell text', 'role', 'never become an operation']) {

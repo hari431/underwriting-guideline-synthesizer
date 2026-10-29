@@ -1242,8 +1242,15 @@ function checkUnusedInputs(routine, warn) {
     const key = normalizeVariableKey(s);
     if (key) used.add(key);
   };
+  // Normalized token runs per scanned text, for multi-word inputs below.
+  const tokenRuns = [];
   const addTokens = (text) => {
-    for (const m of splitHyphenSubtraction(String(text ?? ''), definedHere).matchAll(IDENT_TOKEN)) addName(m[0]);
+    const run = [];
+    for (const m of splitHyphenSubtraction(String(text ?? ''), definedHere).matchAll(IDENT_TOKEN)) {
+      addName(m[0]);
+      run.push(normalizeVariableKey(m[0]));
+    }
+    if (run.length > 0) tokenRuns.push(run);
   };
   addTokens(routine.expression_text);
   for (const s of routine.steps ?? []) addTokens(typeof s === 'string' ? s : (s?.instruction ?? s?.text ?? ''));
@@ -1270,8 +1277,28 @@ function checkUnusedInputs(routine, warn) {
     const key = normalizeVariableKey(name);
     if (used.has(name.toLowerCase()) || (key && used.has(key))) continue;
     if (rangeInputUsed(name, used)) continue;
+    if (tokenRunUsed(name, tokenRuns)) continue;
     warn('routine', routine.id, `Routine "${routine.name || routine.id}" declares input "${name}", which is used nowhere in its steps, conditions, expression, or dependencies; verify the name against the source.`, routine.source_pages);
   }
+}
+
+// A spaced multi-word input (`T Fi`) is used when its normalized form
+// equals a contiguous run of scanned tokens (`T`, `Fi`), in order. Single
+// tokens are compared whole elsewhere; substring matching across token
+// boundaries would invent uses, so only exact ordered runs count.
+function tokenRunUsed(name, tokenRuns) {
+  const words = String(name ?? '').trim().split(/\s+/).filter(Boolean);
+  if (words.length < 2) return false;
+  const key = normalizeVariableKey(name);
+  if (!key) return false;
+  for (const run of tokenRuns ?? []) {
+    for (let len = 2; len <= Math.min(run.length, 10); len += 1) {
+      for (let i = 0; i + len <= run.length; i += 1) {
+        if (run.slice(i, i + len).join('') === key) return true;
+      }
+    }
+  }
+  return false;
 }
 
 // Range-notation inputs (`Payroll1..Payrolln`, `CPk for k=1 to 5`) name a
@@ -1311,9 +1338,14 @@ function buildReferenceContext(tables, routines) {
   const lower = (s) => String(s ?? '').trim().toLowerCase();
   const lowered = (list) => new Set((list ?? []).map(lower).filter(Boolean));
   const normalized = (set) => new Set([...set].map((s) => normalizeVariableKey(s)).filter(Boolean));
+  // Multi-output steps join their targets (`output: "A, B"`): each part is a
+  // defined term of its own. Commas never belong in a variable name, so the
+  // split cannot merge distinct variables — it only stops the joined string
+  // from hiding every part at once.
+  const outputParts = (value) => String(value ?? '').split(/[,;]/).map((s) => s.trim()).filter(Boolean);
   const tableTerms = tableReferenceTerms(tables);
-  const routineOutputs = lowered((routines ?? []).flatMap((r) => r.outputs ?? []));
-  const stepOutputs = lowered((routines ?? []).flatMap((r) => (r.steps_detailed ?? []).map((s) => s?.output)));
+  const routineOutputs = lowered((routines ?? []).flatMap((r) => (r.outputs ?? []).flatMap(outputParts)));
+  const stepOutputs = lowered((routines ?? []).flatMap((r) => (r.steps_detailed ?? []).flatMap((s) => outputParts(s?.output))));
   const constants = definedConstantTerms(routines);
   const ownInputs = new Map();
   for (const r of routines ?? []) {
@@ -1456,6 +1488,12 @@ function stepDefinedTerms(step) {
     const key = normalizeVariableKey(s);
     if (key) normalized.add(key);
   };
+  // Declared step references, used as queries below: a retrieval phrase
+  // only ever defines names the step itself states, so prose inside the
+  // phrase can never resolve anything by accident.
+  const queries = [...(step?.inputs ?? []), ...(step?.depends_on ?? [])]
+    .map((v) => String(v ?? '').trim())
+    .filter(Boolean);
   const texts = [step?.instruction, step?.expression, step?.original_text];
   for (const raw of texts) {
     const s = String(raw ?? '');
@@ -1473,6 +1511,35 @@ function stepDefinedTerms(step) {
     while ((m = pattern.exec(s)) !== null) {
       const ids = String(m[1] ?? '').match(/[A-Za-z_]\w*/g) ?? [];
       if (ids.length > 0) add(ids[ids.length - 1]);
+      // Each listed item (`base rates BRprem and BRprod`) defines its own
+      // trailing variable: a declared reference resolves when it matches a
+      // trailing token run of one item, spacing-insensitive, so `T Fprem`
+      // matches `... factors T Fprem` while bare prose (`factors`) never
+      // does. Token boundaries are exact — suffix substrings do not count.
+      for (const segment of String(m[1] ?? '').split(/\s+and\s+|,/i)) {
+        const keys = (segment.match(/[A-Za-z_]\w*/g) ?? []).map((t) => normalizeVariableKey(t));
+        if (keys.length === 0) continue;
+        for (const q of queries) {
+          const qk = normalizeVariableKey(q);
+          if (!qk) continue;
+          for (let i = 0; i < keys.length; i += 1) {
+            if (keys.slice(i).join('') === qk) {
+              add(q);
+              break;
+            }
+          }
+        }
+      }
+    }
+    // Explicit same-step definitions (`Let Feeflat be the sum ...`) define
+    // exactly the named phrase, however spaced. Whole phrases only: unlike
+    // retrieval items, the phrase carries no surrounding prose to trim.
+    const letPattern = /\blet\s+(.+?)\s+be\b/gi;
+    let letMatch;
+    while ((letMatch = letPattern.exec(s)) !== null) {
+      for (const part of String(letMatch[1] ?? '').split(/\s+and\s+|,/i)) {
+        add(part.trim());
+      }
     }
   }
   return { lower, normalized };

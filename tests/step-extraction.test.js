@@ -1200,3 +1200,190 @@ test('steps: promotion never fires when the expression disagrees with the instru
   }]);
   assert.equal(r.steps_detailed[0].expression, 'Ledger subtotal = Ledger core - Ledger riders');
 });
+
+test('steps: chained equality with a worked result parses as an assignment', () => {
+  const r = ledgerRoutine(['Ledger total = $12,500 / 100.0 = 125.0000 credits']);
+  assert.deepEqual(r.steps, ['Ledger total = $12,500 / 100.0 = 125.0000 credits']);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, 'expression');
+  assert.equal(det.expression, 'Ledger total = $12,500 / 100.0');
+  assert.equal(det.output, 'Ledger total');
+  assert.deepEqual(det.inputs ?? [], []);
+});
+
+test('steps: chained multi-statement with rounding arrows parses in order', () => {
+  const r = ledgerRoutine(['Alpha net = 3.40 x 1.180 = 4.0120→ 4.012; Alpha gross = 2.10 x 1.050 = 2.2050→ 2.205']);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, 'expression');
+  assert.equal(det.expression, 'Alpha net = 3.40 x 1.180; Alpha gross = 2.10 x 1.050');
+  assert.equal(det.output, 'Alpha gross');
+  assert.deepEqual(det.inputs ?? [], []);
+});
+
+test('steps: chained prose result stays unparsed instead of inventing a value', () => {
+  const r = ledgerRoutine(['Alpha total = base amount + fee amount = final amount']);
+  assert.equal(r.steps_detailed[0].operation, undefined);
+  assert.equal(r.steps_detailed[0].expression, undefined);
+});
+
+test('steps: where-clause double equality is not chained equality', () => {
+  const r = ledgerRoutine(['net = gross - levy where levy = 5']);
+  assert.equal(r.steps_detailed[0].operation, undefined);
+  assert.equal(r.steps_detailed[0].expression, undefined);
+});
+
+test('steps: chained equality links multi-part worked evaluations', () => {
+  const r = ledgerRoutine(['Ledger net = Round(850.0000 x 5.7773, 2) = Round(4910.705, 2) = $4,910.71']);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, 'expression');
+  assert.equal(det.expression, 'Ledger net = Round(850.0000 x 5.7773, 2)');
+  assert.equal(det.output, 'Ledger net');
+  assert.deepEqual(det.inputs ?? [], []);
+});
+
+test('steps: chained worked result ignores arrow restatements', () => {
+  const r = ledgerRoutine(['Alpha share = 12,840 / 235,000 = 0.054638→ floor at 0.150']);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, 'expression');
+  assert.equal(det.expression, 'Alpha share = 12,840 / 235,000');
+  assert.equal(det.output, 'Alpha share');
+});
+
+test('steps: chained middle rejects implication arrows', () => {
+  // A bare value right of `=>` is not a yields-clause evaluation (no
+  // arithmetic left side), so the arrow still fails safe to unparsed.
+  const r = ledgerRoutine(['Alpha = 0.040 => 1.000 = 0.960']);
+  assert.equal(r.steps_detailed[0].operation, undefined);
+  assert.equal(r.steps_detailed[0].expression, undefined);
+});
+
+test('steps: worked notes promote to ordered calculation steps', () => {
+  const r = ledgerRoutine([], {
+    kind: 'worked_example',
+    evidenceText: 'synthetic worked illustration',
+    notes: 'Expected values verbatim for review: Ledger total = $12,500 / 100.0 = 125.0000 credits; Fee table (F-1): Harbor fee=$30.00, Harbor dues=$12.50; Harbor grand = 125.00 + 42.50 = $167.50. All values reconcile.',
+  });
+  assert.equal(r.kind, 'worked_example');
+  assert.deepEqual(r.steps, [
+    'Expected values verbatim for review: Ledger total = $12,500 / 100.0 = 125.0000 credits',
+    'Fee table (F-1): Harbor fee=$30.00, Harbor dues=$12.50',
+    'Harbor grand = 125.00 + 42.50 = $167.50',
+  ]);
+  assert.deepEqual(r.steps_detailed.map((d) => d.sequence), [1, 2, 3]);
+  assert.equal(r.steps_detailed[0].operation, 'expression');
+  assert.equal(r.steps_detailed[0].expression, 'Ledger total = $12,500 / 100.0');
+  assert.equal(r.steps_detailed[0].output, 'Ledger total');
+  assert.equal(r.steps_detailed[1].expression, 'Harbor fee = $30.00; Harbor dues = $12.50');
+  assert.equal(r.steps_detailed[2].expression, 'Harbor grand = 125.00 + 42.50');
+  assert.ok(r.steps_detailed.every((d) => Array.isArray(d.source_pages) && d.source_pages.length > 0));
+  assert.match(r.notes, /All values reconcile/);
+});
+
+test('steps: worked promotion skips prose and keeps ambiguous segments for review', () => {
+  // The yields-clause evaluation shape now structures; a second assignment
+  // right of `=>` stays ambiguous for review.
+  const notes = 'Summary of illustrative results; Alpha fee = 0.040 => fee total = 0.960; Ledger total = $100 / 2 = 50.00 credits';
+  const r = ledgerRoutine([], { kind: 'worked_example', notes });
+  assert.equal(r.steps.length, 2);
+  assert.equal(r.steps_detailed[0].operation, undefined);
+  assert.equal(r.steps_detailed[0].expression, undefined);
+  assert.equal(r.steps_detailed[1].operation, 'expression');
+  assert.equal(r.notes, notes);
+});
+
+test('steps: chained worked result ignores trailing citations', () => {
+  const r = ledgerRoutine(['Ledger net = Round(49,479.31 x 1.035, 2) = Round(51,211.08585, 2) = $51,211.09 (CG-2404 +3.5%)']);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, 'expression');
+  assert.equal(det.expression, 'Ledger net = Round(49,479.31 x 1.035, 2)');
+  assert.equal(det.output, 'Ledger net');
+});
+
+test('steps: yields-clause splits assignment and bare evaluation', () => {
+  const r = ledgerRoutine(['Fee table (F-1): Seeded=0.040 => (1.000-Seeded)=0.960']);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, 'expression');
+  assert.equal(det.expression, 'Seeded = 0.040; (1.000 - Seeded) = 0.960');
+  assert.equal(det.output, 'Seeded');
+  assert.deepEqual(det.inputs ?? [], []);
+});
+
+test('steps: yields-clause with assigned right side stays unparsed', () => {
+  const r = ledgerRoutine(['Alpha flag = 1 => Beta flag = 2']);
+  assert.equal(r.steps_detailed[0].operation, undefined);
+  assert.equal(r.steps_detailed[0].expression, undefined);
+});
+
+test('steps: bare equality without an output variable still structures', () => {
+  const r = ledgerRoutine(['Harbor flat total: 2 x $150.00 = $300.00']);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, 'expression');
+  assert.equal(det.expression, '2 x $150.00 = $300.00');
+  assert.equal(det.output, undefined);
+  assert.deepEqual(det.inputs ?? [], []);
+});
+
+test('steps: bare prose-sum equality still structures', () => {
+  const r = ledgerRoutine(['Harbor manifest: sum of assessed components = 1.791']);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, 'expression');
+  assert.equal(det.expression, 'sum of assessed components = 1.791');
+  assert.equal(det.output, undefined);
+});
+
+test('steps: assigned equality keeps its output instead of a bare row', () => {
+  const r = ledgerRoutine(['Alpha count = 5']);
+  assert.equal(r.steps_detailed[0].output, 'Alpha count');
+});
+
+test('steps: worked promotion splits comma-joined chained evaluations', () => {
+  const notes = 'Ep = 100 x 0.350 = $35.00, Ee = 100 x 0.650 = $65.00';
+  const r = ledgerRoutine([], { kind: 'worked_example', notes });
+  assert.equal(r.steps.length, 2);
+  assert.equal(r.steps_detailed[0].expression, 'Ep = 100 x 0.350');
+  assert.equal(r.steps_detailed[0].output, 'Ep');
+  assert.equal(r.steps_detailed[1].expression, 'Ee = 100 x 0.650');
+  assert.equal(r.steps_detailed[1].output, 'Ee');
+  assert.deepEqual(r.steps_detailed.map((d) => d.sequence), [1, 2]);
+});
+
+test('steps: worked promotion keeps simple comma bindings in one step', () => {
+  const r = ledgerRoutine([], { kind: 'worked_example', notes: 'Fee table (F-1): Harbor fee=$30.00, Harbor dues=$12.50' });
+  assert.equal(r.steps.length, 1);
+  assert.equal(r.steps_detailed[0].expression, 'Harbor fee = $30.00; Harbor dues = $12.50');
+});
+
+test('steps: worked promotion splits trailing comparison checks', () => {
+  const r = ledgerRoutine([], { kind: 'worked_example', notes: 'Harbor total=$167.50 (>$100.00)' });
+  assert.equal(r.steps.length, 2);
+  assert.equal(r.steps_detailed[0].operation, 'expression');
+  assert.equal(r.steps_detailed[0].expression, 'Harbor total = $167.50');
+  assert.equal(r.steps_detailed[0].output, 'Harbor total');
+  assert.equal(r.steps_detailed[1].operation, 'condition');
+  assert.equal(r.steps_detailed[1].expression, 'Harbor total > $100.00');
+  assert.deepEqual(r.steps_detailed[1].inputs, ['Harbor total']);
+});
+
+test('steps: chained steps record their stated results', () => {
+  const r = ledgerRoutine(['Ledger total = $12,500 / 100.0 = 125.0000 credits']);
+  assert.deepEqual(r.steps_detailed[0].stated_results, [{ output: 'Ledger total', value: '125.0000 credits' }]);
+});
+
+test('steps: chained multi-steps record per-part stated results', () => {
+  const r = ledgerRoutine(['Alpha net = 3.40 x 1.180 = 4.0120; Alpha gross = 2.10 x 1.050 = 2.2050']);
+  assert.deepEqual(r.steps_detailed[0].stated_results, [
+    { output: 'Alpha net', value: '4.0120' },
+    { output: 'Alpha gross', value: '2.2050' },
+  ]);
+});
+
+test('steps: worked promotion leaves stepped examples and plain routines alone', () => {
+  const stepped = ledgerRoutine(['Ledger total = $100 / 2 = 50.00 credits'], {
+    kind: 'worked_example', notes: 'Ledger total = $100 / 2 = 50.00 credits',
+  });
+  assert.equal(stepped.steps.length, 1);
+  const plain = ledgerRoutine([], { notes: 'Alpha = 1 + 2 = 3.00' });
+  assert.equal(plain.steps.length, 0);
+  const expressed = ledgerRoutine([], { kind: 'worked_example', notes: 'Alpha = 1 + 2 = 3.00', expressionText: 'Alpha = beta + 2' });
+  assert.equal(expressed.steps.length, 0);
+});

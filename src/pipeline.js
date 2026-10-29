@@ -100,13 +100,31 @@ export function buildJobFromExtraction(
         severity: 'warning',
         targetType: 'routine',
         targetId: grouping.routineId,
-        message: `Routines ${grouping.memberNames.map((n) => `"${n}"`).join(', ')} were grouped into one ${grouping.stepNumbers.length}-step routine ("${grouping.routineName}"); verify the steps form a single pipeline against the source.`,
+        message: groupingMessage(grouping),
         sourcePages: grouping.sourcePages,
       })
     );
   }
   job = normalizeJob(job);
   return job;
+}
+
+// Verification warning for one deterministic routine grouping. Prerequisite
+// merges cite the forward-reference evidence (consumed variables or a
+// dependency naming); numbered chains keep the pipeline wording.
+function groupingMessage(grouping) {
+  const head = `Routines ${grouping.memberNames.map((n) => `"${n}"`).join(', ')} were grouped into one ${grouping.stepNumbers.length}-step routine ("${grouping.routineName}")`;
+  if (grouping?.reason === 'prerequisite') {
+    const links = (grouping.links ?? []).map((link) => {
+      const vars = (link?.variables ?? []).filter((v) => String(v ?? '').trim());
+      if (vars.length > 0) {
+        return `"${link.consumer}" consumes ${vars.map((v) => `"${v}"`).join(', ')} produced by "${link.producer}"`;
+      }
+      return `"${link.consumer}" names "${link.producer}" as a dependency`;
+    }).join('; ');
+    return `${head}; ${links}; verify the steps form a single routine against the source.`;
+  }
+  return `${head}; verify the steps form a single pipeline against the source.`;
 }
 
 // Link split parts of one logical table (same base asset code, different

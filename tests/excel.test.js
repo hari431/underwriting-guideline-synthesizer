@@ -1745,3 +1745,313 @@ test('excel: multi-assignment steps render ordered groups; spaced calls stay who
     ['2', 'Harbor mean', '<--', '', 'round_half_up ( Harbor subtotal / 2 , 0 )', '', 'Assign round_half_up ( Harbor subtotal / 2 , 0 ) to Harbor mean (source step 2)'],
   ]);
 });
+
+test('excel: conditional assignment renders IF/ELSE branch rows instead of REVIEW', () => {
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'synthetic.pdf', pageCount: 1 }),
+      routines: [{
+        name: 'Harbor Scaling', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'synthetic scaling',
+        steps: [{
+          sequence: 1, operation: 'expression',
+          instruction: 'Scale the draft: Harbor scaled = vessel length / 100.0 if tide class in {High, Low} else vessel length',
+          expression: 'Harbor scaled = vessel length / 100.0 if tide class in {High, Low} else vessel length',
+          inputs: ['vessel length', 'tide class'], output: 'Harbor scaled',
+        }],
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Harbor Scaling'), strings);
+  const steps = sectionRows(values, 'Steps');
+  const opIndex = steps.header.indexOf('Op');
+  assert.ok(steps.body.every((row) => row[opIndex] !== 'REVIEW'), `unexpected REVIEW rows: ${JSON.stringify(steps.body)}`);
+  assert.deepEqual(steps.body.map((row) => row[1]), ['IF', 'Harbor scaled', '', 'ELSE', 'Harbor scaled', 'ENDIF']);
+  assert.deepEqual(steps.body.map((row) => row[2]), ['', '<--', '/', '', '<--', '']);
+  assert.equal(steps.body[0][4], 'tide class in {High, Low}');
+});
+
+test('excel: comma-joined step output renders its evidenced assignment', () => {
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'synthetic.pdf', pageCount: 1 }),
+      routines: [{
+        name: 'Harbor Split Totals', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'synthetic split',
+        steps: [{
+          sequence: 1, operation: 'expression',
+          instruction: 'Scale prem rate: Harbor prem = Harbor base x tide factor',
+          expression: 'Harbor prem = Harbor base x tide factor',
+          inputs: ['Harbor base', 'tide factor'], output: 'Harbor prem, Harbor prod',
+        }],
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Harbor Split Totals'), strings);
+  const steps = sectionRows(values, 'Steps');
+  const opIndex = steps.header.indexOf('Op');
+  assert.ok(steps.body.every((row) => row[opIndex] !== 'REVIEW'), `unexpected REVIEW rows: ${JSON.stringify(steps.body)}`);
+  assert.deepEqual(steps.body.map((row) => row[1]), ['Harbor prem', '']);
+  assert.deepEqual(steps.body.map((row) => row[2]), ['<--', 'x']);
+});
+
+test('excel: chained worked arithmetic renders assignment rows instead of REVIEW', () => {
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'synthetic.pdf', pageCount: 1 }),
+      routines: [{
+        name: 'Ledger Worked Case', kind: 'worked_example', sourcePages: [1],
+        evidenceText: 'synthetic worked illustration with expected values',
+        steps: [
+          'Ledger total = $12,500 / 100.0 = 125.0000 credits',
+          'Alpha net = 3.40 x 1.180 = 4.0120→ 4.012; Alpha gross = 2.10 x 1.050 = 2.2050→ 2.205',
+          'Harbor fee net total = 4.012 x 1.500 x 0.960 = 5.77728→ 5.7773; Harbor fee gross total = 2.205 x 1.500 x 0.960 = 3.17520→ 3.1752',
+        ],
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  assert.equal(job.issues.filter((i) => i.severity === 'error').length, 0);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Ledger Worked Case'), strings);
+  const steps = sectionRows(values, 'Steps');
+  const opIndex = steps.header.indexOf('Op');
+  assert.ok(steps.body.every((row) => row[opIndex] !== 'REVIEW'), `unexpected REVIEW rows: ${JSON.stringify(steps.body)}`);
+  assert.deepEqual(steps.body.map((row) => row[1]), ['Ledger total', '', 'Ledger total', 'Alpha net', '', 'Alpha gross', '', 'Alpha net', 'Alpha gross', 'Harbor fee net total', '', '', 'Harbor fee gross total', '', '', 'Harbor fee net total', 'Harbor fee gross total']);
+  assert.deepEqual(steps.body.map((row) => row[2]), ['<--', '/', '=', '<--', 'x', '<--', 'x', '=', '=', '<--', 'x', 'x', '<--', 'x', 'x', '=', '=']);
+  const operandIndex = steps.header.indexOf('Operand');
+  assert.deepEqual(
+    steps.body.filter((row) => row[opIndex] === '=').map((row) => row[operandIndex]),
+    ['125.0000 credits', '4.0120', '2.2050', '5.77728', '3.17520']
+  );
+});
+
+test('excel: yields-clause renders assignment and evaluated rows instead of REVIEW', () => {
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'synthetic.pdf', pageCount: 1 }),
+      routines: [{
+        name: 'Seeded Factor', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'synthetic yields',
+        steps: ['Fee table (F-1): Seeded=0.040 => (1.000-Seeded)=0.960'],
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  assert.equal(job.issues.filter((i) => i.severity === 'error').length, 0);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Seeded Factor'), strings);
+  const steps = sectionRows(values, 'Steps');
+  const opIndex = steps.header.indexOf('Op');
+  assert.ok(steps.body.every((row) => row[opIndex] !== 'REVIEW'), `unexpected REVIEW rows: ${JSON.stringify(steps.body)}`);
+  assert.deepEqual(steps.body.map((row) => row[1]), ['Seeded', '(1.000 - Seeded)']);
+  assert.deepEqual(steps.body.map((row) => row[2]), ['<--', '=']);
+  const operandIndex = steps.header.indexOf('Operand');
+  assert.deepEqual(steps.body.map((row) => row[operandIndex]), ['0.040', '0.960']);
+});
+
+test('excel: bare evaluated equality renders one verbatim row while validation flags the target', () => {
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'synthetic.pdf', pageCount: 1 }),
+      routines: [{
+        name: 'Harbor Flat Fee', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'synthetic flat fee',
+        steps: ['Harbor flat total: 2 x $150.00 = $300.00'],
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  assert.equal(job.issues.filter((i) => i.severity === 'error').length, 0);
+  assert.ok(job.issues.some((i) => /without a target variable/.test(i.message)), 'unstated target must warn');
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Harbor Flat Fee'), strings);
+  const steps = sectionRows(values, 'Steps');
+  const opIndex = steps.header.indexOf('Op');
+  assert.ok(steps.body.every((row) => row[opIndex] !== 'REVIEW'), `unexpected REVIEW rows: ${JSON.stringify(steps.body)}`);
+  assert.equal(steps.body.length, 1);
+  assert.equal(steps.body[0][1], '2 x $150.00');
+  assert.equal(steps.body[0][opIndex], '=');
+  assert.equal(steps.body[0][steps.header.indexOf('Operand')], '$300.00');
+  assert.ok(/output not stated/.test(steps.body[0][steps.header.indexOf('Line Comment')]), 'row must note the unstated target');
+});
+
+test('excel: trailing comparison check renders a comparator row tracing its variable', () => {
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'synthetic.pdf', pageCount: 1 }),
+      routines: [{
+        name: 'Harbor Reconciled', kind: 'worked_example', sourcePages: [1],
+        evidenceText: 'synthetic worked illustration with a threshold check',
+        notes: 'Harbor total=$167.50 (>$100.00)',
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  assert.equal(job.issues.filter((i) => i.severity === 'error').length, 0);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Harbor Reconciled'), strings);
+  const steps = sectionRows(values, 'Steps');
+  const opIndex = steps.header.indexOf('Op');
+  assert.ok(steps.body.every((row) => row[opIndex] !== 'REVIEW'), `unexpected REVIEW rows: ${JSON.stringify(steps.body)}`);
+  assert.deepEqual(steps.body.map((row) => row[1]), ['Harbor total', 'Harbor total']);
+  assert.deepEqual(steps.body.map((row) => row[2]), ['<--', '>']);
+  assert.equal(steps.body[1][steps.header.indexOf('Operand')], '$100.00');
+  assert.ok(
+    /uses Harbor total from step 1/.test(steps.body[1][steps.header.indexOf('Line Comment')]),
+    `check must trace its variable: ${JSON.stringify(steps.body)}`
+  );
+});
+
+test('excel: else-if conditional assignment renders ELSEIF rows', () => {
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'synthetic.pdf', pageCount: 1 }),
+      routines: [{
+        name: 'Harbor Tiered Scaling', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'synthetic tiering',
+        steps: [{
+          sequence: 1, operation: 'expression',
+          instruction: 'Scale the draft: Harbor scaled = vessel length / 100.0 if tide class in {High, Low} else vessel length if tide class = None',
+          expression: 'Harbor scaled = vessel length / 100.0 if tide class in {High, Low} else vessel length if tide class = None',
+          inputs: ['vessel length', 'tide class'], output: 'Harbor scaled',
+        }],
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Harbor Tiered Scaling'), strings);
+  const steps = sectionRows(values, 'Steps');
+  const opIndex = steps.header.indexOf('Op');
+  assert.ok(steps.body.every((row) => row[opIndex] !== 'REVIEW'), `unexpected REVIEW rows: ${JSON.stringify(steps.body)}`);
+  assert.deepEqual(steps.body.map((row) => row[1]), ['IF', 'Harbor scaled', '', 'ELSEIF', 'Harbor scaled', 'ENDIF']);
+  assert.deepEqual(steps.body.map((row) => row[2]), ['', '<--', '/', '', '<--', '']);
+  assert.equal(steps.body[0][4], 'tide class in {High, Low}');
+  assert.equal(steps.body[3][4], 'tide class = None');
+});
+
+test('excel: condition operation with assignment conditional renders branches', () => {
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'synthetic.pdf', pageCount: 1 }),
+      routines: [{
+        name: 'Harbor Waiver Fee', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'synthetic waiver',
+        steps: [{
+          sequence: 2, operation: 'condition',
+          instruction: 'Harbor fee is waived unless assessed: Harbor fee = 0.00 if harbor waived else max(100.00, Harbor base x 0.030)',
+          expression: 'Harbor fee = 0.00 if harbor waived else max(100.00, Harbor base x 0.030)',
+          inputs: ['Harbor base'], output: 'Harbor fee',
+        }],
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Harbor Waiver Fee'), strings);
+  const steps = sectionRows(values, 'Steps');
+  const opIndex = steps.header.indexOf('Op');
+  assert.ok(steps.body.every((row) => row[opIndex] !== 'REVIEW'), `unexpected REVIEW rows: ${JSON.stringify(steps.body)}`);
+  assert.deepEqual(steps.body.map((row) => row[1]), ['IF', 'Harbor fee', 'ELSE', 'Harbor fee', 'ENDIF']);
+  assert.deepEqual(steps.body.map((row) => row[2]), ['', '<--', '', '<--', '']);
+  assert.equal(steps.body[0][4], 'harbor waived');
+});
+
+test('excel: parenthesized thousands expand arithmetically', () => {
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'synthetic.pdf', pageCount: 1 }),
+      routines: [{
+        name: 'Harbor Credibility', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'synthetic credibility',
+        steps: [{
+          sequence: 1, operation: 'expression',
+          instruction: 'Harbor net = (12,840 - 15,000) / (250,000 - 15,000)',
+          expression: 'Harbor net = (12,840 - 15,000) / (250,000 - 15,000)',
+          inputs: [], output: 'Harbor net',
+        }],
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Harbor Credibility'), strings);
+  const steps = sectionRows(values, 'Steps');
+  const opIndex = steps.header.indexOf('Op');
+  assert.ok(steps.body.every((row) => row[opIndex] !== 'REVIEW'), `unexpected REVIEW rows: ${JSON.stringify(steps.body)}`);
+  assert.equal(steps.body[0][1], 'Harbor net');
+  assert.equal(steps.body[0][2], '<--');
+  const operands = steps.body.map((row) => row[4]).join(' ');
+  for (const token of ['12,840', '15,000', '250,000']) {
+    assert.ok(operands.includes(token), `operands must keep ${token}: ${operands}`);
+  }
+});
+
+test('excel: worked stepwise sheets keep the stated inputs section', () => {
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'synthetic.pdf', pageCount: 1 }),
+      routines: [{
+        name: 'Harbor Worked Case', kind: 'worked_example', sourcePages: [1],
+        evidenceText: 'synthetic worked illustration',
+        inputs: ['Harbor base', 'fee code=F-1'], outputs: ['Harbor total'],
+        steps: ['Harbor total = $100 / 2 = 50.00 credits'],
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Harbor Worked Case'), strings);
+  const idx = values.findIndex((row) => row.length === 1 && row[0] === 'Inputs');
+  assert.ok(idx >= 0, 'worked stepwise sheet must keep an Inputs section');
+  assert.deepEqual(values[idx + 1], ['Input', 'Source', 'Lookup keys']);
+  const names = [];
+  for (let i = idx + 2; i < values.length && values[i].length !== 1; i += 1) names.push(values[i][0]);
+  assert.deepEqual(names, ['Harbor base', 'fee code=F-1']);
+});
+
+test('excel: nested conditional falls back to a verbatim row without review', () => {
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'synthetic.pdf', pageCount: 1 }),
+      routines: [{
+        name: 'Harbor Nested Logic', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'synthetic nesting',
+        steps: [{
+          sequence: 1, operation: 'expression',
+          instruction: 'Harbor fee = base amount if tide high else base amount if tide low else base amount',
+          expression: 'Harbor fee = base amount if tide high else base amount if tide low else base amount',
+          inputs: ['base amount'], output: 'Harbor fee',
+        }],
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Harbor Nested Logic'), strings);
+  const steps = sectionRows(values, 'Steps');
+  const opIndex = steps.header.indexOf('Op');
+  assert.ok(steps.body.every((row) => row[opIndex] !== 'REVIEW'), `unexpected REVIEW rows: ${JSON.stringify(steps.body)}`);
+  assert.equal(steps.body.length, 1);
+  assert.equal(steps.body[0][1], 'Harbor fee');
+  assert.match(steps.body[0][4], /if tide high.*else base amount if tide low/);
+});

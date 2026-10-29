@@ -94,6 +94,118 @@ export function createRatingTable({
   };
 }
 
+// A trailing prose sentence after a calculation (`... = $13,065.21. All
+// values reconcile.`) is meta-commentary, not part of the formula: strip it
+// for parsing (the notes keep it verbatim) only when it states no
+// calculation of its own. Anything else passes through untouched.
+function stripTrailingProseSentence(segment) {
+  const text = String(segment ?? '').trim();
+  const m = /^([\s\S]*?\S)\s*\.\s+[A-Z][\s\S]*$/.exec(text);
+  if (!m) return text;
+  if (text.slice(m[1].length).includes('=')) return text;
+  return m[1].trim();
+}
+
+// Ordered calculation steps for a stepless worked example, derived
+// mechanically from its expected-values notes: each `;`-separated segment
+// stating an explicit calculation (`=`) becomes a step in notes order,
+// comma-joined chained evaluations split into ordered steps, and a
+// trailing parenthesized comparison becomes its own check step after its
+// statement; a standalone bare comparison promotes the same way.
+// carrying the routine source pages; narrative segments stay in the notes
+// verbatim instead of becoming steps. Parsing itself is left to the normal
+// step machinery, so explicit formulas structure and genuinely ambiguous
+// segments stay unparsed for review. Generic syntax, never note contents.
+// Split comma-joined statements stating separate evaluations (`Ep = ... =
+// $1, Ee = ... = $2`) into ordered parts. Only when every part states an
+// assignment and at least one part states a chained evaluation: plain
+// comma bindings (`A=$1, B=$2`) stay one step for the multi-output reader.
+// Thousands separators and parenthesized commas never split.
+function splitCommaStatements(body) {
+  const text = String(body ?? '');
+  if (!text.includes(',')) return [text];
+  const parts = splitTopLevelComma(text).map((p) => String(p ?? '').trim()).filter(Boolean);
+  if (parts.length < 2) return [text];
+  const eqCounts = parts.map((p) => {
+    let n = 0;
+    for (let i = 0; i < p.length; i += 1) if (isStandaloneEquals(p, i)) n += 1;
+    return n;
+  });
+  if (!eqCounts.every((n) => n >= 1) || !eqCounts.some((n) => n >= 2)) return [text];
+  return parts;
+}
+
+// Split a trailing parenthesized comparison (`Out=$1 (> $0)`) into its main
+// statement and a check step. The check restates the comparison against the
+// main statement's evidenced output (or its own explicit variable when the
+// parenthesis names one); the verbatim parenthesis is kept as the check's
+// original text. Anything else stays whole.
+function splitTrailingComparison(part) {
+  const text = String(part ?? '').trim();
+  if (!text.includes('=')) return null;
+  const m = /\(([^()]*)\)\s*$/.exec(text);
+  if (!m) return null;
+  const inner = m[1].trim();
+  const main = text.slice(0, m.index).trim();
+  if (!main.includes('=')) return null;
+  let output = '';
+  let op = '';
+  let right = '';
+  const led = /^(>=|<=|>|<)\s*(.+?)\s*$/.exec(inner);
+  if (led) {
+    const split = splitAssignmentSegment(main) ?? splitChainedEquality(main);
+    if (!split || !split.output) return null;
+    output = split.output;
+    op = led[1];
+    right = led[2].trim();
+  } else {
+    const cmp = /^(.+?)\s*(>=|<=|>|<)\s*(.+?)\s*$/.exec(inner);
+    if (!cmp) return null;
+    const statedLeft = cmp[1].trim();
+    if (cmp[2] === '>' && /-$/.test(statedLeft)) return null;
+    if (cmp[2] === '<' && /^[-=]/.test(cmp[3].trim())) return null;
+    const run = trailingOutputRun(statedLeft, 4);
+    if (!run || run.start !== 0) return null;
+    output = run.output;
+    op = cmp[2];
+    right = cmp[3].trim();
+  }
+  if (!output || !op || !right) return null;
+  if (!/[A-Za-z0-9_$,]/.test(right)) return null;
+  return { main, check: `${output} ${op} ${right}`, verbatim: m[0].trim() };
+}
+
+function promoteWorkedNotesToSteps({ notes, sourcePages }) {
+  const pages = normalizePages(sourcePages ?? []);
+  const segments = splitTopLevel(String(notes ?? ''), ';')
+    .flatMap((s) => String(s ?? '').split(/\n+/))
+    .map((s) => String(s ?? '').trim())
+    .filter(Boolean);
+  const steps = [];
+  const push = (instruction, originalText) => {
+    const step = { sequence: steps.length + 1, instruction, source_pages: [...pages] };
+    if (originalText) step.original_text = originalText;
+    steps.push(step);
+  };
+  for (const segment of segments) {
+    const body = stripTrailingProseSentence(segment);
+    for (const part of splitCommaStatements(body)) {
+      const split = splitTrailingComparison(part);
+      if (split) {
+        push(split.main);
+        push(split.check, split.verbatim);
+        continue;
+      }
+      if (!part.includes('=')) {
+        if (tryParseBareComparison(part)) push(part);
+        continue;
+      }
+      push(part);
+    }
+  }
+  return steps;
+}
+
 export function createRatingRoutine({
   id = null,
   routine_id,
@@ -155,6 +267,17 @@ export function createRatingRoutine({
     conditions: normConds.conditions,
     conditionsDetailed: normConds.conditions_detailed,
   });
+  let finalSteps = normSteps.steps;
+  let finalDetailed = normSteps.steps_detailed;
+  const hasSteps = finalSteps.some((s) => String(s ?? '').trim()) || finalDetailed.length > 0;
+  if (normKind === 'worked_example' && !hasSteps && !expressionTextStr.trim()) {
+    const promoted = promoteWorkedNotesToSteps({ notes: String(notes ?? ''), sourcePages: sourcePages ?? source_pages ?? [] });
+    if (promoted.length > 0) {
+      const promotedSteps = normalizeStepLists({ steps: promoted });
+      finalSteps = promotedSteps.steps;
+      finalDetailed = promotedSteps.steps_detailed;
+    }
+  }
   return {
     id: id ?? routine_id ?? null,
     name: String(title ?? name ?? ''),
@@ -166,8 +289,8 @@ export function createRatingRoutine({
     expression_text: expressionTextStr,
     conditions: normConds.conditions,
     conditions_detailed: normConds.conditions_detailed,
-    steps: normSteps.steps,
-    steps_detailed: normSteps.steps_detailed,
+    steps: finalSteps,
+    steps_detailed: finalDetailed,
     depends_on: normDeps.depends_on,
     dependencies: normDeps.dependencies,
     inputs: normInputs,
@@ -395,6 +518,16 @@ function normalizeOneStep(entry, index) {
   if (entry.operand !== undefined && entry.operand !== null) out.operand = String(entry.operand);
   if (entry.inputs !== undefined) out.inputs = normalizeStringList(entry.inputs);
   if (entry.output !== undefined && entry.output !== null) out.output = String(entry.output);
+  if (entry.stated_results !== undefined && entry.stated_results !== null && Array.isArray(entry.stated_results)) {
+    const stated = [];
+    for (const s of entry.stated_results) {
+      const output = String(s?.output ?? '').trim();
+      const value = String(s?.value ?? '').trim();
+      if (!output || !value) continue;
+      stated.push({ output, value });
+    }
+    if (stated.length > 0) out.stated_results = stated;
+  }
   if (entry.depends_on !== undefined || entry.dependsOn !== undefined) {
     out.depends_on = normalizeStringList(entry.depends_on ?? entry.dependsOn);
   }
@@ -513,6 +646,7 @@ function enrichSparseStep(out) {
   if (parsed.operand !== undefined && out.operand === undefined) out.operand = parsed.operand;
   if (parsed.inputs !== undefined && out.inputs === undefined) out.inputs = parsed.inputs;
   if (parsed.output !== undefined && out.output === undefined) out.output = parsed.output;
+  if (parsed.stated_results !== undefined && out.stated_results === undefined) out.stated_results = parsed.stated_results;
   if (parsed.depends_on !== undefined && out.depends_on === undefined) out.depends_on = parsed.depends_on;
   if (!out.interpretation_status) out.interpretation_status = 'inferred';
 }
@@ -807,12 +941,13 @@ function isStandaloneEquals(s, i) {
 // name. Generic wording, never variable names.
 const OUTPUT_LEAD_VERBS = /^(?:calculate[sd]?|calculating|compute[sd]?|computing|determine[sd]?|determining|derive[sd]?|deriving|evaluate[sd]?|evaluating|set|let)\s+/i;
 
-// Trailing plain-word run before `=` (one to three words): `out`,
-// `Ledger total`. Runs of four or more words are truncated phrases, not
-// evidenced outputs, and runs containing articles, prepositions, or
-// connectives (`where y`, `the base`) are prose — both yield null so the
-// text stays unparsed instead of mis-splitting.
-function trailingOutputRun(left) {
+// Trailing plain-word run before `=` (one to three words by default):
+// `out`, `Ledger total`. Longer runs are truncated phrases, not evidenced
+// outputs, and runs containing articles, prepositions, or connectives
+// (`where y`, `the base`) are prose — both yield null so the text stays
+// unparsed instead of mis-splitting. Chained equality passes four: the
+// worked-result restatement corroborates the longer spaced variable.
+function trailingOutputRun(left, maxWords = 3) {
   const orig = String(left ?? '');
   const s = orig.replace(/\s+$/, '').replace(OUTPUT_LEAD_VERBS, '');
   const m = /(?:^|[:;,()\s])([A-Za-z_]\w*(?:[ \t]+[A-Za-z_]\w*)*)$/.exec(s);
@@ -820,7 +955,7 @@ function trailingOutputRun(left) {
   const output = m[1].replace(/[ \t]+/g, ' ').trim();
   if (!output) return null;
   const words = output.split(' ');
-  if (words.length > 3) return null;
+  if (words.length > maxWords) return null;
   // Multi-word runs containing articles, prepositions, or connectives are
   // prose (`the base`); single tokens only refuse true connectives, so
   // one-letter variables (`a`, `x`) stay valid outputs.
@@ -835,11 +970,13 @@ function trailingOutputRun(left) {
 
 // Split one `output = rhs` assignment segment. The output is the trailing
 // plain-word run before a standalone `=` (single or multi-word source
-// variables alike); hyphenated or dotted codes (`LX-NET = ...`) and
-// operator-bearing left sides (`a + b = ...`) stay unparsed instead of
-// partially matching. Returns { output, rhs } or null for comparisons,
-// prose, and incomplete fragments. Generic syntax, never variable names.
-export function splitAssignmentSegment(segment) {
+// variables alike, up to three words by default); hyphenated or dotted
+// codes (`LX-NET = ...`) and operator-bearing left sides (`a + b = ...`)
+// stay unparsed instead of partially matching. Returns { output, rhs } or
+// null for comparisons, prose, and incomplete fragments. Generic syntax,
+// never variable names. Callers re-splitting chained-equality output pass
+// four to match what the step parser evidences.
+export function splitAssignmentSegment(segment, maxWords = 3) {
   const seg = String(segment ?? '').trim().replace(/\.\s*$/, '').trim();
   if (!seg || !seg.includes('=')) return null;
   const equals = [];
@@ -851,13 +988,157 @@ export function splitAssignmentSegment(segment) {
   const rhs = seg.slice(equals[0] + 1).trim().replace(/[.,]\s*$/, '').trim();
   if (!rhs || !/[A-Za-z0-9_₹$€£¥]/.test(rhs)) return null;
   if (/^[=<>!]/.test(rhs) || /[+*/×÷%-]\s*$/.test(rhs)) return null;
-  const run = trailingOutputRun(left);
+  const run = trailingOutputRun(left, maxWords);
   if (!run) return null;
   // The output must not be the trailing operand of arithmetic left of `=`
   // (`a + b = ...` is a result form, not an assignment to `b`); prose
   // punctuation before the run (`... rounding: out = ...`) is fine.
   if (/[+*/×÷%-]\s*$/.test(left.slice(0, run.start))) return null;
   return { output: run.output, rhs };
+}
+
+// Arithmetic evidence inside a chained-equality middle: an operator, parens,
+// or infix `x` multiply. A middle without one (`X = a = 5`) restates an
+// alias rather than a calculation and stays unparsed.
+const CHAINED_MIDDLE_OPERATOR = /[+*/%()×÷·•−^-]|\s+x\s+/i;
+
+// Prose that disqualifies a chained-equality middle: conditions, clauses,
+// and connectives (`net = gross - levy where levy = 5` is a where-clause,
+// not a worked chain). Whole words only, never identifier fragments.
+const CHAINED_MIDDLE_PROSE = /\b(where|whereas|with|when|if|then|else|and|or|not)\b/i;
+
+// A worked result restating a chained calculation: a number with optional
+// currency, percent, and unit words (`850.0000 units`, `$12,684.67`). A
+// trailing arrow restatement (`4.0120→ 4.012`, `0.054638→ floor at 0.150`)
+// is cut before the check: the arrow always introduces a restatement or
+// adjustment note, kept verbatim in the instruction. Anything not starting
+// with a number is prose, not a result.
+function isWorkedResult(result) {
+  let s = String(result ?? '').trim();
+  if (!s) return false;
+  s = s.replace(/(→|->)\s*[\s\S]*$/, '').trim();
+  s = s.replace(/\s*\([^()]*\)\s*$/, '').trim();
+  return /^[$€£¥₹]?\s*\d[\d,]*(\.\d+)?\s*%?(?:\s+[A-Za-z_][\w.-]*)*\s*$/.test(s);
+}
+
+// True when a chained-equality middle reads as pure arithmetic: an operator
+// or infix `x` present, no clause words, and no implication arrows,
+// colons, or quotes (`a => b`, `a: b`) that mark prose or a second claim.
+// A worked value restated after a chained calculation, cleaned the same way
+// isWorkedResult validates it: a trailing arrow restatement (`4.0120 -> 4.012`)
+// and a trailing parenthetical are cut, keeping the primary stated value
+// verbatim for the structured record. The instruction keeps the full text.
+function cleanWorkedResult(result) {
+  let s = String(result ?? '').trim().replace(/\.\s*$/, '').trim();
+  s = s.replace(/(\u2192|->)\s*[\s\S]*$/, '').trim();
+  s = s.replace(/\s*\([^()]*\)\s*$/, '').trim();
+  return s;
+}
+
+// Split on commas that separate statements: depth-zero commas not followed
+// by a digit, so thousands separators (`27,840`) and function arguments
+// (`Round(x,2)`) never split. Generic punctuation rule, never contents.
+function splitTopLevelComma(text) {
+  const s = String(text ?? '');
+  const parts = [];
+  let depth = 0;
+  let current = '';
+  for (let i = 0; i < s.length; i += 1) {
+    const ch = s[i];
+    if (ch === '(' || ch === '[' || ch === '{') depth += 1;
+    else if (ch === ')' || ch === ']' || ch === '}') depth = Math.max(0, depth - 1);
+    if (ch === ',' && depth === 0 && !/[0-9]/.test(s[i + 1] ?? '')) {
+      parts.push(current);
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  parts.push(current);
+  return parts;
+}
+
+// Split a yields-clause (`out = value => (expr) = result`): the left side
+// states a lookup or value assignment and the right side evaluates a derived
+// expression against it. Returns [assignment, bare] segment shapes for the
+// shared builder, or null unless both sides evidence the shape -- a clean
+// assignment left of `=>` and an arithmetic left side with a worked numeric
+// result right of it. A variable-like right side (`a => b = 2`) is a second
+// claim, not an evaluation, and stays unparsed. Generic syntax, never names.
+function splitYieldsClause(segment) {
+  const seg = String(segment ?? '').trim().replace(/\.\s*$/, '').trim();
+  if (!seg || !seg.includes('=>')) return null;
+  let depth = 0;
+  let at = -1;
+  for (let i = 0; i + 1 < seg.length; i += 1) {
+    const ch = seg[i];
+    if (ch === '(' || ch === '[' || ch === '{') depth += 1;
+    else if (ch === ')' || ch === ']' || ch === '}') depth = Math.max(0, depth - 1);
+    if (depth === 0 && ch === '=' && seg[i + 1] === '>') { at = i; break; }
+  }
+  if (at < 0) return null;
+  const left = seg.slice(0, at).trim();
+  const right = seg.slice(at + 2).trim();
+  if (!left || !right) return null;
+  const assigned = splitAssignmentSegment(left);
+  if (!assigned) return null;
+  const eqs = [];
+  for (let i = 0; i < right.length; i += 1) {
+    if (isStandaloneEquals(right, i)) eqs.push(i);
+  }
+  if (eqs.length !== 1) return null;
+  const lhs = right.slice(0, eqs[0]).trim();
+  const value = right.slice(eqs[0] + 1).trim().replace(/[.,]\s*$/, '').trim();
+  if (!lhs || !value) return null;
+  const run = trailingOutputRun(lhs, 4);
+  if (run && !/(?:[+\-*/%()])|(?:\s+x\s+)/i.test(lhs.slice(0, run.start))) return null;
+  if (!CHAINED_MIDDLE_OPERATOR.test(lhs)) return null;
+  if (!isWorkedResult(value)) return null;
+  return [
+    assigned,
+    { output: '', rhs: `${lhs} = ${cleanWorkedResult(value)}`, bare: true },
+  ];
+}
+
+function isChainedMiddle(middle) {
+  const m = String(middle ?? '').trim();
+  if (!m || !/[A-Za-z0-9_₹$€£¥]/.test(m)) return false;
+  if (/^[=<>!]/.test(m) || /[+*/×÷%-]\s*$/.test(m)) return false;
+  if (!CHAINED_MIDDLE_OPERATOR.test(m)) return false;
+  if (CHAINED_MIDDLE_PROSE.test(m)) return false;
+  if (/[:!?'"]/.test(m)) return false;
+  if (/=>|->|→/.test(m)) return false;
+  return true;
+}
+
+// Split one chained-equality segment (`out = <arithmetic> [= <worked
+// evaluation>...] = <worked result>`): the output assigns the first
+// arithmetic middle while each following link re-evaluates it and the
+// trailing number restates its worked value. Returns { output, rhs: first
+// middle } or null unless every part evidences the shape -- a variable
+// output, arithmetic middles, and a numeric result -- so comparisons,
+// where-clauses, and prose chains stay unparsed. Generic syntax, never
+// variable names.
+function splitChainedEquality(segment) {
+  const seg = String(segment ?? '').trim().replace(/\.\s*$/, '').trim();
+  if (!seg || !seg.includes('=')) return null;
+  const equals = [];
+  for (let i = 0; i < seg.length; i += 1) {
+    if (isStandaloneEquals(seg, i)) equals.push(i);
+  }
+  if (equals.length < 2) return null;
+  const left = seg.slice(0, equals[0]);
+  const middles = [];
+  for (let k = 0; k + 1 < equals.length; k += 1) {
+    middles.push(seg.slice(equals[k] + 1, equals[k + 1]).trim());
+  }
+  const result = seg.slice(equals[equals.length - 1] + 1).trim().replace(/[.,]\s*$/, '').trim();
+  if (!middles.every(isChainedMiddle)) return null;
+  if (!isWorkedResult(result)) return null;
+  const run = trailingOutputRun(left, 4);
+  if (!run) return null;
+  if (/[+*/×÷%-]\s*$/.test(left.slice(0, run.start))) return null;
+  return { output: run.output, rhs: middles[0], stated: cleanWorkedResult(result) };
 }
 
 // Split an instruction stating several assignments without `;` separators
@@ -954,14 +1235,21 @@ function assignmentInputVars(rhs, definedLower, seenLower, inputs) {
 // function names never count as inputs.
 function buildAssignmentResult(segments) {
   if (!segments || segments.length === 0) return null;
-  const defined = new Set(segments.map((s) => s.output.toLowerCase()));
+  const assigned = segments.filter((s) => !s.bare);
+  const defined = new Set(assigned.map((s) => String(s.output ?? '').toLowerCase()).filter(Boolean));
   for (const s of segments) s.rhs = splitHyphenSubtraction(s.rhs, defined);
-  const expression = segments.map((s) => `${s.output} = ${s.rhs}`).join('; ');
-  const output = segments[segments.length - 1].output;
+  const expression = segments.map((s) => (s.bare ? s.rhs : `${s.output} = ${s.rhs}`)).join('; ');
+  const output = assigned.length > 0 ? assigned[assigned.length - 1].output : '';
   const seen = new Set();
   const inputs = [];
   for (const s of segments) assignmentInputVars(normalizeInfixMultiply(s.rhs), defined, seen, inputs);
-  return { segments, expression, output, inputs };
+  const result = { segments, expression, output, inputs };
+  const stated = [];
+  for (const s of segments) {
+    if (s.stated && s.output) stated.push({ output: s.output, value: s.stated });
+  }
+  if (stated.length > 0) result.stated_results = stated;
+  return result;
 }
 
 // Function names called in an expression (`round_half_up(...)`, `min(...)`):
@@ -1022,17 +1310,57 @@ function parseTrailingAssignments(body) {
     // fails the whole body rather than guessing across fragments.
     const segments = [];
     for (const raw of rawSegments) {
+      const yields = splitYieldsClause(raw);
+      if (yields) {
+        segments.push(...yields);
+        continue;
+      }
       const split = splitAssignmentSegment(raw);
       if (!split) return null;
       segments.push(split);
     }
     return buildAssignmentResult(segments);
   }
+  const yields = splitYieldsClause(rawSegments[0] ?? '');
+  if (yields) return buildAssignmentResult(yields);
   const single = splitAssignmentSegment(rawSegments[0] ?? '');
   if (single) return buildAssignmentResult([single]);
   const scanned = scanInstructionAssignments(main);
   if (scanned) return buildAssignmentResult(scanned);
   return null;
+}
+
+// Parse worked steps mixing plain and chained-equality assignments
+// (`A = 3.40 x 1.180 = 4.0120; B = $380.54`): every `;`-separated statement
+// must parse as one or the other, with at least one chained segment (pure
+// single-assignment bodies stay with parseTrailingAssignments). Returns the
+// same { segments, expression, output, inputs } shape, with worked results
+// excluded from the expression — the instruction keeps them verbatim.
+function parseChainedAssignments(body) {
+  const main = splitMainClause(String(body ?? ''));
+  if (!main || !main.includes('=')) return null;
+  const rawSegments = splitTopLevel(main, ';').map((s) => String(s ?? '').trim()).filter(Boolean);
+  if (rawSegments.length === 0) return null;
+  let sawChained = false;
+  const segments = [];
+  for (const raw of rawSegments) {
+    const single = splitAssignmentSegment(raw);
+    if (single) {
+      segments.push(single);
+      continue;
+    }
+    const yields = splitYieldsClause(raw);
+    if (yields) {
+      segments.push(...yields);
+      continue;
+    }
+    const chained = splitChainedEquality(raw);
+    if (!chained) return null;
+    sawChained = true;
+    segments.push(chained);
+  }
+  if (!sawChained) return null;
+  return buildAssignmentResult(segments);
 }
 
 // Parse an explicit top-level assignment `output = rhs`. The output leads
@@ -1914,6 +2242,7 @@ function demoteExplicitStepToUnparsed(out) {
   delete out.output;
   delete out.depends_on;
   delete out.interpretation_status;
+  delete out.stated_results;
 }
 
 // Canonicalize a model-provided step operation and strip worked-example
@@ -2126,6 +2455,68 @@ function tryEmbeddedArithmetic(text) {
 // operator core. Returns {expression, inputs, output?} or null. No output,
 // operand, or execution order is invented: targetless calculations keep
 // their verbatim line and are flagged incomplete by validation.
+// Parse a bare evaluated equality (`2 x $150.00 = $300.00`, `sum of parts =
+// 1.791`): an arithmetic or sum-worded left side with a worked numeric
+// value and no output variable anywhere. A `label:` prefix is stripped so
+// the calculation core keeps the row; the instruction stays verbatim. Only
+// reached when every assigned and bare-arithmetic reading failed, so
+// result-form lines keep their existing shape. Never invents an output:
+// validation flags the unstated target for the analyst.
+function tryParseBareEquality(body) {
+  const main = splitMainClause(String(body ?? ''));
+  if (!main || !main.includes('=')) return null;
+  const eqs = [];
+  for (let i = 0; i < main.length; i += 1) {
+    if (isStandaloneEquals(main, i)) eqs.push(i);
+  }
+  if (eqs.length !== 1) return null;
+  let lhs = main.slice(0, eqs[0]).trim();
+  const value = main.slice(eqs[0] + 1).trim().replace(/[.,]\s*$/, '').trim();
+  if (!lhs || !value) return null;
+  if (!isWorkedResult(value)) return null;
+  const run = trailingOutputRun(lhs, 4);
+  if (run && run.start === 0) return null;
+  const colon = lhs.lastIndexOf(':');
+  if (colon >= 0) {
+    const core = lhs.slice(colon + 1).trim();
+    if (core) lhs = core;
+  }
+  const arithmetical = CHAINED_MIDDLE_OPERATOR.test(lhs);
+  const sumWorded = /^(sum|total|difference|product)\s+of\b/i.test(lhs);
+  if (!arithmetical && !sumWorded) return null;
+  const expression = `${lhs} = ${cleanWorkedResult(value)}`;
+  const inputs = [];
+  if (arithmetical) {
+    assignmentInputVars(normalizeInfixMultiply(lhs), new Set(), new Set(), inputs);
+  }
+  return { expression, inputs };
+}
+
+// Parse a bare symbolic comparison (`Preconciled > minimum premium`) as a
+// check condition: a variable-like left side, one comparator, and a stated
+// threshold. Only reached for `=`-less lines every other reading rejected,
+// so worked evaluations and prose never land here. Arrows (`->`) are not
+// comparators.
+function tryParseBareComparison(body) {
+  const main = splitMainClause(String(body ?? ''));
+  if (!main || main.includes('=') || main.includes(';')) return null;
+  const m = /^(.+?)\s*(>=|<=|>|<)\s*(.+?)\s*$/.exec(main.trim());
+  if (!m) return null;
+  const left = m[1].trim();
+  const op = m[2];
+  const right = m[3].trim();
+  if (!left || !right) return null;
+  if (op === '>' && /-$/.test(left)) return null;
+  if (op === '<' && /^[-=]/.test(right)) return null;
+  if (!/[A-Za-z0-9_$,]/.test(right)) return null;
+  if (/[?;]/.test(right)) return null;
+  const run = trailingOutputRun(left, 4);
+  if (!run) return null;
+  const inputs = [run.output];
+  if (/^[A-Za-z_]\w*$/.test(right) && acceptableCapture(right)) inputs.push(right);
+  return { expression: `${run.output} ${op} ${right}`, inputs };
+}
+
 function tryParseBareArithmetic(body) {
   const text = String(body ?? '').trim().replace(/\.\s*$/, '');
   if (!text || !balancedParensLocal(text)) return null;
@@ -2497,6 +2888,17 @@ function deriveStepDetail(text) {
         derived = true;
       }
       if (!derived) {
+        const chained = parseChainedAssignments(body);
+        if (chained) {
+          entry.operation = 'expression';
+          entry.expression = chained.expression;
+          entry.output = chained.output;
+          entry.inputs = chained.inputs;
+          if (chained.stated_results) entry.stated_results = chained.stated_results;
+          derived = true;
+        }
+      }
+      if (!derived) {
         const rounded = tryParseRoundingAnywhere(body);
         if (rounded) {
           entry.operation = rounded.operation;
@@ -2530,6 +2932,30 @@ function deriveStepDetail(text) {
             entry.expression = phrase.expression;
             entry.output = phrase.output;
             if (phrase.inputs.length > 0) entry.inputs = phrase.inputs;
+            derived = true;
+          }
+        }
+        // A bare evaluated equality the readers above cannot place (no
+        // output variable anywhere): the value stays in the expression
+        // and validation flags the unstated target. Runs last so
+        // result-form lines keep their existing core-only shape.
+        if (!derived) {
+          const bare = tryParseBareEquality(body);
+          if (bare) {
+            entry.operation = 'expression';
+            entry.expression = bare.expression;
+            if (bare.inputs.length > 0) entry.inputs = bare.inputs;
+            derived = true;
+          }
+        }
+        // A bare symbolic comparison with no branches reads as a check
+        // condition, never as a numeric output.
+        if (!derived) {
+          const check = tryParseBareComparison(body);
+          if (check) {
+            entry.operation = 'condition';
+            entry.expression = check.expression;
+            if (check.inputs.length > 0) entry.inputs = check.inputs;
             derived = true;
           }
         }

@@ -437,6 +437,47 @@ test('validate: declared inputs used nowhere warn as possible drift', () => {
   assert.ok(!issues.some((i) => i.target_id === 'R2' && /used nowhere/.test(i.message)));
 });
 
+test('validate: spaced multi-word inputs match spaced usage runs', () => {
+  const job = jobWith({
+    routines: [{
+      name: 'R1', kind: 'formula', sourcePages: [1], evidenceText: 'e',
+      expressionText: 'fee comp = sum(wk x fee alpha) + Pay1',
+      inputs: ['wk', 'fee alpha', 'Pay1', 'orphan_var'], outputs: ['fee comp'],
+    }],
+  });
+  const issues = validateJob(job);
+  assert.ok(issues.some((i) => /"orphan_var"/.test(i.message) && /used nowhere/.test(i.message)));
+  assert.ok(!issues.some((i) => /"fee alpha"/.test(i.message) && /used nowhere/.test(i.message)),
+    `spaced input must resolve: ${issues.map((i) => i.message).join(' | ')}`);
+});
+
+test('validate: comma-joined step outputs resolve each named part', () => {
+  const job = jobWith({
+    routines: [{
+      name: 'R', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'e',
+      steps: [
+        {
+          sequence: 1, operation: 'expression',
+          instruction: 'Harbor riders = HD-R1 + HD-R2; Harbor subtotal = Harbor core + Harbor riders',
+          expression: 'Harbor riders = HD-R1 + HD-R2; Harbor subtotal = Harbor core + Harbor riders',
+          output: 'Harbor riders, Harbor subtotal',
+        },
+        {
+          sequence: 2, operation: 'expression',
+          instruction: 'Harbor mean = Harbor subtotal / 2',
+          expression: 'Harbor mean = Harbor subtotal / 2',
+          inputs: ['Harbor subtotal', 'Harbor riders', 'ghost_var'], output: 'Harbor mean',
+        },
+      ],
+    }],
+  });
+  const issues = validateJob(job);
+  const msgs = issues.map((i) => i.message).join(' | ');
+  assert.ok(!/Harbor subtotal/.test(msgs), `joined output part must resolve: ${msgs}`);
+  assert.ok(!/Harbor riders/.test(msgs), `joined output part must resolve: ${msgs}`);
+  assert.ok(issues.some((i) => /"ghost_var"/.test(i.message) && /flagged as unresolved/.test(i.message)), `genuine gap must warn: ${msgs}`);
+});
+
 test('validate: currency amounts and multi-statement formulas are interpretable; colons stay review', () => {
   assert.equal(classifyFormula('total = max($750.00, round_half_up(subtotal, 2))'), 'ok');
   assert.equal(classifyFormula('a = x * y; b = a - z'), 'ok');
@@ -487,6 +528,78 @@ test('validate: same-step assignments and retrievals resolve; keys stay unresolv
   assert.ok(issues.some((i) => /"PORT-01"/.test(i.message) && /flagged as unresolved/.test(i.message)), `lookup key must stay unresolved: ${msgs}`);
   assert.ok(issues.some((i) => /"units"/.test(i.message) && /flagged as unresolved/.test(i.message)), `undefined symbol must stay unresolved: ${msgs}`);
   assert.ok(issues.some((i) => /"SurchargeAmt"/.test(i.message) && /flagged as unresolved/.test(i.message)), `undefined symbol must stay unresolved: ${msgs}`);
+});
+
+test('validate: retrieval phrases define each listed item despite spacing', () => {
+  const job = jobWith({
+    tables: [{ name: 'Fee Schedule', sourcePages: [1], evidenceText: 'Fee Schedule with fees in dollars', headers: ['Code', 'Fee'], rows: [['F1', '10']] }],
+    routines: [{
+      name: 'R', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'e',
+      steps: [{
+        sequence: 1, operation: 'expression',
+        instruction: 'Retrieve ledger base Alpha base and Alpha factor from Fee Schedule. Alpha total = Alpha base + Alpha factor',
+        expression: 'Alpha total = Alpha base + Alpha factor',
+        inputs: ['Alpha base', 'Alpha factor', 'ghost_var'], output: 'Alpha total',
+      }],
+    }],
+  });
+  const issues = validateJob(job);
+  const msgs = issues.map((i) => i.message).join(' | ');
+  assert.ok(!/Alpha base/.test(msgs), `first retrieved item must resolve: ${msgs}`);
+  assert.ok(!/Alpha factor/.test(msgs), `second retrieved item must resolve: ${msgs}`);
+  assert.ok(issues.some((i) => /"ghost_var"/.test(i.message) && /flagged as unresolved/.test(i.message)), `genuine gap must warn: ${msgs}`);
+});
+
+test('validate: Let definitions resolve same-step references', () => {
+  const job = jobWith({
+    routines: [{
+      name: 'R', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'e',
+      steps: [{
+        sequence: 1, operation: 'expression',
+        instruction: 'Let flat charge be the sum of fees (Fee Index), and let surcharge rate be 3.5%. Harbor total = Harbor base + flat charge + surcharge rate',
+        expression: 'Harbor total = Harbor base + flat charge + surcharge rate',
+        inputs: ['Harbor base', 'flat charge', 'surcharge rate', 'ghost_var'], output: 'Harbor total',
+      }],
+    }],
+  });
+  const issues = validateJob(job);
+  const msgs = issues.map((i) => i.message).join(' | ');
+  assert.ok(!/flat charge/.test(msgs), `Let-defined value must resolve: ${msgs}`);
+  assert.ok(!/surcharge rate/.test(msgs), `Let-defined value must resolve: ${msgs}`);
+  assert.ok(issues.some((i) => /"Harbor base"/.test(i.message) && /flagged as unresolved/.test(i.message)), `external input must warn: ${msgs}`);
+  assert.ok(issues.some((i) => /"ghost_var"/.test(i.message) && /flagged as unresolved/.test(i.message)), `genuine gap must warn: ${msgs}`);
+});
+
+test('validate: unparseable worked calculations flag for review while parsed ones stay silent', () => {
+  const job = jobWith({
+    routines: [{
+      name: 'R', kind: 'worked_example', sourcePages: [1], evidenceText: 'e',
+      // The yields-clause evaluation shape now structures; a second assignment
+      // right of `=>` stays ambiguous for review.
+      notes: 'Ledger total = $100 / 2 = 50.00 credits; Alpha fee = 0.040 => fee total = 0.960',
+    }],
+  });
+  const issues = validateJob(job);
+  const msgs = issues.map((i) => i.message).join(' | ');
+  assert.ok(issues.some((i) => /Step 2.*states no confident operation/.test(i.message)), `ambiguous segment must warn: ${msgs}`);
+  assert.ok(!/Step 1.*(states no confident operation|uses syntax)/.test(msgs), `parsed segment must stay silent: ${msgs}`);
+});
+
+test('validate: worked derived steps never contradict reusable routines', () => {
+  const job = jobWith({
+    routines: [
+      {
+        name: 'R1', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'e',
+        steps: [{ sequence: 1, operation: 'expression', instruction: 'Ledger total = base amount + fee amount', expression: 'Ledger total = base amount + fee amount', inputs: ['base amount', 'fee amount'], output: 'Ledger total' }],
+      },
+      {
+        name: 'W', kind: 'worked_example', sourcePages: [1], evidenceText: 'e',
+        notes: 'Ledger total = $100 / 2 = 50.00 credits',
+      },
+    ],
+  });
+  const issues = validateJob(job);
+  assert.ok(!issues.some((i) => /contradiction/.test(i.message)), `worked values must stay illustrative: ${issues.map((i) => i.message).join(' | ')}`);
 });
 
 test('validate: hyphen-subtraction operands count as used; codes stay whole', () => {
