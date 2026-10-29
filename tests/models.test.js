@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cleanStepInputValue, createJob, createDocument, normalizeJob, resolveTableReference } from '../src/models.js';
+import { cleanStepInputValue, createJob, createDocument, findTableCandidates, normalizeJob, resolveTableReference } from '../src/models.js';
 
 test('normalizeJob assigns stable sequential IDs and preserves evidence', () => {
   const job = normalizeJob(
@@ -669,4 +669,30 @@ test('models: per-unit amounts stay in input labels; worked amounts still strip'
   assert.equal(cleanStepInputValue('Zone Rate (4.50%)'), 'Zone Rate');
   assert.equal(cleanStepInputValue('Net Premium: \u20B937,531.00'), 'Net Premium');
   assert.equal(cleanStepInputValue('20.00%'), '');
+});
+
+test('models: table keyword matching is singular/plural-insensitive in both directions', () => {
+  const tables = [
+    { id: 'T1', name: 'Table 2. Territory Factors' },
+    { id: 'T2', name: 'Table B \u2014 Construction factor' },
+  ];
+  assert.equal(resolveTableReference(tables, 'territory factor')?.id, 'T1');
+  assert.equal(resolveTableReference(tables, 'territory factors')?.id, 'T1');
+  assert.equal(resolveTableReference(tables, 'construction factors')?.id, 'T2');
+  assert.equal(resolveTableReference(tables, 'construction factor')?.id, 'T2');
+});
+
+test('models: exact keyword matches win over stemmed ones; stemmed ambiguity stays unresolved', () => {
+  const exactFirst = [
+    { id: 'T1', name: 'Harbor Factor Schedule' },
+    { id: 'T2', name: 'Harbor Berth Factors' },
+  ];
+  assert.equal(resolveTableReference(exactFirst, 'harbor factor')?.id, 'T1');
+  const stemmedDupes = [
+    { id: 'T1', name: 'North Factors' },
+    { id: 'T2', name: 'North Factors Schedule' },
+  ];
+  assert.equal(resolveTableReference(stemmedDupes, 'north factor'), null);
+  assert.deepEqual(findTableCandidates(stemmedDupes, 'north factor').map((t) => t.id), ['T1', 'T2']);
+  assert.deepEqual(findTableCandidates(stemmedDupes, 'hull factor'), []);
 });

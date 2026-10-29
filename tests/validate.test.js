@@ -1736,3 +1736,36 @@ test('validate: RoundHalfUp call form evaluates like round_half_up', () => {
   assert.equal(evaluateNumericExpression('round_half_up(1.005, 2)'), 1.01);
   assert.equal(evaluateNumericExpression('RoundHalfUp(2.5, 0)'), 3);
 });
+
+test('validate: inflected factor references resolve; unresolved, ambiguous, and fallback warnings stay', () => {
+  const factorEvidence = 'Factors are unitless multipliers applied per vehicle';
+  const job = jobWith({
+    tables: [
+      { name: 'Table 2. Territory Factors', sourcePages: [1], evidenceText: factorEvidence, headers: ['Territory code', 'Factor'], rows: [['URB', '1.20']] },
+      { name: 'Table 3. Driver Experience Factors', sourcePages: [1], evidenceText: factorEvidence, headers: ['Experience band', 'Factor'], rows: [['EXP-1', '1.20']] },
+      { name: 'North Factors', sourcePages: [1], evidenceText: factorEvidence, headers: ['Zone key', 'Factor'], rows: [['a', '1']] },
+      { name: 'North Factors Schedule', sourcePages: [1], evidenceText: factorEvidence, headers: ['Region key', 'Factor'], rows: [['a', '1']] },
+    ],
+    routines: [{
+      name: 'Rating Procedure', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'e',
+      conditions: ['If the policy covers 3 to 10 vehicles, the discount is 5% of the pre-discount premium.'],
+      steps: [
+        'Base premium = 100',
+        'Step 2 \u2014 Territory adjustment: Multiply the base premium by the territory factor from Table 2.',
+        'Step 3 \u2014 Driver adjustment: Multiply the Step 2 result by the driver experience factor from Table 3.',
+        'North pick = north factor',
+        'Hull pick = hull factor',
+      ],
+    }],
+  });
+  const issues = validateJob(job);
+  const msgs = issues.map((i) => i.message).join(' | ');
+  assert.ok(!issues.some((i) => /"territory factor"/.test(i.message)), `inflected factor ref must resolve: ${msgs}`);
+  assert.ok(!issues.some((i) => /"driver experience factor"/.test(i.message)), `inflected factor ref must resolve: ${msgs}`);
+  assert.ok(issues.some((i) => /"hull factor"/.test(i.message) && /flagged as unresolved/.test(i.message)), `genuine gap must warn: ${msgs}`);
+  const north = issues.find((i) => /"north factor"/.test(i.message));
+  assert.ok(north, `ambiguous ref must warn: ${msgs}`);
+  assert.match(north.message, /matches multiple tables/);
+  assert.match(north.message, /North Factors/);
+  assert.ok(issues.some((i) => /no explicit fallback/.test(i.message)), `genuine missing fallback must still warn: ${msgs}`);
+});

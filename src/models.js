@@ -1793,6 +1793,18 @@ function tableMentionKeywords(text) {
   }
   return words.filter((w) => w !== 'table' && w !== 'tables');
 }
+// Singular/plural-insensitive keyword form: generic English plural
+// inflections only (`factors` to `factor`, `policies` to `policy`,
+// `classes` to `class`). Short words stay untouched so codes, numbers,
+// and abbreviations never conflate. Both mention and table words pass
+// through the same form, so agreement evidences the same word.
+function singularKeyword(word) {
+  const w = String(word ?? '');
+  if (w.length > 4 && w.endsWith('ies')) return w.slice(0, -3) + 'y';
+  if (w.length > 4 && /(?:s|x|z|ch|sh)es$/.test(w)) return w.slice(0, -2);
+  if (w.length > 3 && w.endsWith('s') && !w.endsWith('ss')) return w.slice(0, -1);
+  return w;
+}
 
 // Every source label a table answers to: its display name plus aliases
 // (asset codes, alternate titles). Matching runs over all of them.
@@ -1803,7 +1815,8 @@ function tableMatchNames(table) {
 
 // Every table a mention could refer to, in resolution-priority order: the
 // exact id/name/alias match first, else word-boundary prefix matches in
-// either direction, else keyword-subset matches. Callers needing one
+// either direction, else keyword-subset matches (exact words first, then a
+// singular/plural-insensitive fallback). Callers needing one
 // confident table use resolveTableReference; callers reporting ambiguity
 // use the full list. Generic matching, never table names.
 export function findTableCandidates(tables, mention) {
@@ -1824,9 +1837,20 @@ export function findTableCandidates(tables, mention) {
   if (prefixCandidates.length > 0) return prefixCandidates;
   const keywords = tableMentionKeywords(raw);
   if (keywords.length === 0) return [];
-  return list.filter((t) => {
-    const words = new Set(tableMatchNames(t).flatMap((n) => normalizeTableText(n).split(/[^a-z0-9]+/).filter(Boolean)));
+  const tableWords = (t) => new Set(tableMatchNames(t).flatMap((n) => normalizeTableText(n).split(/[^a-z0-9]+/).filter(Boolean)));
+  const exactHits = list.filter((t) => {
+    const words = tableWords(t);
     return keywords.every((k) => words.has(k));
+  });
+  if (exactHits.length > 0) return exactHits;
+  // Singular/plural fallback: a mention inflected differently from the
+  // table name (`territory factor` for `Territory Factors`) still names
+  // the same table. Exact-word matches above keep priority, so this only
+  // fires when nothing matched verbatim; uniqueness still decides.
+  const stems = keywords.map(singularKeyword);
+  return list.filter((t) => {
+    const stemmed = new Set([...tableWords(t)].map(singularKeyword));
+    return stems.every((s) => stemmed.has(s));
   });
 }
 
@@ -1834,7 +1858,9 @@ export function findTableCandidates(tables, mention) {
 // first (dash-insensitive), else a unique word-boundary prefix in either
 // direction (short "Table 1" to long "Table 1 - ..." and long mentions to
 // short extracted names), else a unique keyword-subset match for valid
-// aliases ("Base property table" to "Table A - Base property rate").
+// aliases ("Base property table" to "Table A - Base property rate"), with
+// a singular/plural-insensitive fallback ("territory factor" to
+// "Table 2. Territory Factors") when nothing matched verbatim.
 // Returns the table or null when there is no single confident match.
 export function resolveTableReference(tables, mention) {
   const candidates = findTableCandidates(tables, mention);
