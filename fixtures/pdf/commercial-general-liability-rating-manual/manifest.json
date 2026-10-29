@@ -1,0 +1,21 @@
+{
+  "fixture_format": 1,
+  "name": "commercial-general-liability-rating-manual",
+  "source_filename": "Commercial General Liability Insurance Underwriting and Rating Manual in LaTeX format.pdf",
+  "source_bytes": 209983,
+  "source_sha256": "c930d43278388de6ba32b730bd34c59b95c4fb94434e29e93bae28972d871ed5",
+  "page_count": 21,
+  "text_chars": 38336,
+  "extraction_source": {
+    "job_id": "1fbf7d51-a27b-433a-91b8-3b86e8b1381a",
+    "document_filename": "Commercial General Liability Insurance Underwriting and Rating Manual in LaTeX format.pdf"
+  },
+  "artifacts": [
+    "manifest.json",
+    "pages.json",
+    "extraction.json",
+    "job.json"
+  ],
+  "notes": "Offline fixture: pages.json is local PDF text (no model); extraction.json is the raw extractor output; job.json is the normalized+validated job snapshot used to regenerate the workbook without PDF reprocessing or model/API calls.",
+  "created_at": "2026-10-29T06:51:05.692Z"
+}

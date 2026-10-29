@@ -980,7 +980,7 @@ function bareExpressionLexemes(expression) {
   for (let i = 0; i < s.length; i += 1) {
     const ch = s[i];
     let op = null;
-    if (ch === '+' || ch === '*' || ch === '/' || ch === '×' || ch === '÷') op = ch;
+    if (ch === '+' || ch === '*' || ch === '/' || ch === '×' || ch === '÷' || ch === '·' || ch === '•' || ch === '−' || ch === '^') op = ch;
     else if (ch === '-' && (s[i - 1] === ' ' || s[i - 1] === '\t') && (s[i + 1] === ' ' || s[i + 1] === '\t')) op = ch;
     if (op && !seen.has(op)) {
       seen.add(op);
@@ -1168,7 +1168,7 @@ function tokenizeArithmetic(rhs) {
       i += 1;
       continue;
     }
-    const idMatch = /[A-Za-z_][A-Za-z0-9_]*(?:[-.][A-Za-z0-9_]+)*(?: +[A-Za-z_][A-Za-z0-9_]*(?:[-.][A-Za-z0-9_]+)*)*/.exec(text.slice(i));
+    const idMatch = /[A-Za-z_][A-Za-z0-9_]*(?:[-.][A-Za-z0-9_]+)*(?:\[[^\[\]{}();,=<>!+\-*/]+\])?(?: +[A-Za-z_][A-Za-z0-9_]*(?:[-.][A-Za-z0-9_]+)*(?:\[[^\[\]{}();,=<>!+\-*/]+\])?)*/.exec(text.slice(i));
     if (idMatch && idMatch.index === 0) {
       let value = idMatch[0];
       let next = i + value.length;
@@ -1230,7 +1230,7 @@ function tokenizeArithmetic(rhs) {
       i = next;
       continue;
     }
-    if (ch === '+' || ch === '-' || ch === '*' || ch === '/' || ch === '%' || ch === '×' || ch === '÷') {
+    if (ch === '+' || ch === '-' || ch === '*' || ch === '/' || ch === '%' || ch === '×' || ch === '÷' || ch === '·' || ch === '•' || ch === '−' || ch === '^') {
       tokens.push({ type: 'op', value: ch });
       expectOperand = true;
       i += 1;
@@ -1249,7 +1249,7 @@ function tokenizeArithmetic(rhs) {
 }
 
 function isIdentifierOperand(value) {
-  return /^[+-]?[A-Za-z_][\w.-]*(?: +[A-Za-z_][\w.-]*)*$/.test(String(value ?? '').trim());
+  return /^[+-]?[A-Za-z_][\w.-]*(?:\[[^\[\]{}();,=<>!+\-*/]+\])?(?: +[A-Za-z_][\w.-]*(?:\[[^\[\]{}();,=<>!+\-*/]+\])?)*$/.test(String(value ?? '').trim());
 }
 
 // Amount-like parenthetical group: numbers, currency, percents, and
@@ -1317,7 +1317,7 @@ function splitPhraseOperands(rhs) {
       current += ch;
       continue;
     }
-    if (depth === 0 && (ch === '+' || ch === '*' || ch === '/' || ch === '%' || ch === '×' || ch === '÷')) {
+    if (depth === 0 && (ch === '+' || ch === '*' || ch === '/' || ch === '%' || ch === '×' || ch === '÷' || ch === '·' || ch === '•' || ch === '−' || ch === '^')) {
       flush();
       ops.push(ch);
       continue;
@@ -1412,7 +1412,7 @@ function expandArithmetic(output, rhs) {
 function simpleIdentifiers(text) {
   const out = [];
   const seen = new Set();
-  for (const m of String(text ?? '').matchAll(/[A-Za-z_][A-Za-z0-9_]*(?:[-.][A-Za-z0-9_]+)*/g)) {
+  for (const m of String(text ?? '').matchAll(/[A-Za-z_][A-Za-z0-9_]*(?:[-.][A-Za-z0-9_]+)*(?:\[[^\[\]{}();,=<>!+\-*/]+\])?/g)) {
     const low = m[0].toLowerCase();
     if (['and', 'or', 'not', 'if', 'then', 'else', 'when', 'where', 'otherwise'].includes(low)) continue;
     if (seen.has(low)) continue;

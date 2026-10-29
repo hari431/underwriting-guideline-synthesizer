@@ -11,7 +11,9 @@ export const ISSUE_PREFIX = 'V';
 // Canonical routine kinds. Model-provided kinds normalize to one of these
 // when recognized (see normalizeRoutineKind); anything else is preserved
 // verbatim so validation can warn about genuinely unknown types.
-export const ROUTINE_KINDS = ['formula', 'condition', 'calculation_steps'];
+// worked_example marks illustrative calculations with expected values: they
+// are preserved for verification, never treated as normative definitions.
+export const ROUTINE_KINDS = ['formula', 'condition', 'calculation_steps', 'worked_example'];
 
 export function createDocument({ filename, pageCount, page_count } = {}) {
   return {
@@ -440,21 +442,60 @@ function promoteInstructionAssignments(out) {
   const expr = String(out.expression ?? '').trim();
   if (expr && splitTopLevel(expr, ';').filter((s) => String(s ?? '').trim()).length > 1) return;
   const scanned = parseTrailingAssignments(out.instruction);
-  if (!scanned || scanned.segments.length < 2) return;
   const norm = (s) => String(s ?? '').replace(/\s+/g, ' ').trim().replace(/\.\s*$/, '').toLowerCase();
-  const last = scanned.segments[scanned.segments.length - 1];
-  if (!expr) {
-    const op = String(out.operation ?? '').toLowerCase();
-    if (op && op !== 'expression' && op !== 'assignment') return;
-    out.expression = scanned.expression;
-    if (!String(out.output ?? '').trim()) out.output = scanned.output;
-    if (!out.operation) out.operation = 'expression';
+  if (scanned && scanned.segments.length >= 2) {
+    const last = scanned.segments[scanned.segments.length - 1];
+    if (!expr) {
+      const op = String(out.operation ?? '').toLowerCase();
+      if (!op || op === 'expression' || op === 'assignment') {
+        out.expression = scanned.expression;
+        if (!String(out.output ?? '').trim()) out.output = scanned.output;
+        if (!out.operation) out.operation = 'expression';
+      }
+      return;
+    }
+    const existing = splitAssignmentSegment(expr);
+    if (existing && norm(existing.output) === norm(last.output) && norm(existing.rhs) === norm(last.rhs)) {
+      out.expression = scanned.expression;
+    }
     return;
   }
+  if (!expr) return;
+  anchoredPromotion(out, expr, norm);
+}
+
+// Anchored fallback for instructions where plain-word boundaries defeat the
+// syntactic scan (for example a right-hand side ending in plain words before
+// the next multi-word output). The model's own structured expression anchors
+// the split: it must be a single assignment whose output occurs once with '='
+// in the instruction, and the text before that occurrence must parse cleanly
+// to at least one assignment. The prefix assignments then prepend the
+// structured expression in source order. Generic syntax, never step contents.
+function anchoredPromotion(out, expr, norm) {
   const existing = splitAssignmentSegment(expr);
   if (!existing) return;
-  if (norm(existing.output) !== norm(last.output) || norm(existing.rhs) !== norm(last.rhs)) return;
-  out.expression = scanned.expression;
+  const instruction = String(out.instruction ?? '');
+  const outputPattern = existing.output.trim().split(/\s+/).map((w) =>
+    w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+');
+  if (!outputPattern) return;
+  const matches = [...instruction.matchAll(new RegExp(`\\b${outputPattern}\\b\\s*=(?![=>])`, 'gi'))];
+  if (matches.length !== 1) return;
+  const at = matches[0].index ?? -1;
+  if (at <= 0) return;
+  const prefix = instruction.slice(0, at);
+  if (!prefix.includes('=')) return;
+  const parsed = parseTrailingAssignments(prefix);
+  if (!parsed || parsed.segments.length < 1) return;
+  const lastPrefix = parsed.segments[parsed.segments.length - 1];
+  if (norm(lastPrefix.output) === norm(existing.output) && norm(lastPrefix.rhs) === norm(existing.rhs)) return;
+  const rhsText = String(existing.rhs ?? '');
+  const referencesPrefix = parsed.segments.some((seg) => {
+    const pattern = String(seg.output ?? '').trim().split(/\s+/).map((w) =>
+      w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+');
+    return pattern && new RegExp(`\\b${pattern}\\b`, 'i').test(rhsText);
+  });
+  if (!referencesPrefix) return;
+  out.expression = `${parsed.expression}; ${existing.output} = ${existing.rhs}`;
 }
 
 // Fill a sparse explicit step object from its own instruction text: when the
@@ -697,7 +738,7 @@ function acceptableCapture(word) {
 function identifiersOf(text) {
   const seen = new Set();
   const out = [];
-  for (const m of String(text ?? '').matchAll(/[A-Za-z_][A-Za-z0-9_]*(?:[-.][A-Za-z0-9_]+)*/g)) {
+  for (const m of String(text ?? '').matchAll(/[A-Za-z_][A-Za-z0-9_]*(?:[-.][A-Za-z0-9_]+)*(?:\[[^\[\]{}();,=<>!+\-*/]+\])?/g)) {
     const key = m[0].toLowerCase();
     if (seen.has(key) || NON_IDENTIFIER_WORDS.has(key)) continue;
     seen.add(key);
@@ -737,8 +778,8 @@ export function splitTopLevel(text, delimiter = ';') {
   let current = '';
   for (let i = 0; i < s.length; i += 1) {
     const ch = s[i];
-    if (ch === '(') depth += 1;
-    else if (ch === ')') depth = Math.max(0, depth - 1);
+    if (ch === '(' || ch === '[' || ch === '{') depth += 1;
+    else if (ch === ')' || ch === ']' || ch === '}') depth = Math.max(0, depth - 1);
     if (ch === delimiter && depth === 0) {
       parts.push(current);
       current = '';
@@ -873,7 +914,7 @@ function scanInstructionAssignments(main) {
 // count. Generic syntax, never variable names.
 function assignmentInputVars(rhs, definedLower, seenLower, inputs) {
   const s = String(rhs ?? '');
-  const wordRe = /[A-Za-z_][A-Za-z0-9_]*(?:[-.][A-Za-z0-9_]+)*/g;
+  const wordRe = /[A-Za-z_][A-Za-z0-9_]*(?:[-.][A-Za-z0-9_]+)*(?:\[[^\[\]{}();,=<>!+\-*/]+\])?/g;
   let run = [];
   let lastEnd = -1;
   const flush = (afterPos) => {
@@ -1133,6 +1174,169 @@ export function resolveTableReference(tables, mention) {
   return candidates.length === 1 ? candidates[0] : null;
 }
 
+// Base asset code shared by split parts of one logical table: the uppercase
+// hyphenated code with any trailing Part/Section qualifier stripped
+// ("TBL-PROT-CRED Part A" and "TBL-PROT-CRED Part B" share "tbl-prot-cred").
+// Returns the lowercased base code or '' when the table carries no such
+// code. Generic code shapes, never table names.
+const LOGICAL_PART_SUFFIX = new RegExp(`\\s+${TRAILING_QUALIFIER}\\s+[A-Z0-9]+\\s*$`, 'i');
+
+export function tableLogicalGroupKey(table) {
+  const names = [table?.name, ...(table?.aliases ?? [])];
+  for (const raw of names) {
+    const s = String(raw ?? '').trim();
+    if (!s) continue;
+    const stripped = s.replace(LOGICAL_PART_SUFFIX, '').trim();
+    const codes = [...stripped.matchAll(/\b([A-Z][A-Z0-9]*(?:[-_.][A-Z0-9]+)+)\b/g)]
+      .map((m) => m[1]);
+    if (codes.length > 0) return codes[codes.length - 1].toLowerCase();
+  }
+  return '';
+}
+
+// True when every table in the list shares one non-empty logical group key
+// (split parts of the same logical table) and the mention names that base
+// code. A base-code reference to the group ("TBL-PROT-CRED" for Part A and
+// Part B) is then a confident group reference, not an ambiguous match.
+export function isLogicalGroupReference(tables, mention) {
+  const list = Array.isArray(tables) ? tables.filter(Boolean) : [];
+  if (list.length < 2) return false;
+  const key = String(mention ?? '').trim().toLowerCase().replace(/[\s_]+/g, '-');
+  if (!key) return false;
+  const groups = new Set(list.map(tableLogicalGroupKey).filter(Boolean));
+  if (groups.size !== 1) return false;
+  const group = [...groups][0];
+  return key === group || key.replace(/-/g, '') === group.replace(/-/g, '');
+}
+
+// Generic column role hints from header wording. Rating-domain key/value/note
+// families, never specific table or column names. Value patterns decide when
+// headers are silent; headers decide when values are ambiguous (numeric codes
+// stay keys via "code", numeric factors stay outputs via "factor").
+const COLUMN_KEY_TERMS = /\b(code|codes|id|ids|key|keys|category|categories|type|types|class|classes|zone|zones|territory|territories|band|bands|tier|tiers|group|groups|grade|grades|schedule|schedules|limit|limits|deductible|deductibles|peril|perils|occupancy|construction|hazard|industry|description)\b/i;
+const COLUMN_VALUE_TERMS = /\b(rate|rates|factor|factors|premium|premiums|cost|costs|price|prices|amount|amounts|charge|charges|fee|fees|modifier|modifiers|multiplier|multipliers|loading|loadings|surcharge|surcharges|credit|credits|debit|debits|relativity|relativities|ratio|ratios|percent|percentage|value|values|result|results|loss|losses|limit|limits)\b/i;
+const COLUMN_NOTE_TERMS = /\b(note|notes|constraint|constraints|requirement|requirements|comment|comments|evidence|footnote|footnotes|instruction|instructions|remark|remarks|condition|conditions|eligibility|audit|certification|documentation|warranty|warranties)\b/i;
+
+function columnCells(table, idx) {
+  const out = [];
+  for (const row of table?.rows ?? []) {
+    if (!Array.isArray(row) || idx >= row.length) continue;
+    out.push(String(row[idx] ?? ''));
+  }
+  return out;
+}
+
+function isColumnNumericValue(cell) {
+  const s = String(cell ?? '').trim();
+  if (!s) return false;
+  if (/^0\d+$/.test(s)) return false;
+  const cleaned = s.replace(/[$€£¥₹,\s]/g, '').replace(/%$/, '');
+  if (!cleaned) return false;
+  return /^[-+]?(\d+(\.\d*)?|\.\d+)$/.test(cleaned);
+}
+
+function isCodeLikeValue(cell) {
+  const s = String(cell ?? '').trim();
+  if (!s || s.length > 32 || /\s{2,}/.test(s)) return false;
+  if (/^0\d+$/.test(s)) return true;
+  if (/^[A-Z][A-Z0-9]*([-_.][A-Z0-9]+)+$/.test(s)) return true;
+  if (/^[A-Z]+-\d+[A-Z0-9-]*$/.test(s)) return true;
+  return false;
+}
+
+function inferColumnUnits(header, cells) {
+  const h = String(header ?? '');
+  const nonBlank = cells.filter((c) => String(c ?? '').trim());
+  if (nonBlank.length === 0) return '';
+  const headerLower = h.toLowerCase();
+  const perMatch = /\bper\s*\$?\s*\d[\d,]*\b/i.exec(h) ?? /\bper\s+[a-z]+\b/i.exec(h);
+  if (perMatch && nonBlank.every(isColumnNumericValue)) return perMatch[0].trim();
+  if (/%|percent/i.test(h) && nonBlank.every((c) => /%|percent/i.test(String(c)) || isColumnNumericValue(c))) {
+    if (/%/.test(h) || nonBlank.every((c) => String(c).includes('%'))) return '%';
+  }
+  if (/[$€£¥₹]/.test(h) && nonBlank.every(isColumnNumericValue)) {
+    const cur = /[$€£¥₹]/.exec(h);
+    return cur ? cur[0] : '';
+  }
+  if (nonBlank.every((c) => String(c ?? '').trim().startsWith('$') && isColumnNumericValue(c))) return '$';
+  if (nonBlank.every((c) => String(c ?? '').trim().endsWith('%') && isColumnNumericValue(String(c).replace(/%$/, '')))) return '%';
+  if (/\b(dollar|dollars|currency)\b/i.test(headerLower) && nonBlank.every(isColumnNumericValue)) return '$';
+  return '';
+}
+
+function inferColumnRole(header, cells) {
+  const h = String(header ?? '').trim();
+  const nonBlank = cells.filter((c) => String(c ?? '').trim());
+  if (nonBlank.length === 0) return '';
+  if (h && COLUMN_NOTE_TERMS.test(h)) {
+    const avgLen = nonBlank.reduce((n, c) => n + String(c).length, 0) / nonBlank.length;
+    if (avgLen >= 12 || nonBlank.some((c) => String(c).trim().split(/\s+/).length >= 3)) return 'descriptive';
+  }
+  const allNumeric = nonBlank.every(isColumnNumericValue);
+  if (h && COLUMN_VALUE_TERMS.test(h) && allNumeric) return 'output';
+  if (h && /\b(code|codes|id|ids|key|keys)\b/i.test(h)) return 'key';
+  if (h && COLUMN_KEY_TERMS.test(h) && !allNumeric) return 'key';
+  if (nonBlank.every(isCodeLikeValue)) return 'key';
+  const unique = new Set(nonBlank.map((c) => String(c ?? '').trim().toLowerCase()));
+  if (unique.size === nonBlank.length && nonBlank.length >= 2 && !allNumeric) return 'key';
+  if (allNumeric) return 'output';
+  if (h) return '';
+  return '';
+}
+
+function inferColumnDataType(header, cells) {
+  const nonBlank = cells.filter((c) => String(c ?? '').trim());
+  if (nonBlank.length === 0) return '';
+  if (nonBlank.every(isColumnNumericValue)) return 'number';
+  if (nonBlank.every((c) => !isColumnNumericValue(c))) return 'text';
+  return '';
+}
+
+// Deterministic column type/unit/role inference. Fills only absent fields
+// when header wording and cell values agree; uncertain columns stay unknown
+// (no field) so nothing is invented. Original labels are never altered.
+// Returns a new columns array; the input table is untouched.
+export function inferTableColumns(table) {
+  const headers = table?.headers ?? [];
+  const columns = table?.columns ?? [];
+  const width = Math.max(headers.length, columns.length);
+  if (width === 0) return columns;
+  return Array.from({ length: width }, (_, idx) => {
+    const base = columns[idx] && typeof columns[idx] === 'object' ? { ...columns[idx] } : null;
+    const header = headers[idx] ?? base?.label ?? '';
+    const cells = columnCells(table, idx);
+    const nonBlank = cells.filter((c) => String(c ?? '').trim());
+    if (nonBlank.length === 0) return base ?? { label: String(header ?? ''), original_label: String(header ?? ''), order: idx + 1 };
+    const out = base ?? { label: String(header ?? ''), original_label: String(header ?? ''), order: idx + 1 };
+    const evidenceBits = [];
+    if (!out.data_type) {
+      const inferred = inferColumnDataType(header, cells);
+      if (inferred) {
+        out.data_type = inferred;
+        evidenceBits.push(`${nonBlank.length} ${inferred === 'number' ? 'numeric' : 'text'} value(s)`);
+      }
+    }
+    if (!out.units) {
+      const inferred = inferColumnUnits(header, cells);
+      if (inferred) {
+        out.units = inferred;
+        evidenceBits.push(`units "${inferred}" from header/values`);
+      }
+    }
+    if (!out.role) {
+      const inferred = inferColumnRole(header, cells);
+      if (inferred) {
+        out.role = inferred;
+        evidenceBits.push(`role ${inferred} from header/values`);
+      }
+    }
+    if (evidenceBits.length > 0 && !out.evidence) {
+      out.evidence = `Inferred from ${evidenceBits.join('; ')} in column "${String(header ?? `column ${idx + 1}`)}".`;
+    }
+    return out;
+  });
+}
+
 // Whitespace-delimited code tokens of a routine id or name, lowercased with
 // surrounding punctuation stripped, so "HB-1" survives as one token while
 // dashes and commas never glue words together. Tokens shorter than two
@@ -1350,6 +1554,32 @@ function tryParseLookup(body) {
   return null;
 }
 
+// Split a branch tail on its top-level ELSE/OTHERWISE (depth 0, outside any
+// nested IF/WHEN). Nested branches stay verbatim inside the true branch so
+// "IF A THEN IF B THEN X ELSE Y ELSE Z" keeps "IF B THEN X ELSE Y" whole.
+// Returns [trueBranch, falseBranch] or null when no top-level ELSE exists.
+function splitTopLevelElse(rest) {
+  const s = String(rest ?? '').trim();
+  if (!s) return null;
+  const tokens = [...s.matchAll(/\b(if|when|else|otherwise)\b/gi)];
+  let depth = 0;
+  let splitAt = -1;
+  let splitLen = 0;
+  for (const tok of tokens) {
+    const word = tok[1].toLowerCase();
+    if (word === 'if' || word === 'when') depth += 1;
+    else if (word === 'else' || word === 'otherwise') {
+      if (depth === 0) { splitAt = tok.index; splitLen = tok[0].length; break; }
+      depth = Math.max(0, depth - 1);
+    }
+  }
+  if (splitAt < 0) return null;
+  const before = s.slice(0, splitAt).trim().replace(/[;.,]+\s*$/, '').trim();
+  const after = s.slice(splitAt + splitLen).trim().replace(/^,/, '').trim();
+  if (!before || !after) return null;
+  return [before, after];
+}
+
 // Parse explicit conditional branch wording: IF/WHEN with THEN or a comma,
 // ELSE/OTHERWISE as the false branch in either order. Returns
 // {condition?, true_branch?, false_branch?} or null when no confident
@@ -1357,7 +1587,10 @@ function tryParseLookup(body) {
 function parseConditionalBranches(text) {
   const full = String(text ?? '').trim();
   if (!full) return null;
-  const elseSplit = (rest) => /^(.+?)\s*(?:[;.,]\s*)?(?:else|otherwise)\s*,?\s+(.+?)\s*$/i.exec(String(rest ?? '').trim());
+  const elseSplit = (rest) => {
+    const parts = splitTopLevelElse(rest);
+    return parts ? [, parts[0], parts[1]] : null;
+  };
   const ifThen = /^\s*(?:if|when)\s+(.+?)\s+then\s+(.+?)\s*$/i.exec(full);
   if (ifThen && ifThen[1].trim() && ifThen[2].trim()) {
     const condition = ifThen[1].trim();
@@ -1551,7 +1784,7 @@ function splitArithmeticOperands(text) {
   for (let i = 0; i < s.length; i += 1) {
     const ch = s[i];
     let op = null;
-    if (ch === '+' || ch === '*' || ch === '/' || ch === '×' || ch === '÷') {
+    if (ch === '+' || ch === '*' || ch === '/' || ch === '×' || ch === '÷' || ch === '·' || ch === '•' || ch === '−' || ch === '^') {
       op = ch;
     } else if (ch === '-' && (s[i - 1] === ' ' || s[i - 1] === '\t') && (s[i + 1] === ' ' || s[i + 1] === '\t')) {
       op = '-';
@@ -1640,7 +1873,10 @@ export function cleanStepInputValue(raw) {
   if (!s || isNumericFragment(s)) return '';
   const kept = [];
   for (const tok of s.split(/\s+/)) {
-    const stripped = tok.replace(/^[:;|@,()[\]{}"'`]+|[:;|@,()[\]{}"'`]+$/g, '');
+    let stripped = tok.replace(/^[:;|@,(){}"'`]+|[:;|@,(){}"'`]+$/g, '');
+    if (stripped && !/^[A-Za-z_][\w.-]*\[[^\[\]]+\]$/.test(stripped)) {
+      stripped = stripped.replace(/^[\[\]]+|[\[\]]+$/g, '');
+    }
     if (!stripped) continue;
     if (/^[₹$€£¥%‰]+$/.test(stripped)) continue;
     if (isWorkedAmountToken(stripped)) {
@@ -1914,11 +2150,16 @@ function tryParseBareArithmetic(body) {
 }
 
 // Rounding stated outside the directive position ("Rounded Half-Up to ...",
-// "..., rounded to nearest ..."). The target is captured only in the strict
-// "round <variable> to ..." shape so rounding modes ("Half-Up") never become
+// "..., rounded to nearest ...", "Keep X at N decimal places"). The target
+// is captured only in strict shapes ("round <variable> to ...",
+// "keep <variable> at ...") so rounding modes ("Half-Up") never become
 // variables; anything else yields the operation without an invented target.
 function tryParseRoundingAnywhere(body) {
   const s = String(body ?? '');
+  const keep = /\b(?:keep|retain)\s+(?:the\s+)?([A-Za-z_]\w*)\s+at\s+\d+\s+(?:decimal\s+places|decimals|places)\b/i.exec(s);
+  if (keep && acceptableCapture(keep[1])) {
+    return { operation: 'rounding', operand: keep[1], output: keep[1] };
+  }
   const m = /\bround(?:ed|ing|s)?\b/i.exec(s);
   if (!m) return null;
   const after = s.slice(m.index + m[0].length);
@@ -2015,7 +2256,7 @@ function splitTopLevelOperators(text) {
       continue;
     }
     if (depth === 0) {
-      if (ch === '+' || ch === '*' || ch === '/' || ch === '×' || ch === '÷') {
+      if (ch === '+' || ch === '*' || ch === '/' || ch === '×' || ch === '÷' || ch === '·' || ch === '•' || ch === '−' || ch === '^') {
         parts.push(current);
         ops.push(ch);
         current = '';
@@ -2376,6 +2617,14 @@ function deriveConditionDetail(text) {
 const STRUCTURAL_KIND_WORDS = new Set([
   'calculation', 'procedure', 'process', 'pipeline', 'sequence', 'sequential',
   'workflow', 'chain', 'chained', 'stage', 'stages', 'rule', 'rules', 'business',
+  'rating', 'rated', 'rates', 'premium', 'premiums', 'surcharge', 'surcharges',
+  'adjustment', 'adjustments', 'modifier', 'modifiers', 'modification',
+  'modifications', 'loading', 'loadings', 'discount', 'discounts', 'credit',
+  'credits', 'debit', 'debits', 'relativity', 'relativities', 'accumulator',
+  'accumulators', 'algorithm', 'algorithms', 'routine', 'routines', 'schedule',
+  'schedules', 'experience', 'allocation', 'computation', 'assessment',
+  'conflict', 'conflicts', 'conflicting', 'conflicted', 'contradiction',
+  'contradictions', 'contradictory', 'matrix', 'scale', 'scales',
 ]);
 
 function normalizeRoutineKind(kind, evidence = {}) {
@@ -2384,7 +2633,14 @@ function normalizeRoutineKind(kind, evidence = {}) {
   if (ROUTINE_KINDS.includes(key)) return key;
   if (!key) return raw;
   const words = new Set(key.split(/[^a-z0-9]+/).filter(Boolean));
-  if (words.has('eligibility')) return 'condition';
+  if (words.has('eligibility') || words.has('ineligible') || words.has('ineligibility')
+    || words.has('underwriting') || words.has('guideline') || words.has('guidelines')) {
+    const structural = structuralRoutineKind(evidence);
+    if (structural === 'calculation_steps') return 'calculation_steps';
+    return 'condition';
+  }
+  if (words.has('worked') || words.has('example') || words.has('examples')
+    || words.has('illustration') || words.has('illustrations')) return 'worked_example';
   if ([...words].some((w) => STRUCTURAL_KIND_WORDS.has(w))) return structuralRoutineKind(evidence);
   if (words.has('condition') || words.has('conditional')) return 'condition';
   if (words.has('formula')) return 'formula';

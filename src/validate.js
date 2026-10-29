@@ -1,14 +1,14 @@
 // Deterministic validation for extracted jobs. Pure functions, no model calls.
 // Policy: structural/traceability breaks are errors; anything interpretive —
 // including unfamiliar formula syntax — is a warning flagged for review.
-import { ROUTINE_KINDS, createValidationIssue, definedConstantTerms, findTableCandidates, normalizeVariableKey, resolveRoutineReference, resolveTableReference, splitAssignmentSegment, splitHyphenSubtraction, splitTopLevel, tableReferenceTerms } from './models.js';
+import { ROUTINE_KINDS, createValidationIssue, definedConstantTerms, findTableCandidates, isLogicalGroupReference, normalizeVariableKey, resolveRoutineReference, resolveTableReference, splitAssignmentSegment, splitHyphenSubtraction, splitTopLevel, tableReferenceTerms } from './models.js';
 import { tableHasRecordColumn } from './table-split.js';
 
 export { ROUTINE_KINDS };
 
 const CONDITIONAL_KEYWORDS = /\b(if|then|else|case|when|and|or|not|in)\b/i;
-const FORMULA_OPERATORS = /=|[+\-*/%()<>?×÷−]/;
-const FORMULA_ALLOWED_CHARS = /^[A-Za-z0-9_+\-*/().<>=!% \t,?×÷−$;]+$/;
+const FORMULA_OPERATORS = /=|[+\-*/%()<>?×÷−·•\[\]{}^∑Σ≤≥≠∈]/;
+const FORMULA_ALLOWED_CHARS = /^[A-Za-z0-9_+\-*/().<>=!% \t,?×÷−$;·•\[\]{}^∑Σ≤≥≠∈]+$/;
 const FALLBACK_WORDS = /\b(else|otherwise|fallback|refer|decline|exception|default)\b/i;
 const BARE_FALLBACK_CLAUSE = /^\s*(else|otherwise|fallback)\b/i;
 
@@ -35,15 +35,15 @@ export function classifyFormula(expressionText) {
 }
 
 function balancedParens(expr) {
-  let depth = 0;
+  const stack = [];
+  const pairs = new Map([[')', '('], [']', '['], ['}', '{']]);
   for (const ch of expr) {
-    if (ch === '(') depth += 1;
-    if (ch === ')') {
-      depth -= 1;
-      if (depth < 0) return false;
+    if (ch === '(' || ch === '[' || ch === '{') stack.push(ch);
+    else if (pairs.has(ch)) {
+      if (stack.pop() !== pairs.get(ch)) return false;
     }
   }
-  return depth === 0;
+  return stack.length === 0;
 }
 
 /**
@@ -103,11 +103,13 @@ export function validateJob(job) {
     checkUnreferencedSeriesMembers(table, tables, routines, warn);
     checkOverlappingRangeBands(table, warn);
     checkNonNumericOutliers(table, warn);
+    checkExplicitMissingMarkers(table, warn);
     checkSuspectedBreakdown(table, warn);
     checkSuspectedMerge(table, warn);
     checkSuspectedRecordMerge(table, warn);
     checkDecodingIntegrity('table', table, warn);
     checkReportedContradictions('table', table, warn);
+    checkReportedAmbiguities('table', table, warn);
     checkConfidence('table', table, warn);
   }
   checkSuspectedContinuations(tables, warn);
@@ -126,6 +128,18 @@ export function validateJob(job) {
     }
     if (routine.kind === 'calculation_steps' && (routine.steps ?? []).filter((s) => String(s ?? '').trim()).length === 0) {
       warn('routine', routine.id, `Calculation routine "${routine.name || routine.id}" has no steps.`, routine.source_pages);
+    }
+    if (routine.kind === 'worked_example') {
+      const notes = String(routine.notes ?? '');
+      if (/cannot be derived|not derivable|expected value.*(cannot|unable|mismatch|discrepancy)|does not (derive|match|reconcile)/i.test(notes)) {
+        const sentences = notes.split(/(?<=[.;\n])\s+/);
+        const hit = sentences.find((s) => /cannot be derived|not derivable|expected value|does not (derive|match|reconcile)/i.test(s)) ?? notes;
+        warn('routine', routine.id, `Worked example "${routine.name || routine.id}" reports expected values needing verification ("${truncate(hit.trim(), 120)}"); verify they derive from the stated inputs.`, routine.source_pages);
+      } else if (notes.trim() || String(routine.evidence_text ?? '').trim()) {
+        warn('routine', routine.id, `Worked example "${routine.name || routine.id}" preserves illustrative expected values; verify they derive from the stated inputs before reuse.`, routine.source_pages);
+      } else {
+        warn('routine', routine.id, `Worked example "${routine.name || routine.id}" has no expected values or evidence; verify against the source.`, routine.source_pages);
+      }
     }
     if (String(routine.expression_text ?? '').trim()) {
       const verdict = classifyFormula(routine.expression_text);
@@ -152,6 +166,7 @@ export function validateJob(job) {
     checkStructuredDependencies(routine, warn, refCtx);
     checkDecodingIntegrity('routine', routine, warn);
     checkReportedContradictions('routine', routine, warn);
+    checkReportedAmbiguities('routine', routine, warn);
     checkConfidence('routine', routine, warn);
   }
   checkConflictingRoutineFormulas(routines, warn);
@@ -585,6 +600,38 @@ function checkNonNumericOutliers(table, warn) {
   }
 }
 
+// Explicit missing-value markers (`[NOT SPECIFIED]`, `N/A`, `TBD`) in data
+// cells: the source leaves the value unpopulated. Flagged in any table size
+// (unlike statistical outliers), quoting the marker verbatim. Standalone
+// "None" is a legitimate "no adjustment" value in rating tables, never a
+// missing marker, so it stays silent. Generic marker phrases, never values.
+const EXPLICIT_MISSING_MARKER = /^\[?\s*(not specified|n\/a|\bna\b|tbd|to be determined|missing|unknown|not available|unpopulated)\s*\]?$/i;
+
+function checkExplicitMissingMarkers(table, warn) {
+  const rows = table.rows ?? [];
+  const colCount = table.headers?.length ?? 0;
+  if (rows.length === 0 || colCount === 0) return;
+  const hits = [];
+  const seen = new Set();
+  rows.forEach((row, idx) => {
+    for (let c = 0; c < colCount; c += 1) {
+      const cell = c < (row?.length ?? 0) ? String(row[c] ?? '') : '';
+      const trimmed = cell.trim();
+      if (!trimmed || !EXPLICIT_MISSING_MARKER.test(trimmed)) continue;
+      if (/^none$/i.test(trimmed)) continue;
+      const key = `${c}:${trimmed.toLowerCase()}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      hits.push({ row: idx + 1, col: c, label: String(table.headers[c] ?? `column ${c + 1}`), cell: trimmed });
+      if (hits.length >= 3) break;
+    }
+    if (hits.length >= 3) return;
+  });
+  for (const hit of hits) {
+    warn('table', table.id, `Table "${table.name || table.id}" marks row ${hit.row} column "${hit.label}" as "${truncate(hit.cell, 40)}" (value not populated in source); verify before reuse.`, table.source_pages);
+  }
+}
+
 // Uncertain text decoding: Unicode replacement or control characters, or
 // a colon inside a number that is not clock time (`1:0`, `$750:00` —
 // decimal points the extractor misread). Times (`10:30`) never match.
@@ -667,8 +714,28 @@ function checkReportedContradictions(type, item, warn) {
   const notes = String(item?.notes ?? '');
   if (!notes || !CONTRADICTION_MARKERS.test(notes)) return;
   const sentences = notes.split(/(?<=[.;\n])\s+/);
-  const hit = sentences.find((s) => CONTRADICTION_MARKERS.test(s)) ?? notes;
-  warn(type, item.id, `${label(type)} "${item.name || item.id}" notes report a possible contradiction ("${truncate(hit.trim(), 120)}"); verify which definition applies — flagged without choosing one.`, item.source_pages);
+  const hits = sentences.filter((s) => CONTRADICTION_MARKERS.test(s));
+  for (const hit of (hits.length > 0 ? hits.slice(0, 3) : [notes])) {
+    warn(type, item.id, `${label(type)} "${item.name || item.id}" notes report a possible contradiction ("${truncate(hit.trim(), 120)}"); verify which definition applies — flagged without choosing one.`, item.source_pages);
+  }
+}
+
+// Ambiguities the extraction itself flags in notes (`FLAG FOR REVIEW: X is
+// undefined ...`, `flag overlapping boundary ...`): surface them as issues
+// quoting the reporting sentence. Requires the model's own flagging verb
+// plus an ambiguity term, so ordinary descriptive notes stay silent.
+const AMBIGUITY_FLAG = /\bflag\b/i;
+const AMBIGUITY_TERMS = /\bundefined\b|\bnot defined\b|\bno .* defines\b|\boverlapping\b|\bcollision\b|\bboundary\b|\bmissing\b|\bambiguous\b|\bambiguity\b|\bnot specified\b|\bgap\b/i;
+
+function checkReportedAmbiguities(type, item, warn) {
+  const notes = String(item?.notes ?? '');
+  if (!notes || !AMBIGUITY_FLAG.test(notes) || !AMBIGUITY_TERMS.test(notes)) return;
+  const sentences = notes.split(/(?<=[.;\n])\s+/);
+  const hits = sentences.filter((s) => AMBIGUITY_FLAG.test(s) && AMBIGUITY_TERMS.test(s));
+  const fallback = hits.length > 0 ? hits : sentences.filter((s) => AMBIGUITY_TERMS.test(s));
+  for (const hit of (fallback.length > 0 ? fallback.slice(0, 3) : [notes])) {
+    warn(type, item.id, `${label(type)} "${item.name || item.id}" notes flag a possible gap ("${truncate(hit.trim(), 140)}"); verify against the source — flagged without inventing a value.`, item.source_pages);
+  }
 }
 
 function checkSuspectedContinuations(tables, warn) {
@@ -1058,7 +1125,7 @@ function checkConflictingStepDefinitions(routine, warn) {
 // Declared inputs used nowhere in the routine's own steps, conditions,
 // expression, or dependencies: possible drift or a mistyped name. Inputs
 // the routine actually reads stay silent.
-const IDENT_TOKEN = /[A-Za-z_][A-Za-z0-9_]*(?:[-.][A-Za-z0-9_]+)*/g;
+const IDENT_TOKEN = /[A-Za-z_][A-Za-z0-9_]*(?:[-.][A-Za-z0-9_]+)*(?:\[[^\[\]{}();,=<>!+\-*/]+\])?/g;
 
 function singleAssignmentTarget(expr) {
   const segments = splitTopLevel(String(expr ?? ''), ';').map((s) => String(s ?? '').trim()).filter(Boolean);
@@ -1100,9 +1167,12 @@ function checkConflictingConditions(routine, warn) {
 // Two routines computing one output with different formulas: same
 // contradiction policy as within-routine steps, reported on the later
 // routine. Multi-statement expressions stay with the step-level check.
+// Worked examples are illustrative instance values, never normative
+// definitions, so they are excluded from contradiction detection.
 function checkConflictingRoutineFormulas(routines, warn) {
   const seen = new Map();
   for (const r of routines ?? []) {
+    if (String(r?.kind ?? '') === 'worked_example') continue;
     const parsed = singleAssignmentTarget(r?.expression_text);
     if (!parsed) continue;
     const key = normalizeVariableKey(parsed.output);
@@ -1121,9 +1191,12 @@ function checkConflictingRoutineFormulas(routines, warn) {
 // One output computed by steps in different routines with different
 // formulas: same contradiction policy as within-routine steps, reported on
 // the later routine. Trivial re-statements (literals, aliases) never count.
+// Worked examples are illustrative instance values, never normative
+// definitions, so they are excluded from contradiction detection.
 function checkConflictingStepDefinitionsAcrossRoutines(routines, warn) {
   const byOutput = new Map();
   for (const r of routines ?? []) {
+    if (String(r?.kind ?? '') === 'worked_example') continue;
     (r?.steps_detailed ?? []).forEach((step, idx) => {
       const output = String(step?.output ?? '').trim();
       const expr = String(step?.expression ?? '').trim();
@@ -1148,6 +1221,7 @@ function checkConflictingStepDefinitionsAcrossRoutines(routines, warn) {
 }
 
 function checkUnusedInputs(routine, warn) {
+  if (String(routine?.kind ?? '') === 'worked_example') return;
   const inputs = (routine.inputs ?? []).map((v) => String(v ?? '').trim()).filter(Boolean);
   if (inputs.length === 0) return;
   // Values this routine defines (its inputs, outputs, and step outputs):
@@ -1195,8 +1269,37 @@ function checkUnusedInputs(routine, warn) {
     if (isNumericReference(name)) continue;
     const key = normalizeVariableKey(name);
     if (used.has(name.toLowerCase()) || (key && used.has(key))) continue;
+    if (rangeInputUsed(name, used)) continue;
     warn('routine', routine.id, `Routine "${routine.name || routine.id}" declares input "${name}", which is used nowhere in its steps, conditions, expression, or dependencies; verify the name against the source.`, routine.source_pages);
   }
+}
+
+// Range-notation inputs (`Payroll1..Payrolln`, `CPk for k=1 to 5`) name a
+// family used through indexed variables (`Payroll[i]`, `CPk`): the base term
+// (before range prose) or its prefix in any used token evidences use. Plain
+// inputs without range structure never match here. Generic notation shapes,
+// never variable names.
+function rangeInputUsed(name, used) {
+  const s = String(name ?? '').trim();
+  if (!s) return false;
+  const rangeMatch = /^([A-Za-z_][A-Za-z0-9_]*)\s*1?\s*\.\.\s*\1?\s*n\b/i.exec(s)
+    || /^([A-Za-z_][A-Za-z0-9_]*)\s*(?:for|where|with|when)\b/i.exec(s);
+  const base = rangeMatch ? rangeMatch[1] : null;
+  if (!base) {
+    const first = /^[A-Za-z_][A-Za-z0-9_]*(?:\[[^\[\]]+\])?/.exec(s);
+    if (first && /\b(for|where|with|when|from|to)\b/i.test(s)) {
+      const token = first[0].toLowerCase();
+      const tokenKey = normalizeVariableKey(token);
+      return used.has(token) || (Boolean(tokenKey) && used.has(tokenKey));
+    }
+    return false;
+  }
+  const lower = base.toLowerCase();
+  const key = normalizeVariableKey(base);
+  for (const u of used) {
+    if (u.startsWith(lower) || (key && String(u).startsWith(key))) return true;
+  }
+  return false;
 }
 
 // Reference-resolution context for one job: every category of defined name a
@@ -1268,6 +1371,42 @@ function isResolvedReference(routine, target, ctx) {
     if (ctx.normalizedConstants.has(key)) return true;
   }
   if (resolveTableReference(ctx.tables, name)) return true;
+  const candidates = findTableCandidates(ctx.tables ?? [], name);
+  if (candidates.length > 1 && isLogicalGroupReference(candidates, name)
+    && routineUsesMultipleGroupParts(routine, candidates)) return true;
+  return false;
+}
+
+// True when the routine's step inputs match columns from at least two parts
+// of a logical table group, evidencing that a base-code reference names the
+// whole group (each part used) rather than one ambiguous part. Without such
+// step-level evidence the base code stays ambiguous and warns.
+function routineUsesMultipleGroupParts(routine, candidates) {
+  const steps = routine?.steps_detailed ?? [];
+  if (steps.length === 0) return false;
+  const inputs = [];
+  for (const step of steps) {
+    for (const raw of step?.inputs ?? []) {
+      const s = String(raw ?? '').trim();
+      if (s) inputs.push(s);
+    }
+  }
+  if (inputs.length === 0) return false;
+  const lowered = new Set(inputs.map((s) => s.toLowerCase()));
+  const normalized = new Set(inputs.map((s) => normalizeVariableKey(s)).filter(Boolean));
+  let matched = 0;
+  for (const table of candidates) {
+    const cols = [...(table?.headers ?? []), ...(table?.columns ?? []).map((c) => c?.label ?? c?.original_label)];
+    const hit = cols.some((h) => {
+      const s = String(h ?? '').trim();
+      if (!s) return false;
+      if (lowered.has(s.toLowerCase())) return true;
+      const key = normalizeVariableKey(s);
+      return Boolean(key && normalized.has(key));
+    });
+    if (hit) matched += 1;
+    if (matched >= 2) return true;
+  }
   return false;
 }
 

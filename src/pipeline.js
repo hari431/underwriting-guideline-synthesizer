@@ -1,7 +1,7 @@
 // End-to-end pipeline: ingest PDF -> extract -> normalize -> separate -> validate.
 import { extractPdfText } from './pdf-extract.js';
 import { ModelDisabledError, runExtraction } from './extract.js';
-import { createDocument, createJob, createValidationIssue, normalizeJob } from './models.js';
+import { createDocument, createJob, createValidationIssue, inferTableColumns, normalizeJob, tableLogicalGroupKey } from './models.js';
 import { expandRecordTables, splitMergedTables } from './table-split.js';
 import { groupStepRoutines } from './routine-group.js';
 import { validateJob } from './validate.js';
@@ -61,6 +61,10 @@ export function buildJobFromExtraction(
   // the validator flags it for review instead.
   const { tables: expanded, expansions } = expandRecordTables(separated);
   job.tables = expanded;
+  for (const table of job.tables) {
+    table.columns = inferTableColumns(table);
+  }
+  linkLogicalTableGroups(job.tables);
   // Deterministic grouping of sequential single-expression routines the
   // extractor emitted one-per-step for a single source pipeline. Same
   // policy: strong structural evidence only; anything ambiguous passes
@@ -105,6 +109,34 @@ export function buildJobFromExtraction(
   return job;
 }
 
+// Link split parts of one logical table (same base asset code, different
+// Part/Section qualifiers) via continuation, so the relationship survives
+// extraction. Fills only absent continuations; existing values are preserved.
+// Generic code shapes, never table names.
+function linkLogicalTableGroups(tables) {
+  const groups = new Map();
+  for (const table of tables ?? []) {
+    const key = tableLogicalGroupKey(table);
+    if (!key) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(table);
+  }
+  for (const [key, members] of groups) {
+    if (members.length < 2) continue;
+    const names = members.map((t) => String(t?.name ?? t?.id ?? ''));
+    for (const table of members) {
+      if (table.continuation !== null && table.continuation !== undefined) continue;
+      const others = names.filter((n) => n && n !== String(table?.name ?? table?.id ?? ''));
+      if (others.length === 0) continue;
+      table.continuation = {
+        logical_group: key,
+        group_size: members.length,
+        related_tables: others,
+      };
+    }
+  }
+}
+
 /**
  * Apply reviewer edits (tables/routines arrays) and re-run deterministic
  * validation only — never re-calls the model.
@@ -118,6 +150,10 @@ export function applyReviewEdits(job, { tables, routines }) {
       status: 'review',
     })
   );
+  for (const table of next.tables) {
+    table.columns = inferTableColumns(table);
+  }
+  linkLogicalTableGroups(next.tables);
   next.issues = validateJob(next);
   next = normalizeJob(next);
   return next;

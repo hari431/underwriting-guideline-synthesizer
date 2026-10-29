@@ -191,6 +191,16 @@ function buildPart(table, cols, index, total) {
   const rows = (table?.rows ?? []).map((row) =>
     cols.map((c) => (Array.isArray(row) && c < row.length ? String(row[c] ?? '') : ''))
   );
+  const priorContinuation = cloneContinuation(table?.continuation ?? null);
+  const continuation = {
+    ...(priorContinuation && typeof priorContinuation === 'object' ? priorContinuation : {}),
+    split_group: String(table?.id ?? table?.name ?? 'source'),
+    split_part: index + 1,
+    split_of: total,
+  };
+  if (typeof priorContinuation === 'string' && priorContinuation) {
+    continuation.prior = priorContinuation;
+  }
   return {
     id: index === 0 ? (table?.id ?? null) : null,
     name: `${base} (grid ${index + 1} of ${total})`,
@@ -206,7 +216,7 @@ function buildPart(table, cols, index, total) {
     effective_period: String(table?.effective_period ?? ''),
     footnotes: [...(table?.footnotes ?? [])],
     notes: String(table?.notes ?? ''),
-    continuation: cloneContinuation(table?.continuation ?? null),
+    continuation,
     review_status: String(table?.review_status ?? ''),
     confidence: table?.confidence ?? null,
   };

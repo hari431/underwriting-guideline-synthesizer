@@ -1,0 +1,2779 @@
+{
+  "document": {
+    "filename": "Commercial General Liability Insurance Underwriting and Rating Manual in LaTeX format.pdf",
+    "page_count": 21
+  },
+  "tables": [
+    {
+      "id": "T1",
+      "name": "Table 1: Standard Exposure Units and Audit Conversion Rules",
+      "aliases": [],
+      "source_pages": [
+        4
+      ],
+      "source_type": "",
+      "source_location": "",
+      "evidence_text": "Table 1: Standard Exposure Units and Audit Conversion Rules\nBase ID Exposure Definition Scale Factor Audit Verification Standard",
+      "headers": [
+        "Base ID",
+        "Exposure Definition",
+        "Scale Factor",
+        "Audit Verification Standard"
+      ],
+      "columns": [
+        {
+          "label": "Base ID",
+          "original_label": "Base ID",
+          "order": 1,
+          "data_type": "text",
+          "role": "key",
+          "evidence": "Inferred from 5 text value(s); role key from header/values in column \"Base ID\"."
+        },
+        {
+          "label": "Exposure Definition",
+          "original_label": "Exposure Definition",
+          "order": 2,
+          "data_type": "text",
+          "role": "key",
+          "evidence": "Inferred from 5 text value(s); role key from header/values in column \"Exposure Definition\"."
+        },
+        {
+          "label": "Scale Factor",
+          "original_label": "Scale Factor",
+          "order": 3,
+          "data_type": "text",
+          "evidence": "Inferred from 5 text value(s) in column \"Scale Factor\"."
+        },
+        {
+          "label": "Audit Verification Standard",
+          "original_label": "Audit Verification Standard",
+          "order": 4,
+          "data_type": "text",
+          "role": "descriptive",
+          "evidence": "Inferred from 5 text value(s); role descriptive from header/values in column \"Audit Verification Standard\"."
+        }
+      ],
+      "rows": [
+        [
+          "PAY",
+          "Gross Annual Payroll",
+          "Per $1,000",
+          "W-2 and 1099 wage records, excluding payroll surcharges, overtime premiums, and exempt executive payroll."
+        ],
+        [
+          "SAL",
+          "Gross Annual Sales/Revenue",
+          "Per $1,000",
+          "Audited gross sales receipts, net of direct excise taxes and customer returns."
+        ],
+        [
+          "ARA",
+          "Gross Floor Area",
+          "Per 1,000 sq ft",
+          "Total enclosed square footage occupied or owned, measured from exterior wall perimeter."
+        ],
+        [
+          "UNT",
+          "Distinct Operational Units",
+          "Per Unit Count",
+          "Total number of vehicles, rental rooms, machines, or physical rental parcels as specified."
+        ],
+        [
+          "ADM",
+          "Total Annual Admissions",
+          "Per 1,000 Patrons",
+          "Ticket sales and audited turnstile gate receipts over the full policy term."
+        ]
+      ],
+      "purpose": "Rating algorithms require quantifying the insured risk using standardized exposure bases.",
+      "applicability": "",
+      "effective_period": "",
+      "footnotes": [],
+      "notes": "",
+      "continuation": null,
+      "review_status": "",
+      "confidence": null
+    },
+    {
+      "id": "T2",
+      "name": "Table 2: Master Classification Schedule and Baseline Rates (Part 1 of 2: Codes 10100–30300)",
+      "aliases": [],
+      "source_pages": [
+        5
+      ],
+      "source_type": "",
+      "source_location": "",
+      "evidence_text": "Table 2: Master Classification Schedule and Baseline Rates (Part 1 of 2: Codes 10100–30300)\nClass Code Industry Classification Description Base Hazard Group Audit Req. Prem/Ops Prod/Comp",
+      "headers": [
+        "Class Code",
+        "Industry Classification Description",
+        "Base",
+        "Hazard Group",
+        "Audit Req.",
+        "Prem/Ops",
+        "Prod/Comp"
+      ],
+      "columns": [
+        {
+          "label": "Class Code",
+          "original_label": "Class Code",
+          "order": 1,
+          "data_type": "number",
+          "role": "key",
+          "evidence": "Inferred from 13 numeric value(s); role key from header/values in column \"Class Code\"."
+        },
+        {
+          "label": "Industry Classification Description",
+          "original_label": "Industry Classification Description",
+          "order": 2,
+          "data_type": "text",
+          "role": "key",
+          "evidence": "Inferred from 13 text value(s); role key from header/values in column \"Industry Classification Description\"."
+        },
+        {
+          "label": "Base",
+          "original_label": "Base",
+          "order": 3,
+          "data_type": "text",
+          "evidence": "Inferred from 13 text value(s) in column \"Base\"."
+        },
+        {
+          "label": "Hazard Group",
+          "original_label": "Hazard Group",
+          "order": 4,
+          "data_type": "text",
+          "role": "key",
+          "evidence": "Inferred from 13 text value(s); role key from header/values in column \"Hazard Group\"."
+        },
+        {
+          "label": "Audit Req.",
+          "original_label": "Audit Req.",
+          "order": 5,
+          "data_type": "text",
+          "evidence": "Inferred from 13 text value(s) in column \"Audit Req.\"."
+        },
+        {
+          "label": "Prem/Ops",
+          "original_label": "Prem/Ops",
+          "order": 6,
+          "data_type": "number",
+          "role": "output",
+          "units": "$",
+          "evidence": "Inferred from 13 numeric value(s); units \"$\" from header/values; role output from header/values in column \"Prem/Ops\"."
+        },
+        {
+          "label": "Prod/Comp",
+          "original_label": "Prod/Comp",
+          "order": 7,
+          "data_type": "number",
+          "role": "output",
+          "units": "$",
+          "evidence": "Inferred from 13 numeric value(s); units \"$\" from header/values; role output from header/values in column \"Prod/Comp\"."
+        }
+      ],
+      "rows": [
+        [
+          "10100",
+          "Agricultural Supplies Wholesale",
+          "SAL",
+          "HG-2",
+          "Annual",
+          "$1.42",
+          "$0.88"
+        ],
+        [
+          "10250",
+          "Grain Elevator Operations",
+          "SAL",
+          "HG-4",
+          "Semi-Annual",
+          "$3.85",
+          "$1.95"
+        ],
+        [
+          "10400",
+          "Commercial Feed Milling",
+          "PAY",
+          "HG-3",
+          "Annual",
+          "$2.75",
+          "$1.40"
+        ],
+        [
+          "20110",
+          "Light Metal Fabricators",
+          "PAY",
+          "HG-3",
+          "Annual",
+          "$3.15",
+          "$2.10"
+        ],
+        [
+          "20220",
+          "Structural Steel Erection",
+          "PAY",
+          "HG-5",
+          "Quarterly",
+          "$12.40",
+          "$4.50"
+        ],
+        [
+          "20340",
+          "Precision CNC Machining Services",
+          "PAY",
+          "HG-2",
+          "Annual",
+          "$1.85",
+          "$1.15"
+        ],
+        [
+          "20550",
+          "Electrical Component Assembly",
+          "PAY",
+          "HG-1",
+          "Biennial",
+          "$0.95",
+          "$0.65"
+        ],
+        [
+          "20890",
+          "Heavy Industrial Boiler Fabricators",
+          "PAY",
+          "HG-4",
+          "Annual",
+          "$4.60",
+          "$3.80"
+        ],
+        [
+          "30100",
+          "General Residential Carpentry",
+          "PAY",
+          "HG-3",
+          "Annual",
+          "$4.95",
+          "$3.20"
+        ],
+        [
+          "30150",
+          "Commercial Electrical Contractors",
+          "PAY",
+          "HG-3",
+          "Annual",
+          "$3.40",
+          "$2.10"
+        ],
+        [
+          "30200",
+          "Plumbing & Pipefitting — Commercial",
+          "PAY",
+          "HG-3",
+          "Annual",
+          "$3.80",
+          "$2.65"
+        ],
+        [
+          "30280",
+          "Roofing — Low Slope/Commercial",
+          "PAY",
+          "HG-5",
+          "Quarterly",
+          "$16.80",
+          "$5.90"
+        ],
+        [
+          "30300",
+          "Concrete Foundation Construction",
+          "PAY",
+          "HG-4",
+          "Semi-Annual",
+          "$6.10",
+          "$2.85"
+        ]
+      ],
+      "purpose": "",
+      "applicability": "Codes 10100–30300 for standard BPL ($100,000/$200,000)",
+      "effective_period": "",
+      "footnotes": [],
+      "notes": "",
+      "continuation": null,
+      "review_status": "",
+      "confidence": null
+    },
+    {
+      "id": "T3",
+      "name": "Table 3: Master Classification Schedule and Baseline Rates (Part 2 of 2: Codes 40100–70500)",
+      "aliases": [],
+      "source_pages": [
+        6
+      ],
+      "source_type": "",
+      "source_location": "",
+      "evidence_text": "Table 3: Master Classification Schedule and Baseline Rates (Part 2 of 2: Codes 40100–70500)\nClass Code Industry Classification Description Base Hazard Group Audit Req. Prem/Ops Prod/Comp",
+      "headers": [
+        "Class Code",
+        "Industry Classification Description",
+        "Base",
+        "Hazard Group",
+        "Audit Req.",
+        "Prem/Ops",
+        "Prod/Comp"
+      ],
+      "columns": [
+        {
+          "label": "Class Code",
+          "original_label": "Class Code",
+          "order": 1,
+          "data_type": "number",
+          "role": "key",
+          "evidence": "Inferred from 13 numeric value(s); role key from header/values in column \"Class Code\"."
+        },
+        {
+          "label": "Industry Classification Description",
+          "original_label": "Industry Classification Description",
+          "order": 2,
+          "data_type": "text",
+          "role": "key",
+          "evidence": "Inferred from 13 text value(s); role key from header/values in column \"Industry Classification Description\"."
+        },
+        {
+          "label": "Base",
+          "original_label": "Base",
+          "order": 3,
+          "data_type": "text",
+          "evidence": "Inferred from 13 text value(s) in column \"Base\"."
+        },
+        {
+          "label": "Hazard Group",
+          "original_label": "Hazard Group",
+          "order": 4,
+          "data_type": "text",
+          "role": "key",
+          "evidence": "Inferred from 13 text value(s); role key from header/values in column \"Hazard Group\"."
+        },
+        {
+          "label": "Audit Req.",
+          "original_label": "Audit Req.",
+          "order": 5,
+          "data_type": "text",
+          "evidence": "Inferred from 13 text value(s) in column \"Audit Req.\"."
+        },
+        {
+          "label": "Prem/Ops",
+          "original_label": "Prem/Ops",
+          "order": 6,
+          "data_type": "number",
+          "role": "output",
+          "units": "$",
+          "evidence": "Inferred from 13 numeric value(s); units \"$\" from header/values; role output from header/values in column \"Prem/Ops\"."
+        },
+        {
+          "label": "Prod/Comp",
+          "original_label": "Prod/Comp",
+          "order": 7,
+          "data_type": "number",
+          "role": "output",
+          "units": "$",
+          "evidence": "Inferred from 13 numeric value(s); units \"$\" from header/values; role output from header/values in column \"Prod/Comp\"."
+        }
+      ],
+      "rows": [
+        [
+          "40100",
+          "Supermarkets & Grocery Chains",
+          "SAL",
+          "HG-2",
+          "Annual",
+          "$1.65",
+          "$0.45"
+        ],
+        [
+          "40220",
+          "Retail Hardware & Lumber Stores",
+          "SAL",
+          "HG-2",
+          "Annual",
+          "$2.10",
+          "$0.75"
+        ],
+        [
+          "40350",
+          "Department Stores — Multi-Story",
+          "ARA",
+          "HG-2",
+          "Annual",
+          "$18.50",
+          "$1.10"
+        ],
+        [
+          "40500",
+          "Furniture Retailing with Delivery",
+          "SAL",
+          "HG-3",
+          "Annual",
+          "$3.25",
+          "$0.95"
+        ],
+        [
+          "50120",
+          "Commercial Warehousing — Dry Goods",
+          "ARA",
+          "HG-1",
+          "Biennial",
+          "$8.40",
+          "$0.30"
+        ],
+        [
+          "50240",
+          "Cold Storage & Refrigerated Logistics",
+          "ARA",
+          "HG-2",
+          "Annual",
+          "$11.20",
+          "$0.40"
+        ],
+        [
+          "50300",
+          "Petroleum Bulk Storage & Transfer",
+          "SAL",
+          "HG-5",
+          "Semi-Annual",
+          "$8.90",
+          "$6.40"
+        ],
+        [
+          "60100",
+          "Commercial Office Buildings",
+          "ARA",
+          "HG-1",
+          "Biennial",
+          "$4.10",
+          "$0.10"
+        ],
+        [
+          "60250",
+          "Hotels & Motels — Full Service",
+          "UNT",
+          "HG-3",
+          "Annual",
+          "$42.00",
+          "$8.50"
+        ],
+        [
+          "60400",
+          "Commercial Parking Structures",
+          "UNT",
+          "HG-2",
+          "Annual",
+          "$14.50",
+          "$0.00"
+        ],
+        [
+          "70100",
+          "Commercial Janitorial Contractors",
+          "PAY",
+          "HG-2",
+          "Annual",
+          "$2.35",
+          "$0.55"
+        ],
+        [
+          "70350",
+          "Security Guard & Patrol Services",
+          "PAY",
+          "HG-4",
+          "Semi-Annual",
+          "$5.80",
+          "$1.20"
+        ],
+        [
+          "70500",
+          "Equipment Rental — Heavy Machinery",
+          "SAL",
+          "HG-4",
+          "Annual",
+          "$5.10",
+          "$2.40"
+        ]
+      ],
+      "purpose": "",
+      "applicability": "Codes 40100–70500 for standard BPL ($100,000/$200,000)",
+      "effective_period": "",
+      "footnotes": [],
+      "notes": "",
+      "continuation": null,
+      "review_status": "",
+      "confidence": null
+    },
+    {
+      "id": "T4",
+      "name": "Table 4: Territorial Relativity Factors by Geographic Zone",
+      "aliases": [],
+      "source_pages": [
+        7
+      ],
+      "source_type": "",
+      "source_location": "",
+      "evidence_text": "Table 4: Territorial Relativity Factors by Geographic Zone\nTerritory Zone Class Geographic Description Prem/Ops Prod/Comp Med Pay",
+      "headers": [
+        "Territory",
+        "Zone Class",
+        "Geographic Description",
+        "Prem/Ops",
+        "Prod/Comp",
+        "Med Pay"
+      ],
+      "columns": [
+        {
+          "label": "Territory",
+          "original_label": "Territory",
+          "order": 1,
+          "data_type": "text",
+          "role": "key",
+          "evidence": "Inferred from 8 text value(s); role key from header/values in column \"Territory\"."
+        },
+        {
+          "label": "Zone Class",
+          "original_label": "Zone Class",
+          "order": 2,
+          "data_type": "text",
+          "role": "key",
+          "evidence": "Inferred from 8 text value(s); role key from header/values in column \"Zone Class\"."
+        },
+        {
+          "label": "Geographic Description",
+          "original_label": "Geographic Description",
+          "order": 3,
+          "data_type": "text",
+          "role": "key",
+          "evidence": "Inferred from 8 text value(s); role key from header/values in column \"Geographic Description\"."
+        },
+        {
+          "label": "Prem/Ops",
+          "original_label": "Prem/Ops",
+          "order": 4,
+          "data_type": "number",
+          "role": "output",
+          "evidence": "Inferred from 8 numeric value(s); role output from header/values in column \"Prem/Ops\"."
+        },
+        {
+          "label": "Prod/Comp",
+          "original_label": "Prod/Comp",
+          "order": 5,
+          "data_type": "number",
+          "role": "output",
+          "evidence": "Inferred from 8 numeric value(s); role output from header/values in column \"Prod/Comp\"."
+        },
+        {
+          "label": "Med Pay",
+          "original_label": "Med Pay",
+          "order": 6,
+          "data_type": "number",
+          "role": "output",
+          "evidence": "Inferred from 8 numeric value(s); role output from header/values in column \"Med Pay\"."
+        }
+      ],
+      "rows": [
+        [
+          "T-01",
+          "Metro Urban",
+          "Central Metropolitan Core (Pop. >1,000,000)",
+          "1.450",
+          "1.150",
+          "1.250"
+        ],
+        [
+          "T-02",
+          "Suburban A",
+          "High-Density Contiguous Suburban Belt",
+          "1.180",
+          "1.050",
+          "1.100"
+        ],
+        [
+          "T-03",
+          "Suburban B",
+          "Outer Developing Suburban Ring",
+          "1.020",
+          "1.000",
+          "1.000"
+        ],
+        [
+          "T-04",
+          "Regional City",
+          "Mid-Sized Secondary Industrial Urban Center",
+          "1.100",
+          "1.020",
+          "1.050"
+        ],
+        [
+          "T-05",
+          "Semi-Rural",
+          "Light Density Agricultural/Light Manufacturing",
+          "0.880",
+          "0.950",
+          "0.900"
+        ],
+        [
+          "T-06",
+          "Rural Dist",
+          "Sparsely Populated Agricultural/Forestry Zone",
+          "0.740",
+          "0.900",
+          "0.850"
+        ],
+        [
+          "T-07",
+          "Coastal High",
+          "Coastal Zone Subject to Specialized Maritime Jur.",
+          "1.550",
+          "1.200",
+          "1.300"
+        ],
+        [
+          "T-08",
+          "Energy Zone",
+          "Designated Petrochemical Extraction/Refinery Sector",
+          "1.820",
+          "1.350",
+          "1.400"
+        ]
+      ],
+      "purpose": "",
+      "applicability": "",
+      "effective_period": "",
+      "footnotes": [],
+      "notes": "",
+      "continuation": null,
+      "review_status": "",
+      "confidence": null
+    },
+    {
+      "id": "T5",
+      "name": "Table 5: Increased Limit Factors (ILF) by Limit Option and Hazard Group",
+      "aliases": [
+        "ILF"
+      ],
+      "source_pages": [
+        7
+      ],
+      "source_type": "",
+      "source_location": "",
+      "evidence_text": "Table 5: Increased Limit Factors (ILF) by Limit Option and Hazard Group\nLimit Code Occurrence / Aggregate Limits HG-1 HG-2 HG-3 HG-4 HG-5",
+      "headers": [
+        "Limit Code",
+        "Occurrence / Aggregate Limits",
+        "HG-1",
+        "HG-2",
+        "HG-3",
+        "HG-4",
+        "HG-5"
+      ],
+      "columns": [
+        {
+          "label": "Limit Code",
+          "original_label": "Limit Code",
+          "order": 1,
+          "data_type": "text",
+          "role": "key",
+          "evidence": "Inferred from 6 text value(s); role key from header/values in column \"Limit Code\"."
+        },
+        {
+          "label": "Occurrence / Aggregate Limits",
+          "original_label": "Occurrence / Aggregate Limits",
+          "order": 2,
+          "data_type": "text",
+          "role": "key",
+          "evidence": "Inferred from 6 text value(s); role key from header/values in column \"Occurrence / Aggregate Limits\"."
+        },
+        {
+          "label": "HG-1",
+          "original_label": "HG-1",
+          "order": 3,
+          "data_type": "number",
+          "role": "output",
+          "evidence": "Inferred from 6 numeric value(s); role output from header/values in column \"HG-1\"."
+        },
+        {
+          "label": "HG-2",
+          "original_label": "HG-2",
+          "order": 4,
+          "data_type": "number",
+          "role": "output",
+          "evidence": "Inferred from 6 numeric value(s); role output from header/values in column \"HG-2\"."
+        },
+        {
+          "label": "HG-3",
+          "original_label": "HG-3",
+          "order": 5,
+          "data_type": "number",
+          "role": "output",
+          "evidence": "Inferred from 6 numeric value(s); role output from header/values in column \"HG-3\"."
+        },
+        {
+          "label": "HG-4",
+          "original_label": "HG-4",
+          "order": 6,
+          "data_type": "number",
+          "role": "output",
+          "evidence": "Inferred from 6 numeric value(s); role output from header/values in column \"HG-4\"."
+        },
+        {
+          "label": "HG-5",
+          "original_label": "HG-5",
+          "order": 7,
+          "data_type": "number",
+          "role": "output",
+          "evidence": "Inferred from 6 numeric value(s); role output from header/values in column \"HG-5\"."
+        }
+      ],
+      "rows": [
+        [
+          "L-01",
+          "$100,000 / $200,000 (Base)",
+          "1.000",
+          "1.000",
+          "1.000",
+          "1.000",
+          "1.000"
+        ],
+        [
+          "L-02",
+          "$300,000 / $600,000",
+          "1.120",
+          "1.150",
+          "1.180",
+          "1.220",
+          "1.280"
+        ],
+        [
+          "L-03",
+          "$500,000 / $1,000,000",
+          "1.220",
+          "1.270",
+          "1.320",
+          "1.380",
+          "1.480"
+        ],
+        [
+          "L-04",
+          "$1,000,000 / $2,000,000",
+          "1.350",
+          "1.420",
+          "1.500",
+          "1.600",
+          "1.750"
+        ],
+        [
+          "L-05",
+          "$2,000,000 / $4,000,000",
+          "1.510",
+          "1.620",
+          "1.740",
+          "1.880",
+          "2.100"
+        ],
+        [
+          "L-06",
+          "$5,000,000 / $5,000,000",
+          "1.720",
+          "1.880",
+          "2.050",
+          "2.250",
+          "2.580"
+        ]
+      ],
+      "purpose": "",
+      "applicability": "",
+      "effective_period": "",
+      "footnotes": [],
+      "notes": "",
+      "continuation": null,
+      "review_status": "",
+      "confidence": null
+    },
+    {
+      "id": "T6",
+      "name": "Table 6: Deductible Credit Relativities (Cded) by Hazard Group",
+      "aliases": [],
+      "source_pages": [
+        8
+      ],
+      "source_type": "",
+      "source_location": "",
+      "evidence_text": "Table 6: Deductible Credit Relativities (Cded) by Hazard Group\nDeductible Code Per Claim Amount HG-1 HG-2 HG-3 HG-4 HG-5",
+      "headers": [
+        "Deductible Code",
+        "Per Claim Amount",
+        "HG-1",
+        "HG-2",
+        "HG-3",
+        "HG-4",
+        "HG-5"
+      ],
+      "columns": [
+        {
+          "label": "Deductible Code",
+          "original_label": "Deductible Code",
+          "order": 1,
+          "data_type": "text",
+          "role": "key",
+          "evidence": "Inferred from 7 text value(s); role key from header/values in column \"Deductible Code\"."
+        },
+        {
+          "label": "Per Claim Amount",
+          "original_label": "Per Claim Amount",
+          "order": 2,
+          "data_type": "text",
+          "role": "key",
+          "evidence": "Inferred from 7 text value(s); role key from header/values in column \"Per Claim Amount\"."
+        },
+        {
+          "label": "HG-1",
+          "original_label": "HG-1",
+          "order": 3,
+          "data_type": "number",
+          "role": "output",
+          "evidence": "Inferred from 7 numeric value(s); role output from header/values in column \"HG-1\"."
+        },
+        {
+          "label": "HG-2",
+          "original_label": "HG-2",
+          "order": 4,
+          "data_type": "number",
+          "role": "output",
+          "evidence": "Inferred from 7 numeric value(s); role output from header/values in column \"HG-2\"."
+        },
+        {
+          "label": "HG-3",
+          "original_label": "HG-3",
+          "order": 5,
+          "data_type": "number",
+          "role": "output",
+          "evidence": "Inferred from 7 numeric value(s); role output from header/values in column \"HG-3\"."
+        },
+        {
+          "label": "HG-4",
+          "original_label": "HG-4",
+          "order": 6,
+          "data_type": "number",
+          "role": "output",
+          "evidence": "Inferred from 7 numeric value(s); role output from header/values in column \"HG-4\"."
+        },
+        {
+          "label": "HG-5",
+          "original_label": "HG-5",
+          "order": 7,
+          "data_type": "number",
+          "role": "output",
+          "evidence": "Inferred from 7 numeric value(s); role output from header/values in column \"HG-5\"."
+        }
+      ],
+      "rows": [
+        [
+          "D-00",
+          "$0 (Full Coverage)",
+          "0.000",
+          "0.000",
+          "0.000",
+          "0.000",
+          "0.000"
+        ],
+        [
+          "D-01",
+          "$500 per Claim",
+          "0.035",
+          "0.030",
+          "0.025",
+          "0.020",
+          "0.015"
+        ],
+        [
+          "D-02",
+          "$1,000 per Claim",
+          "0.060",
+          "0.050",
+          "0.040",
+          "0.035",
+          "0.025"
+        ],
+        [
+          "D-03",
+          "$2,500 per Claim",
+          "0.110",
+          "0.095",
+          "0.080",
+          "0.065",
+          "0.050"
+        ],
+        [
+          "D-04",
+          "$5,000 per Claim",
+          "0.170",
+          "0.145",
+          "0.125",
+          "0.105",
+          "0.080"
+        ],
+        [
+          "D-05",
+          "$10,000 per Claim",
+          "0.240",
+          "0.210",
+          "0.180",
+          "0.150",
+          "0.120"
+        ],
+        [
+          "D-06",
+          "$25,000 per Claim",
+          "0.330",
+          "0.290",
+          "0.250",
+          "0.215",
+          "0.175"
+        ]
+      ],
+      "purpose": "",
+      "applicability": "",
+      "effective_period": "",
+      "footnotes": [],
+      "notes": "Deductibles reduce the final basic rate by the discount factor DFded = (1-Cded).",
+      "continuation": null,
+      "review_status": "",
+      "confidence": null
+    },
+    {
+      "id": "T7",
+      "name": "Table 7: Expected Loss Ratios (ELR) and Single Loss Limits by Hazard Group",
+      "aliases": [
+        "ELR"
+      ],
+      "source_pages": [
+        8
+      ],
+      "source_type": "",
+      "source_location": "",
+      "evidence_text": "Table 7: Expected Loss Ratios (ELR) and Single Loss Limits by Hazard Group\nHazard Group Industry Risk Designation ELR Value Single Loss Limit (SLM) Credibility Floor",
+      "headers": [
+        "Hazard Group",
+        "Industry Risk Designation",
+        "ELR Value",
+        "Single Loss Limit (SLM)",
+        "Credibility Floor"
+      ],
+      "columns": [
+        {
+          "label": "Hazard Group",
+          "original_label": "Hazard Group",
+          "order": 1,
+          "data_type": "text",
+          "role": "key",
+          "evidence": "Inferred from 5 text value(s); role key from header/values in column \"Hazard Group\"."
+        },
+        {
+          "label": "Industry Risk Designation",
+          "original_label": "Industry Risk Designation",
+          "order": 2,
+          "data_type": "text",
+          "role": "key",
+          "evidence": "Inferred from 5 text value(s); role key from header/values in column \"Industry Risk Designation\"."
+        },
+        {
+          "label": "ELR Value",
+          "original_label": "ELR Value",
+          "order": 3,
+          "data_type": "number",
+          "role": "output",
+          "evidence": "Inferred from 5 numeric value(s); role output from header/values in column \"ELR Value\"."
+        },
+        {
+          "label": "Single Loss Limit (SLM)",
+          "original_label": "Single Loss Limit (SLM)",
+          "order": 4,
+          "data_type": "number",
+          "role": "output",
+          "units": "$",
+          "evidence": "Inferred from 5 numeric value(s); units \"$\" from header/values; role output from header/values in column \"Single Loss Limit (SLM)\"."
+        },
+        {
+          "label": "Credibility Floor",
+          "original_label": "Credibility Floor",
+          "order": 5,
+          "data_type": "number",
+          "role": "output",
+          "evidence": "Inferred from 5 numeric value(s); role output from header/values in column \"Credibility Floor\"."
+        }
+      ],
+      "rows": [
+        [
+          "HG-1",
+          "Low Operational Hazard",
+          "0.520",
+          "$25,000",
+          "0.100"
+        ],
+        [
+          "HG-2",
+          "Moderate Mercantile/Service",
+          "0.550",
+          "$35,000",
+          "0.120"
+        ],
+        [
+          "HG-3",
+          "Standard Contracting/Fabrication",
+          "0.580",
+          "$50,000",
+          "0.150"
+        ],
+        [
+          "HG-4",
+          "Heavy Industrial/High Traffic",
+          "0.620",
+          "$75,000",
+          "0.180"
+        ],
+        [
+          "HG-5",
+          "Severe Hazardous/Critical Life Safety",
+          "0.660",
+          "$100,000",
+          "0.220"
+        ]
+      ],
+      "purpose": "",
+      "applicability": "",
+      "effective_period": "",
+      "footnotes": [],
+      "notes": "",
+      "continuation": null,
+      "review_status": "",
+      "confidence": null
+    },
+    {
+      "id": "T8",
+      "name": "Table 8: Schedule Rating Credit and Debit Parameter Ranges",
+      "aliases": [],
+      "source_pages": [
+        10
+      ],
+      "source_type": "",
+      "source_location": "",
+      "evidence_text": "Table 8: Schedule Rating Credit and Debit Parameter Ranges\nCategory Evaluation Characteristic Min (%) Max (%) Required Evidentiary Documentation",
+      "headers": [
+        "Category",
+        "Evaluation Characteristic",
+        "Min (%)",
+        "Max (%)",
+        "Required Evidentiary Documentation"
+      ],
+      "columns": [
+        {
+          "label": "Category",
+          "original_label": "Category",
+          "order": 1,
+          "data_type": "text",
+          "role": "key",
+          "evidence": "Inferred from 5 text value(s); role key from header/values in column \"Category\"."
+        },
+        {
+          "label": "Evaluation Characteristic",
+          "original_label": "Evaluation Characteristic",
+          "order": 2,
+          "data_type": "text",
+          "role": "key",
+          "evidence": "Inferred from 5 text value(s); role key from header/values in column \"Evaluation Characteristic\"."
+        },
+        {
+          "label": "Min (%)",
+          "original_label": "Min (%)",
+          "order": 3,
+          "data_type": "number",
+          "role": "output",
+          "units": "%",
+          "evidence": "Inferred from 5 numeric value(s); units \"%\" from header/values; role output from header/values in column \"Min (%)\"."
+        },
+        {
+          "label": "Max (%)",
+          "original_label": "Max (%)",
+          "order": 4,
+          "data_type": "number",
+          "role": "output",
+          "units": "%",
+          "evidence": "Inferred from 5 numeric value(s); units \"%\" from header/values; role output from header/values in column \"Max (%)\"."
+        },
+        {
+          "label": "Required Evidentiary Documentation",
+          "original_label": "Required Evidentiary Documentation",
+          "order": 5,
+          "data_type": "text",
+          "role": "descriptive",
+          "evidence": "Inferred from 5 text value(s); role descriptive from header/values in column \"Required Evidentiary Documentation\"."
+        }
+      ],
+      "rows": [
+        [
+          "CAT-1",
+          "Premise Maintenance & Housekeeping",
+          "-8.0%",
+          "+8.0%",
+          "Formal engineering site inspection report completed within past 18 months."
+        ],
+        [
+          "CAT-2",
+          "Employee Selection, Training & Safety",
+          "-6.0%",
+          "+6.0%",
+          "Written safety program manual, OSHA log review, quarterly meeting minutes."
+        ],
+        [
+          "CAT-3",
+          "Equipment Maintenance & Testing",
+          "-5.0%",
+          "+5.0%",
+          "Preventative maintenance logs, third-party inspection certifications."
+        ],
+        [
+          "CAT-4",
+          "Management Attitude & Loss Control",
+          "-4.0%",
+          "+4.0%",
+          "Direct underwriter interview, safety coordinator designation letter."
+        ],
+        [
+          "CAT-5",
+          "Subcontractor Controls & Risk Transfer",
+          "-7.0%",
+          "+7.0%",
+          "Mandatory Certificates of Insurance, indemnification hold-harmless contracts."
+        ]
+      ],
+      "purpose": "",
+      "applicability": "",
+      "effective_period": "",
+      "footnotes": [],
+      "notes": "",
+      "continuation": null,
+      "review_status": "",
+      "confidence": null
+    },
+    {
+      "id": "T9",
+      "name": "Table 9: Endorsement Rating Scale and Applicability Directives",
+      "aliases": [],
+      "source_pages": [
+        11
+      ],
+      "source_type": "",
+      "source_location": "",
+      "evidence_text": "Table 9: Endorsement Rating Scale and Applicability Directives\nEndorsement Coverage Description Pricing Type Rate / Factor Applicability Rules",
+      "headers": [
+        "Endorsement",
+        "Coverage Description",
+        "Pricing Type",
+        "Rate / Factor",
+        "Applicability Rules"
+      ],
+      "columns": [
+        {
+          "label": "Endorsement",
+          "original_label": "Endorsement",
+          "order": 1,
+          "data_type": "text",
+          "role": "key",
+          "evidence": "Inferred from 6 text value(s); role key from header/values in column \"Endorsement\"."
+        },
+        {
+          "label": "Coverage Description",
+          "original_label": "Coverage Description",
+          "order": 2,
+          "data_type": "text",
+          "role": "key",
+          "evidence": "Inferred from 6 text value(s); role key from header/values in column \"Coverage Description\"."
+        },
+        {
+          "label": "Pricing Type",
+          "original_label": "Pricing Type",
+          "order": 3,
+          "data_type": "text",
+          "role": "key",
+          "evidence": "Inferred from 6 text value(s); role key from header/values in column \"Pricing Type\"."
+        },
+        {
+          "label": "Rate / Factor",
+          "original_label": "Rate / Factor",
+          "order": 4,
+          "data_type": "text",
+          "role": "key",
+          "evidence": "Inferred from 6 text value(s); role key from header/values in column \"Rate / Factor\"."
+        },
+        {
+          "label": "Applicability Rules",
+          "original_label": "Applicability Rules",
+          "order": 5,
+          "data_type": "text",
+          "role": "key",
+          "evidence": "Inferred from 6 text value(s); role key from header/values in column \"Applicability Rules\"."
+        }
+      ],
+      "rows": [
+        [
+          "CG-2010",
+          "Additional Insured — Owners, Lessees or Contractors",
+          "Flat Fee",
+          "$150 per entity",
+          "Mandatory for construction subcontractors where required by written contract."
+        ],
+        [
+          "CG-2026",
+          "Additional Insured — Designated Person / Org",
+          "Flat Fee",
+          "$100 per entity",
+          "Real estate leases, special event municipal permits."
+        ],
+        [
+          "CG-2104",
+          "Exclusion — Products / Completed Operations",
+          "Rate Factor",
+          "0.000 on Prod/Comp",
+          "Completely eliminates Products/Completed Operations coverage. Prod rate becomes $0."
+        ],
+        [
+          "CG-2294",
+          "Exclusion — Subcontracted Work Hazard",
+          "Rate Factor",
+          "0.850 on Prem/Ops",
+          "Eliminates coverage for work performed by subcontractors. Applied to contracting codes only."
+        ],
+        [
+          "CG-2404",
+          "Waiver of Transfer of Rights of Recovery (Subrogation)",
+          "Percent",
+          "+3.5% of Final Prem",
+          "Flat 3.5% surcharge applied to the total net premium before tax."
+        ],
+        [
+          "CG-3115",
+          "Designated Location General Aggregate Limit",
+          "Percent",
+          "+5.0% of Prem/Ops",
+          "Endorsement providing a separate aggregate limit per location. Multiplied against Prem/Ops."
+        ]
+      ],
+      "purpose": "",
+      "applicability": "",
+      "effective_period": "",
+      "footnotes": [],
+      "notes": "",
+      "continuation": null,
+      "review_status": "",
+      "confidence": null
+    },
+    {
+      "id": "T10",
+      "name": "Classification Minimum Premium Comparison",
+      "aliases": [],
+      "source_pages": [
+        13
+      ],
+      "source_type": "",
+      "source_location": "",
+      "evidence_text": "1. Classification Minimum Premium Comparison:\nEvery hazard group maintains an absolute minimum policy premium:\nHazard Group HG-1 HG-2 HG-3 HG-4 HG-5\nMinimum Premium (M P ) $500.00 $750.00 $1,000.00 $1,500.00 $2,500.00",
+      "headers": [
+        "Hazard Group",
+        "HG-1",
+        "HG-2",
+        "HG-3",
+        "HG-4",
+        "HG-5"
+      ],
+      "columns": [
+        {
+          "label": "Hazard Group",
+          "original_label": "Hazard Group",
+          "order": 1,
+          "data_type": "text",
+          "role": "key",
+          "evidence": "Inferred from 1 text value(s); role key from header/values in column \"Hazard Group\"."
+        },
+        {
+          "label": "HG-1",
+          "original_label": "HG-1",
+          "order": 2,
+          "data_type": "number",
+          "role": "output",
+          "units": "$",
+          "evidence": "Inferred from 1 numeric value(s); units \"$\" from header/values; role output from header/values in column \"HG-1\"."
+        },
+        {
+          "label": "HG-2",
+          "original_label": "HG-2",
+          "order": 3,
+          "data_type": "number",
+          "role": "output",
+          "units": "$",
+          "evidence": "Inferred from 1 numeric value(s); units \"$\" from header/values; role output from header/values in column \"HG-2\"."
+        },
+        {
+          "label": "HG-3",
+          "original_label": "HG-3",
+          "order": 4,
+          "data_type": "number",
+          "role": "output",
+          "units": "$",
+          "evidence": "Inferred from 1 numeric value(s); units \"$\" from header/values; role output from header/values in column \"HG-3\"."
+        },
+        {
+          "label": "HG-4",
+          "original_label": "HG-4",
+          "order": 5,
+          "data_type": "number",
+          "role": "output",
+          "units": "$",
+          "evidence": "Inferred from 1 numeric value(s); units \"$\" from header/values; role output from header/values in column \"HG-4\"."
+        },
+        {
+          "label": "HG-5",
+          "original_label": "HG-5",
+          "order": 6,
+          "data_type": "number",
+          "role": "output",
+          "units": "$",
+          "evidence": "Inferred from 1 numeric value(s); units \"$\" from header/values; role output from header/values in column \"HG-5\"."
+        }
+      ],
+      "rows": [
+        [
+          "Minimum Premium (M P )",
+          "$500.00",
+          "$750.00",
+          "$1,000.00",
+          "$1,500.00",
+          "$2,500.00"
+        ]
+      ],
+      "purpose": "Every hazard group maintains an absolute minimum policy premium",
+      "applicability": "",
+      "effective_period": "",
+      "footnotes": [],
+      "notes": "",
+      "continuation": null,
+      "review_status": "",
+      "confidence": null
+    },
+    {
+      "id": "T11",
+      "name": "Table 10: Supplemental Specialty Classification Schedule (Test Table)",
+      "aliases": [],
+      "source_pages": [
+        16
+      ],
+      "source_type": "",
+      "source_location": "",
+      "evidence_text": "Table 10: Supplemental Specialty Classification Schedule (Test Table)\nClass Code Classification Description Base Hazard Group Prem/Ops Prod/Comp",
+      "headers": [
+        "Class Code",
+        "Classification Description",
+        "Base",
+        "Hazard Group",
+        "Prem/Ops",
+        "Prod/Comp"
+      ],
+      "columns": [
+        {
+          "label": "Class Code",
+          "original_label": "Class Code",
+          "order": 1,
+          "data_type": "number",
+          "role": "key",
+          "evidence": "Inferred from 3 numeric value(s); role key from header/values in column \"Class Code\"."
+        },
+        {
+          "label": "Classification Description",
+          "original_label": "Classification Description",
+          "order": 2,
+          "data_type": "text",
+          "role": "key",
+          "evidence": "Inferred from 3 text value(s); role key from header/values in column \"Classification Description\"."
+        },
+        {
+          "label": "Base",
+          "original_label": "Base",
+          "order": 3,
+          "data_type": "text",
+          "evidence": "Inferred from 3 text value(s) in column \"Base\"."
+        },
+        {
+          "label": "Hazard Group",
+          "original_label": "Hazard Group",
+          "order": 4,
+          "data_type": "text",
+          "role": "key",
+          "evidence": "Inferred from 3 text value(s); role key from header/values in column \"Hazard Group\"."
+        },
+        {
+          "label": "Prem/Ops",
+          "original_label": "Prem/Ops",
+          "order": 5,
+          "data_type": "number",
+          "role": "output",
+          "units": "$",
+          "evidence": "Inferred from 3 numeric value(s); units \"$\" from header/values; role output from header/values in column \"Prem/Ops\"."
+        },
+        {
+          "label": "Prod/Comp",
+          "original_label": "Prod/Comp",
+          "order": 6,
+          "role": "key",
+          "evidence": "Inferred from role key from header/values in column \"Prod/Comp\"."
+        }
+      ],
+      "rows": [
+        [
+          "20910",
+          "Advanced Composite Wind Turbine Blades",
+          "PAY",
+          "HG-4",
+          "$5.20",
+          "$4.10"
+        ],
+        [
+          "20999",
+          "Specialty Aerospace Component Fab.",
+          "PAY",
+          "HG-5",
+          "$7.85",
+          "[NOT SPECIFIED]"
+        ],
+        [
+          "21050",
+          "Industrial Battery Assembly",
+          "PAY",
+          "HG-3",
+          "$3.40",
+          "$2.25"
+        ]
+      ],
+      "purpose": "",
+      "applicability": "",
+      "effective_period": "",
+      "footnotes": [],
+      "notes": "In Table 10, Code 20999 (Specialty Composite Materials Fabricators) has an explicitly undefined Products/Completed Operations base rate. Validation Expectation: Rule extraction must log a schema null error for Code 20999 BRprod.",
+      "continuation": null,
+      "review_status": "",
+      "confidence": null
+    },
+    {
+      "id": "T12",
+      "name": "Table 11: Comprehensive Schema Cross-Reference Matrix",
+      "aliases": [],
+      "source_pages": [
+        21
+      ],
+      "source_type": "",
+      "source_location": "",
+      "evidence_text": "Table 11: Comprehensive Schema Cross-Reference Matrix\nEntity ID Entity Category Source Table/Rule Dependency Target Mathematical Role",
+      "headers": [
+        "Entity ID",
+        "Entity Category",
+        "Source Table/Rule",
+        "Dependency Target",
+        "Mathematical Role"
+      ],
+      "columns": [
+        {
+          "label": "Entity ID",
+          "original_label": "Entity ID",
+          "order": 1,
+          "data_type": "text",
+          "role": "key",
+          "evidence": "Inferred from 11 text value(s); role key from header/values in column \"Entity ID\"."
+        },
+        {
+          "label": "Entity Category",
+          "original_label": "Entity Category",
+          "order": 2,
+          "data_type": "text",
+          "role": "key",
+          "evidence": "Inferred from 11 text value(s); role key from header/values in column \"Entity Category\"."
+        },
+        {
+          "label": "Source Table/Rule",
+          "original_label": "Source Table/Rule",
+          "order": 3,
+          "data_type": "text",
+          "evidence": "Inferred from 11 text value(s) in column \"Source Table/Rule\"."
+        },
+        {
+          "label": "Dependency Target",
+          "original_label": "Dependency Target",
+          "order": 4,
+          "data_type": "text",
+          "evidence": "Inferred from 11 text value(s) in column \"Dependency Target\"."
+        },
+        {
+          "label": "Mathematical Role",
+          "original_label": "Mathematical Role",
+          "order": 5,
+          "data_type": "text",
+          "role": "key",
+          "evidence": "Inferred from 11 text value(s); role key from header/values in column \"Mathematical Role\"."
+        }
+      ],
+      "rows": [
+        [
+          "PAY",
+          "Exposure Unit",
+          "Table 1",
+          "ROUT-01, Step 1",
+          "Divisor of 1,000.0 applied to raw gross wages."
+        ],
+        [
+          "HG-1",
+          "Hazard Group",
+          "Table 2",
+          "Tables 5,6,7",
+          "Determines base ILF, deductible scale, and ELR."
+        ],
+        [
+          "T-01",
+          "Territory Factor",
+          "Table 4",
+          "ROUT-01, Step 2",
+          "Multiplier for premises rate (1.450) and prod (1.150)."
+        ],
+        [
+          "L-04",
+          "Policy Limit",
+          "Table 5",
+          "ROUT-01, Step 3",
+          "Selects $1M/$2M Increased Limit Factor."
+        ],
+        [
+          "D-02",
+          "Deductible",
+          "Table 6",
+          "ROUT-01, Step 3",
+          "Provides Cded credit relativity deduction."
+        ],
+        [
+          "EMF",
+          "Actuarial Mod",
+          "Section 5",
+          "ROUT-02, Step 1",
+          "Multiplier constrained between 0.600 and 1.750."
+        ],
+        [
+          "SRF",
+          "Underwriting Mod",
+          "Section 6",
+          "ROUT-02, Step 2",
+          "Sum of category credits/debits, range [0.750,1.250]."
+        ],
+        [
+          "CG-2010",
+          "Endorsement Fee",
+          "Table 9",
+          "ROUT-02, Step 3",
+          "Flat additive fee of $150.00 per certificate."
+        ],
+        [
+          "CG-2404",
+          "Endorsement Pct",
+          "Table 9",
+          "ROUT-02, Step 3",
+          "Percentage multiplier factor of +3.5% on Psched."
+        ],
+        [
+          "MP",
+          "Minimum Premium",
+          "Section 8.3",
+          "ROUT-03, Step 1",
+          "Lower bound threshold for line premium by HG."
+        ],
+        [
+          "TRIA",
+          "Statutory Charge",
+          "Section 8.3",
+          "ROUT-03, Step 2",
+          "Additive factor 3.0% of Preconciled, min $100.00."
+        ]
+      ],
+      "purpose": "",
+      "applicability": "",
+      "effective_period": "",
+      "footnotes": [],
+      "notes": "",
+      "continuation": null,
+      "review_status": "",
+      "confidence": null
+    }
+  ],
+  "routines": [
+    {
+      "id": "R1",
+      "name": "Routine 1: Core Line Premium Calculation (ROUT-01)",
+      "kind": "calculation_steps",
+      "source_pages": [
+        12
+      ],
+      "source_type": "",
+      "source_location": "",
+      "evidence_text": "8.1 Routine 1: Core Line Premium Calculation (ROUT-01)\nThis routine accepts exposure, classification rates, territory relativities, increased limit factors, and deductible discounts to compute line-level sub-premiums.\n1. Exposure Scaling Step:\n2. Territorial Rate Adjustment:\n3. Increased Limit and Deductible Compounding:\n4. Line Base Premium Computation:\n5. Total Subject Basic Premium Accumulator:",
+      "expression_text": "",
+      "conditions": [],
+      "conditions_detailed": [],
+      "steps": [
+        "1. Exposure Scaling Step: Given raw exposure Eraw and exposure base type Base: Eunits = (Eraw/1,000.0 if Base in {PAY,SAL,ARA,ADM} Eraw if Base=UNT (6) Keep Eunits at 4 decimal places.",
+        "2. Territorial Rate Adjustment: Retrieve base rates BRprem and BRprod from Table 2. Retrieve territory factors TFprem and TFprod from Table 4. TRprem = BRprem × TFprem (7) TRprod = BRprod × TFprod (8) Round intermediate rates TRprem and TRprod to three decimal places.",
+        "3. Increased Limit and Deductible Compounding: Lookup limit factor ILF from Table 5 and deductible credit Cded from Table 6. MFRprem = TRprem × ILF × (1.000-Cded) (9) MFRprod = TRprod × ILF × (1.000-Cded) (10) Round modified final rates (MFR) to four decimal places.",
+        "4. Line Base Premium Computation: Pprem = Round(Eunits × MFRprem,2) (11) Pprod = Round(Eunits × MFRprod,2) (12)",
+        "5. Total Subject Basic Premium Accumulator: Psubject = Pprem + Pprod (13)"
+      ],
+      "steps_detailed": [
+        {
+          "sequence": 1,
+          "instruction": "1. Exposure Scaling Step: Given raw exposure Eraw and exposure base type Base: Eunits = (Eraw/1,000.0 if Base in {PAY,SAL,ARA,ADM} Eraw if Base=UNT (6) Keep Eunits at 4 decimal places.",
+          "operation": "condition",
+          "expression": "Eunits = Eraw/1,000.0 if Base in {PAY,SAL,ARA,ADM} else Eraw if Base=UNT",
+          "inputs": [
+            "Eraw",
+            "Base"
+          ],
+          "output": "Eunits",
+          "interpretation_status": "inferred",
+          "original_text": "1. Exposure Scaling Step: Given raw exposure Eraw and exposure base type Base: Eunits = (Eraw/1,000.0 if Base in {PAY,SAL,ARA,ADM} Eraw if Base=UNT (6) Keep Eunits at 4 decimal places."
+        },
+        {
+          "sequence": 2,
+          "instruction": "2. Territorial Rate Adjustment: Retrieve base rates BRprem and BRprod from Table 2. Retrieve territory factors TFprem and TFprod from Table 4. TRprem = BRprem × TFprem (7) TRprod = BRprod × TFprod (8) Round intermediate rates TRprem and TRprod to three decimal places.",
+          "operation": "expression",
+          "expression": "TRprem = BRprem × TFprem; TRprod = BRprod × TFprod",
+          "inputs": [
+            "BRprem",
+            "BRprod",
+            "TFprem",
+            "TFprod"
+          ],
+          "output": "TRprem, TRprod",
+          "interpretation_status": "inferred",
+          "original_text": "2. Territorial Rate Adjustment: Retrieve base rates BRprem and BRprod from Table 2. Retrieve territory factors TFprem and TFprod from Table 4. TRprem = BRprem × TFprem (7) TRprod = BRprod × TFprod (8) Round intermediate rates TRprem and TRprod to three decimal places."
+        },
+        {
+          "sequence": 3,
+          "instruction": "3. Increased Limit and Deductible Compounding: Lookup limit factor ILF from Table 5 and deductible credit Cded from Table 6. MFRprem = TRprem × ILF × (1.000-Cded) (9) MFRprod = TRprod × ILF × (1.000-Cded) (10) Round modified final rates (MFR) to four decimal places.",
+          "operation": "expression",
+          "expression": "MFRprem = TRprem × ILF × (1.000-Cded); MFRprod = TRprod × ILF × (1.000-Cded)",
+          "inputs": [
+            "TRprem",
+            "TRprod",
+            "ILF",
+            "Cded"
+          ],
+          "output": "MFRprem, MFRprod",
+          "interpretation_status": "inferred",
+          "original_text": "3. Increased Limit and Deductible Compounding: Lookup limit factor ILF from Table 5 and deductible credit Cded from Table 6. MFRprem = TRprem × ILF × (1.000-Cded) (9) MFRprod = TRprod × ILF × (1.000-Cded) (10) Round modified final rates (MFR) to four decimal places."
+        },
+        {
+          "sequence": 4,
+          "instruction": "4. Line Base Premium Computation: Pprem = Round(Eunits × MFRprem,2) (11) Pprod = Round(Eunits × MFRprod,2) (12)",
+          "operation": "expression",
+          "expression": "Pprem = Round(Eunits × MFRprem,2); Pprod = Round(Eunits × MFRprod,2)",
+          "inputs": [
+            "Eunits",
+            "MFRprem",
+            "MFRprod"
+          ],
+          "output": "Pprem, Pprod",
+          "interpretation_status": "inferred",
+          "original_text": "4. Line Base Premium Computation: Pprem = Round(Eunits × MFRprem,2) (11) Pprod = Round(Eunits × MFRprod,2) (12)"
+        },
+        {
+          "sequence": 5,
+          "instruction": "5. Total Subject Basic Premium Accumulator: Psubject = Pprem + Pprod (13)",
+          "operation": "expression",
+          "expression": "Psubject = Pprem + Pprod",
+          "inputs": [
+            "Pprem",
+            "Pprod"
+          ],
+          "output": "Psubject",
+          "interpretation_status": "inferred",
+          "original_text": "5. Total Subject Basic Premium Accumulator: Psubject = Pprem + Pprod (13)"
+        }
+      ],
+      "depends_on": [
+        "Table 1: Standard Exposure Units and Audit Conversion Rules",
+        "Table 2: Master Classification Schedule and Baseline Rates (Part 1 of 2: Codes 10100–30300)",
+        "Table 3: Master Classification Schedule and Baseline Rates (Part 2 of 2: Codes 40100–70500)",
+        "Table 4: Territorial Relativity Factors by Geographic Zone",
+        "Table 5: Increased Limit Factors (ILF) by Limit Option and Hazard Group",
+        "Table 6: Deductible Credit Relativities (Cded) by Hazard Group"
+      ],
+      "dependencies": [],
+      "inputs": [
+        "Eraw",
+        "Base",
+        "BRprem",
+        "BRprod",
+        "TFprem",
+        "TFprod",
+        "ILF",
+        "Cded"
+      ],
+      "outputs": [
+        "Eunits",
+        "TRprem",
+        "TRprod",
+        "MFRprem",
+        "MFRprod",
+        "Pprem",
+        "Pprod",
+        "Psubject"
+      ],
+      "purpose": "Compute line-level sub-premiums from exposure, classification rates, territory relativities, increased limit factors, and deductible discounts",
+      "applicability": "",
+      "execution_context": "",
+      "notes": "",
+      "review_status": "",
+      "confidence": null
+    },
+    {
+      "id": "R2",
+      "name": "Routine 2: Modification and Surcharge Algorithm (ROUT-02)",
+      "kind": "calculation_steps",
+      "source_pages": [
+        12,
+        13
+      ],
+      "source_type": "",
+      "source_location": "",
+      "evidence_text": "8.2 Routine 2: Modification and Surcharge Algorithm (ROUT-02)\nThis routine applies Experience Modification (EMF), Schedule Rating (SRF), and endorsement additions to determine policy modified premium.\n1. Experience Modification Application:\n2. Schedule Rating Factor Compounding:\n3. Endorsement and Flat Fee Accumulation:",
+      "expression_text": "",
+      "conditions": [],
+      "conditions_detailed": [],
+      "steps": [
+        "1. Experience Modification Application: Retrieve or calculate EMF per Section 5. Pexp = Round(Psubject × EMF, 2) (14)",
+        "2. Schedule Rating Factor Compounding: Compute SRF per Section 6. Apply SRF to the experience-modified premium: Psched = Round(Pexp × SRF, 2) (15)",
+        "3. Endorsement and Flat Fee Accumulation: Let Feeflat be the sum of flat endorsement fees (Table 9), and let Ppct be the percentage surcharge rate (e.g., +3.5% for CG-2404). Pmod = Round(Psched × (1.000 + Ppct),2) + Feeflat (16)"
+      ],
+      "steps_detailed": [
+        {
+          "sequence": 1,
+          "instruction": "1. Experience Modification Application: Retrieve or calculate EMF per Section 5. Pexp = Round(Psubject × EMF, 2) (14)",
+          "operation": "expression",
+          "expression": "Pexp = Round(Psubject × EMF, 2)",
+          "inputs": [
+            "Psubject",
+            "EMF"
+          ],
+          "output": "Pexp",
+          "interpretation_status": "inferred",
+          "original_text": "1. Experience Modification Application: Retrieve or calculate EMF per Section 5. Pexp = Round(Psubject × EMF, 2) (14)"
+        },
+        {
+          "sequence": 2,
+          "instruction": "2. Schedule Rating Factor Compounding: Compute SRF per Section 6. Apply SRF to the experience-modified premium: Psched = Round(Pexp × SRF, 2) (15)",
+          "operation": "expression",
+          "expression": "Psched = Round(Pexp × SRF, 2)",
+          "inputs": [
+            "Pexp",
+            "SRF"
+          ],
+          "output": "Psched",
+          "interpretation_status": "inferred",
+          "original_text": "2. Schedule Rating Factor Compounding: Compute SRF per Section 6. Apply SRF to the experience-modified premium: Psched = Round(Pexp × SRF, 2) (15)"
+        },
+        {
+          "sequence": 3,
+          "instruction": "3. Endorsement and Flat Fee Accumulation: Let Feeflat be the sum of flat endorsement fees (Table 9), and let Ppct be the percentage surcharge rate (e.g., +3.5% for CG-2404). Pmod = Round(Psched × (1.000 + Ppct),2) + Feeflat (16)",
+          "operation": "expression",
+          "expression": "Pmod = Round(Psched × (1.000 + Ppct),2) + Feeflat",
+          "inputs": [
+            "Psched",
+            "Ppct",
+            "Feeflat"
+          ],
+          "output": "Pmod",
+          "interpretation_status": "inferred",
+          "original_text": "3. Endorsement and Flat Fee Accumulation: Let Feeflat be the sum of flat endorsement fees (Table 9), and let Ppct be the percentage surcharge rate (e.g., +3.5% for CG-2404). Pmod = Round(Psched × (1.000 + Ppct),2) + Feeflat (16)"
+        }
+      ],
+      "depends_on": [
+        "Section 5 Experience Rating Plan",
+        "Section 6 Schedule Rating Plan",
+        "Table 9: Endorsement Rating Scale and Applicability Directives"
+      ],
+      "dependencies": [],
+      "inputs": [
+        "Psubject",
+        "EMF",
+        "SRF",
+        "Ppct",
+        "Feeflat"
+      ],
+      "outputs": [
+        "Pexp",
+        "Psched",
+        "Pmod"
+      ],
+      "purpose": "",
+      "applicability": "",
+      "execution_context": "",
+      "notes": "CONFLICT FLAG FOR REVIEW: RULE-CONF-B2 states an alternative conflicting formula for the same result: “In all filings governed by Statutory Standard Form 26, the Schedule Rating Factor (SRF) and Experience Modification Factor (EMF) are additive percentage adjustments applied concurrently to Subject Basic Premium: Padj = Round(Psubject × [1.000 + (EMF -1.000) + (SRF -1.000)],2).” Preserve both variants verbatim. Multiplicative chaining Psched=Round(Pexp×SRF,2) vs additive compounding conflict must be flagged for human review rather than reconciled.",
+      "review_status": "",
+      "confidence": null
+    },
+    {
+      "id": "R3",
+      "name": "Routine 3: Final Policy Minimum Premium and Total Balance (ROUT-03)",
+      "kind": "calculation_steps",
+      "source_pages": [
+        13
+      ],
+      "source_type": "",
+      "source_location": "",
+      "evidence_text": "8.3 Routine 3: Final Policy Minimum Premium and Total Balance (ROUT-03)\nThis routine applies statutory minimum premium thresholds, terrorism premiums, and final rounding rules.\n1. Classification Minimum Premium Comparison:\n2. Certified Terrorism Risk Insurance Act (TRIA) Addition:\n3. Final Billed Premium:",
+      "expression_text": "",
+      "conditions": [],
+      "conditions_detailed": [],
+      "steps": [
+        "1. Classification Minimum Premium Comparison: Every hazard group maintains an absolute minimum policy premium: Hazard Group HG-1 HG-2 HG-3 HG-4 HG-5 Minimum Premium (M P ) $500.00 $750.00 $1,000.00 $1,500.00 $2,500.00 Preconciled = max(Pmod, M P ) (17)",
+        "2. Certified Terrorism Risk Insurance Act (TRIA) Addition: TRIA premium is mandatory unless rejected in writing. The standard TRIA rate is 3.0% of Preconciled, subject to a minimum of $100.00. Ptria = (0.00 if TRIA rejected max(100.00,Round(Preconciled×0.030,2)) if accepted (18)",
+        "3. Final Billed Premium: Pfinal = Preconciled + Ptria (19)"
+      ],
+      "steps_detailed": [
+        {
+          "sequence": 1,
+          "instruction": "1. Classification Minimum Premium Comparison: Every hazard group maintains an absolute minimum policy premium: Hazard Group HG-1 HG-2 HG-3 HG-4 HG-5 Minimum Premium (M P ) $500.00 $750.00 $1,000.00 $1,500.00 $2,500.00 Preconciled = max(Pmod, M P ) (17)",
+          "operation": "expression",
+          "expression": "Preconciled = max(Pmod, M P )",
+          "inputs": [
+            "Pmod",
+            "M P"
+          ],
+          "output": "Preconciled",
+          "interpretation_status": "inferred",
+          "original_text": "1. Classification Minimum Premium Comparison: Every hazard group maintains an absolute minimum policy premium: Hazard Group HG-1 HG-2 HG-3 HG-4 HG-5 Minimum Premium (M P ) $500.00 $750.00 $1,000.00 $1,500.00 $2,500.00 Preconciled = max(Pmod, M P ) (17)"
+        },
+        {
+          "sequence": 2,
+          "instruction": "2. Certified Terrorism Risk Insurance Act (TRIA) Addition: TRIA premium is mandatory unless rejected in writing. The standard TRIA rate is 3.0% of Preconciled, subject to a minimum of $100.00. Ptria = (0.00 if TRIA rejected max(100.00,Round(Preconciled×0.030,2)) if accepted (18)",
+          "operation": "condition",
+          "expression": "Ptria = 0.00 if TRIA rejected else max(100.00,Round(Preconciled×0.030,2))",
+          "inputs": [
+            "Preconciled",
+            "TRIA election"
+          ],
+          "output": "Ptria",
+          "interpretation_status": "inferred",
+          "original_text": "2. Certified Terrorism Risk Insurance Act (TRIA) Addition: TRIA premium is mandatory unless rejected in writing. The standard TRIA rate is 3.0% of Preconciled, subject to a minimum of $100.00. Ptria = (0.00 if TRIA rejected max(100.00,Round(Preconciled×0.030,2)) if accepted (18)"
+        },
+        {
+          "sequence": 3,
+          "instruction": "3. Final Billed Premium: Pfinal = Preconciled + Ptria (19)",
+          "operation": "expression",
+          "expression": "Pfinal = Preconciled + Ptria",
+          "inputs": [
+            "Preconciled",
+            "Ptria"
+          ],
+          "output": "Pfinal",
+          "interpretation_status": "inferred",
+          "original_text": "3. Final Billed Premium: Pfinal = Preconciled + Ptria (19)"
+        }
+      ],
+      "depends_on": [
+        "Classification Minimum Premium Comparison",
+        "TRIA Statutory Charge"
+      ],
+      "dependencies": [],
+      "inputs": [
+        "Pmod",
+        "M P",
+        "TRIA election"
+      ],
+      "outputs": [
+        "Preconciled",
+        "Ptria",
+        "Pfinal"
+      ],
+      "purpose": "",
+      "applicability": "",
+      "execution_context": "",
+      "notes": "",
+      "review_status": "",
+      "confidence": null
+    },
+    {
+      "id": "R4",
+      "name": "Cross-Territorial Operations Allocation Formula",
+      "kind": "formula",
+      "source_pages": [
+        6
+      ],
+      "source_type": "",
+      "source_location": "",
+      "evidence_text": "3.2 Cross-Territorial Operations Allocation Formula\nWhen a contracting risk (Codes 30100 through 30300) operates across multiple distinct territorial zones during a single annual policy term, the composite territory factor TFcomp is established via weighted average:\nTFcomp = sum(i=1 to n) (wi × TFi) = (Payroll1/Payrolltotal × TF1) + ··· + (Payrolln/Payrolltotal × TFn) (1)\nThe resulting TFcomp factor must be rounded to three decimal places before application to base rates.",
+      "expression_text": "TFcomp = sum(i=1 to n) (wi × TFi) = (Payroll1/Payrolltotal × TF1) + ··· + (Payrolln/Payrolltotal × TFn) (1)",
+      "conditions": [],
+      "conditions_detailed": [],
+      "steps": [],
+      "steps_detailed": [],
+      "depends_on": [
+        "Table 4: Territorial Relativity Factors by Geographic Zone"
+      ],
+      "dependencies": [],
+      "inputs": [
+        "Payroll1..Payrolln",
+        "Payrolltotal",
+        "TF1..TFn"
+      ],
+      "outputs": [
+        "TFcomp"
+      ],
+      "purpose": "",
+      "applicability": "",
+      "execution_context": "",
+      "notes": "The resulting TFcomp factor must be rounded to three decimal places before application to base rates. Applicability: contracting risk (Codes 30100 through 30300) operating across multiple distinct territorial zones.",
+      "review_status": "",
+      "confidence": null
+    },
+    {
+      "id": "R5",
+      "name": "Experience Modification Factor Calculation",
+      "kind": "calculation_steps",
+      "source_pages": [
+        8,
+        9
+      ],
+      "source_type": "",
+      "source_location": "",
+      "evidence_text": "5.2 Actuarial Valuation Formula\nThe Experience Modification Factor (EMF) is computed via the credibility-weighted formula: EMF = Ap+Ce·Ep+ (1-Ce)·Ee / Et (2)\n5.3 Credibility Table\nCe = min(1.000,max(0.000, Et-$15,000 / $250,000-$15,000)) (3)\nThe calculated EMF cannot be lower than 0.600 (maximum 40% credit) nor higher than 1.750 (maximum 75% debit). Round EMF to three decimal places.",
+      "expression_text": "EMF = Ap+Ce·Ep+ (1-Ce)·Ee / Et (2); Ce = min(1.000,max(0.000, Et-$15,000 / $250,000-$15,000)) (3)",
+      "conditions": [],
+      "conditions_detailed": [],
+      "steps": [
+        "Et = Expected Losses for the entire experience period = Subject Premium × ELR; ELR = Expected Loss Ratio for the governing Hazard Group (Table 7); Ap = Actual Subject Losses, capped at Single Loss Maximum (SLM) per event; Ep = Expected Primary Losses = Et × 0.350; Ee = Expected Excess Losses = Et × 0.650",
+        "Ce = min(1.000,max(0.000, Et-$15,000 / $250,000-$15,000)) (3)",
+        "EMF = Ap+Ce·Ep+ (1-Ce)·Ee / Et (2) The calculated EMF cannot be lower than 0.600 nor higher than 1.750. Round EMF to three decimal places."
+      ],
+      "steps_detailed": [
+        {
+          "sequence": 1,
+          "instruction": "Et = Expected Losses for the entire experience period = Subject Premium × ELR; ELR = Expected Loss Ratio for the governing Hazard Group (Table 7); Ap = Actual Subject Losses, capped at Single Loss Maximum (SLM) per event; Ep = Expected Primary Losses = Et × 0.350; Ee = Expected Excess Losses = Et × 0.650",
+          "expression": "Et = Subject Premium × ELR; Ep = Et×0.350; Ee = Et×0.650",
+          "inputs": [
+            "Subject Premium",
+            "ELR"
+          ],
+          "output": "Et, Ep, Ee",
+          "original_text": "Et = Expected Losses for the entire experience period = Subject Premium × ELR; ELR = Expected Loss Ratio for the governing Hazard Group (Table 7); Ap = Actual Subject Losses, capped at Single Loss Maximum (SLM) per event; Ep = Expected Primary Losses = Et × 0.350; Ee = Expected Excess Losses = Et × 0.650"
+        },
+        {
+          "sequence": 2,
+          "instruction": "Ce = min(1.000,max(0.000, Et-$15,000 / $250,000-$15,000)) (3)",
+          "operation": "expression",
+          "expression": "Ce = min(1.000,max(0.000, Et-$15,000 / $250,000-$15,000))",
+          "inputs": [
+            "Et"
+          ],
+          "output": "Ce",
+          "interpretation_status": "inferred",
+          "original_text": "Ce = min(1.000,max(0.000, Et-$15,000 / $250,000-$15,000)) (3)"
+        },
+        {
+          "sequence": 3,
+          "instruction": "EMF = Ap+Ce·Ep+ (1-Ce)·Ee / Et (2) The calculated EMF cannot be lower than 0.600 nor higher than 1.750. Round EMF to three decimal places.",
+          "operation": "expression",
+          "expression": "EMF = Ap+Ce·Ep+ (1-Ce)·Ee / Et",
+          "inputs": [
+            "Ap",
+            "Ce",
+            "Ep",
+            "Ee",
+            "Et"
+          ],
+          "output": "EMF",
+          "interpretation_status": "inferred",
+          "original_text": "EMF = Ap+Ce·Ep+ (1-Ce)·Ee / Et (2) The calculated EMF cannot be lower than 0.600 nor higher than 1.750. Round EMF to three decimal places."
+        }
+      ],
+      "depends_on": [
+        "Table 7: Expected Loss Ratios (ELR) and Single Loss Limits by Hazard Group"
+      ],
+      "dependencies": [],
+      "inputs": [
+        "Ap",
+        "Et",
+        "ELR",
+        "Ce",
+        "Ep",
+        "Ee"
+      ],
+      "outputs": [
+        "EMF"
+      ],
+      "purpose": "",
+      "applicability": "",
+      "execution_context": "",
+      "notes": "Ap capped at Single Loss Maximum (SLM) per event. ELR from Table 7 by Hazard Group. Ce credibility floor per Table 7 also applies for review. EMF floor 0.600, cap 1.750, round to three decimals. Participation mandatory for annual basic manual premium >= $5,000. Experience period is three completed policy years; if unavailable, two consecutive years may be utilized, provided subject premium exceeds $10,000 in aggregate.",
+      "review_status": "",
+      "confidence": null
+    },
+    {
+      "id": "R6",
+      "name": "Schedule Modification Accumulator Formula",
+      "kind": "formula",
+      "source_pages": [
+        10
+      ],
+      "source_type": "",
+      "source_location": "",
+      "evidence_text": "6.2 Schedule Modification Accumulator Formula\nIndividual category percentages (CPk) are summed algebraically to compute the Total Schedule Factor (SRF): SRFraw = 1.000 + sum(k=1 to 5) CPk/100.0 (4) SRF = min(1.250,max(0.750, SRFraw)) (5)\nThe resulting SRF modifier is applied as a direct multiplier to the experience-modified premium.",
+      "expression_text": "SRFraw = 1.000 + sum(k=1 to 5) CPk/100.0 (4); SRF = min(1.250,max(0.750, SRFraw)) (5)",
+      "conditions": [],
+      "conditions_detailed": [],
+      "steps": [],
+      "steps_detailed": [],
+      "depends_on": [
+        "Table 8: Schedule Rating Credit and Debit Parameter Ranges"
+      ],
+      "dependencies": [],
+      "inputs": [
+        "CPk for k=1 to 5"
+      ],
+      "outputs": [
+        "SRFraw",
+        "SRF"
+      ],
+      "purpose": "",
+      "applicability": "",
+      "execution_context": "",
+      "notes": "Total combined schedule rating modifications cannot exceed maximum credit of -25.0% or maximum debit of +25.0%. Restricted to policies generating at least $2,500 in basic manual premium prior to application of expense constants. CONFLICT FLAG: See RULE-CONF-B2 additive alternative Padj=Round(Psubject×[1.000 + (EMF-1.000)+(SRF-1.000)],2) which conflicts with multiplicative application; flag for review.",
+      "review_status": "",
+      "confidence": null
+    },
+    {
+      "id": "R7",
+      "name": "Conditional Underwriting Rule Matrix",
+      "kind": "condition",
+      "source_pages": [
+        14
+      ],
+      "source_type": "",
+      "source_location": "",
+      "evidence_text": "9.1 Conditional Underwriting Rule Matrix\nRULE-ELIG-01: Residential Roofing Restriction\nRULE-ELIG-02: Mandatory Subcontractor Warranty\nRULE-ELIG-03: Multi-Story Department Store Minimum Deductible\nRULE-ELIG-04: Experience Modification Ineligibility Override\nRULE-ELIG-05: High-Hazard Limits Cap",
+      "expression_text": "",
+      "conditions": [
+        "RULE-ELIG-01: Residential Roofing Restriction IF Class Code = 30280 (Roofing) AND Residential Work Percentage > 30.0% THEN Risk is STRICTLY INELIGIBLE for standard rating. Must be declined or referred to Surplus Lines. ELSE Apply standard classification rates.",
+        "RULE-ELIG-02: Mandatory Subcontractor Warranty IF Total Subcontracted Cost Percentage > 50.0% of Gross Annual Operating Sales THEN Endorsement CG-2294 is MANDATORY unless underwriter executes an Exception Override with evidence that 100% of subcontractors maintain equal or higher CGL limits.",
+        "RULE-ELIG-03: Multi-Story Department Store Minimum Deductible IF Class Code = 40350 (Department Stores) AND Floor Area > 50,000 sq ft THEN Minimum allowable deductible is D-02 ($1,000 per claim). Deductible option D-00 is strictly prohibited.",
+        "RULE-ELIG-04: Experience Modification Ineligibility Override IF Calculated Manual Basic Premium Psubject < $5,000.00 THEN Set EMF = 1.000 automatically, regardless of historical loss record.",
+        "RULE-ELIG-05: High-Hazard Limits Cap IF Hazard Group = HG-5 AND Territory in {T-07,T-08} THEN Maximum primary policy limits permitted under this manual is L-04 ($1,000,000 / $2,000,000). Excess umbrella must provide any higher coverage."
+      ],
+      "conditions_detailed": [
+        {
+          "original_text": "RULE-ELIG-01: Residential Roofing Restriction IF Class Code = 30280 (Roofing) AND Residential Work Percentage > 30.0% THEN Risk is STRICTLY INELIGIBLE for standard rating. Must be declined or referred to Surplus Lines. ELSE Apply standard classification rates."
+        },
+        {
+          "original_text": "RULE-ELIG-02: Mandatory Subcontractor Warranty IF Total Subcontracted Cost Percentage > 50.0% of Gross Annual Operating Sales THEN Endorsement CG-2294 is MANDATORY unless underwriter executes an Exception Override with evidence that 100% of subcontractors maintain equal or higher CGL limits."
+        },
+        {
+          "original_text": "RULE-ELIG-03: Multi-Story Department Store Minimum Deductible IF Class Code = 40350 (Department Stores) AND Floor Area > 50,000 sq ft THEN Minimum allowable deductible is D-02 ($1,000 per claim). Deductible option D-00 is strictly prohibited."
+        },
+        {
+          "original_text": "RULE-ELIG-04: Experience Modification Ineligibility Override IF Calculated Manual Basic Premium Psubject < $5,000.00 THEN Set EMF = 1.000 automatically, regardless of historical loss record."
+        },
+        {
+          "original_text": "RULE-ELIG-05: High-Hazard Limits Cap IF Hazard Group = HG-5 AND Territory in {T-07,T-08} THEN Maximum primary policy limits permitted under this manual is L-04 ($1,000,000 / $2,000,000). Excess umbrella must provide any higher coverage."
+        }
+      ],
+      "steps": [],
+      "steps_detailed": [],
+      "depends_on": [
+        "Table 2: Master Classification Schedule and Baseline Rates (Part 1 of 2: Codes 10100–30300)",
+        "Table 3: Master Classification Schedule and Baseline Rates (Part 2 of 2: Codes 40100–70500)",
+        "Table 9: Endorsement Rating Scale and Applicability Directives"
+      ],
+      "dependencies": [],
+      "inputs": [],
+      "outputs": [],
+      "purpose": "",
+      "applicability": "",
+      "execution_context": "",
+      "notes": "Automated rating software must enforce explicit branch logic and business rules prior to executing calculations.",
+      "review_status": "",
+      "confidence": null
+    },
+    {
+      "id": "R8",
+      "name": "Conflicting Rule Statement Pair A: Minimum Deductible for Hazardous Contracting",
+      "kind": "conflict",
+      "source_pages": [
+        15
+      ],
+      "source_type": "",
+      "source_location": "",
+      "evidence_text": "10.1 Conflicting Rule Statement Pair A: Minimum Deductible for Hazardous Contracting\nRULE-CONF-A1 (Manual Page 14, Contracting Operations Specification): “All contracting classifications assigned to Hazard Group 4 and Hazard Group 5 (specifically including Structural Steel Erection 20220 and Concrete Foundation Construction 30300) must carry a mandatory minimum Property Damage deductible of $2,500 per claim (Code D-03). Underwriters possess no authority to reduce this deductible below $2,500.”\nRULE-CONF-A2 (Manual Page 22, Underwriting Discretionary Credit Schedule): “Any commercial contractor possessing an Experience Modification Factor (EMF) of 0.850 or lower is entitled to elect the standard $1,000 deductible (Code D-02) or $500 deductible (Code D-01) upon underwriter approval, superseding all general class-specific deductible minimums.”",
+      "expression_text": "",
+      "conditions": [
+        "RULE-CONF-A1 (Manual Page 14, Contracting Operations Specification): “All contracting classifications assigned to Hazard Group 4 and Hazard Group 5 (specifically including Structural Steel Erection 20220 and Concrete Foundation Construction 30300) must carry a mandatory minimum Property Damage deductible of $2,500 per claim (Code D-03). Underwriters possess no authority to reduce this deductible below $2,500.”",
+        "RULE-CONF-A2 (Manual Page 22, Underwriting Discretionary Credit Schedule): “Any commercial contractor possessing an Experience Modification Factor (EMF) of 0.850 or lower is entitled to elect the standard $1,000 deductible (Code D-02) or $500 deductible (Code D-01) upon underwriter approval, superseding all general class-specific deductible minimums.”"
+      ],
+      "conditions_detailed": [
+        {
+          "referral_code": "D-03",
+          "interpretation_status": "inferred",
+          "original_text": "RULE-CONF-A1 (Manual Page 14, Contracting Operations Specification): “All contracting classifications assigned to Hazard Group 4 and Hazard Group 5 (specifically including Structural Steel Erection 20220 and Concrete Foundation Construction 30300) must carry a mandatory minimum Property Damage deductible of $2,500 per claim (Code D-03). Underwriters possess no authority to reduce this deductible below $2,500.”"
+        },
+        {
+          "referral_code": "D-02",
+          "interpretation_status": "inferred",
+          "original_text": "RULE-CONF-A2 (Manual Page 22, Underwriting Discretionary Credit Schedule): “Any commercial contractor possessing an Experience Modification Factor (EMF) of 0.850 or lower is entitled to elect the standard $1,000 deductible (Code D-02) or $500 deductible (Code D-01) upon underwriter approval, superseding all general class-specific deductible minimums.”"
+        }
+      ],
+      "steps": [],
+      "steps_detailed": [],
+      "depends_on": [],
+      "dependencies": [],
+      "inputs": [],
+      "outputs": [],
+      "purpose": "",
+      "applicability": "",
+      "execution_context": "",
+      "notes": "CONFLICT FLAG FOR REVIEW: Extraction System Test Assertion: A rule parsing engine must emit a severity-warning noting that an insured qualifying under both conditions presents an irreconcilable deductible eligibility state. Preserve every variant verbatim instead of choosing one.",
+      "review_status": "",
+      "confidence": null
+    },
+    {
+      "id": "R9",
+      "name": "Conflicting Rule Statement Pair B: Schedule Rating Application Sequence",
+      "kind": "conflict",
+      "source_pages": [
+        15
+      ],
+      "source_type": "",
+      "source_location": "",
+      "evidence_text": "10.2 Conflicting Rule Statement Pair B: Schedule Rating Application Sequence\nRULE-CONF-B1 (Section 8.2, Routine 2, Step 2): “The Schedule Rating Factor (SRF) must be applied sequentially AFTER the application of the Experience Modification Factor (EMF), multiplying directly against experience-modified premium: Psched=Round(Pexp×SRF, 2).”\nRULE-CONF-B2 (Section 6.1, Schedule Plan Administration Rules, Paragraph 4): “In all filings governed by Statutory Standard Form 26, the Schedule Rating Factor (SRF) and Experience Modification Factor (EMF) are additive percentage adjustments applied concurrently to Subject Basic Premium: Padj=Round(Psubject×[1.000 + (EMF-1.000) + (SRF-1.000)],2).”",
+      "expression_text": "",
+      "conditions": [
+        "RULE-CONF-B1 (Section 8.2, Routine 2, Step 2): “The Schedule Rating Factor (SRF) must be applied sequentially AFTER the application of the Experience Modification Factor (EMF), multiplying directly against experience-modified premium: Psched=Round(Pexp×SRF, 2).”",
+        "RULE-CONF-B2 (Section 6.1, Schedule Plan Administration Rules, Paragraph 4): “In all filings governed by Statutory Standard Form 26, the Schedule Rating Factor (SRF) and Experience Modification Factor (EMF) are additive percentage adjustments applied concurrently to Subject Basic Premium: Padj=Round(Psubject×[1.000 + (EMF-1.000) + (SRF-1.000)],2).”"
+      ],
+      "conditions_detailed": [
+        {
+          "original_text": "RULE-CONF-B1 (Section 8.2, Routine 2, Step 2): “The Schedule Rating Factor (SRF) must be applied sequentially AFTER the application of the Experience Modification Factor (EMF), multiplying directly against experience-modified premium: Psched=Round(Pexp×SRF, 2).”"
+        },
+        {
+          "original_text": "RULE-CONF-B2 (Section 6.1, Schedule Plan Administration Rules, Paragraph 4): “In all filings governed by Statutory Standard Form 26, the Schedule Rating Factor (SRF) and Experience Modification Factor (EMF) are additive percentage adjustments applied concurrently to Subject Basic Premium: Padj=Round(Psubject×[1.000 + (EMF-1.000) + (SRF-1.000)],2).”"
+        }
+      ],
+      "steps": [],
+      "steps_detailed": [],
+      "depends_on": [],
+      "dependencies": [],
+      "inputs": [],
+      "outputs": [],
+      "purpose": "",
+      "applicability": "",
+      "execution_context": "",
+      "notes": "CONFLICT FLAG FOR REVIEW: A rating engine must flag the conflict between multiplicative chaining and additive compounding of experience and schedule modifiers.",
+      "review_status": "",
+      "confidence": null
+    },
+    {
+      "id": "R10",
+      "name": "Special Hazardous Surcharges",
+      "kind": "condition",
+      "source_pages": [
+        11,
+        12
+      ],
+      "source_type": "",
+      "source_location": "",
+      "evidence_text": "7.2 Special Hazardous Surcharges\n• Liquor Liability Surcharge (Sliq): If an insured serves alcoholic beverages without maintaining separate mono-line liquor liability coverage, and hospitality code 60250 applies, an automatic +15% surcharge applies to the entire policy basic premium.\n• Uncertified Subcontractor Penalty (Ssub): If a contractor utilizes uninsured or underinsured subcontractors lacking $1,000,000 CGL coverage, an automatic surcharge of $35.00 per $1,000 of total subcontracted cost is levied.",
+      "expression_text": "",
+      "conditions": [
+        "Liquor Liability Surcharge (Sliq): If an insured serves alcoholic beverages without maintaining separate mono-line liquor liability coverage, and hospitality code 60250 applies, an automatic +15% surcharge applies to the entire policy basic premium.",
+        "Uncertified Subcontractor Penalty (Ssub): If a contractor utilizes uninsured or underinsured subcontractors lacking $1,000,000 CGL coverage, an automatic surcharge of $35.00 per $1,000 of total subcontracted cost is levied."
+      ],
+      "conditions_detailed": [
+        {
+          "referral_code": "60250",
+          "interpretation_status": "inferred",
+          "original_text": "Liquor Liability Surcharge (Sliq): If an insured serves alcoholic beverages without maintaining separate mono-line liquor liability coverage, and hospitality code 60250 applies, an automatic +15% surcharge applies to the entire policy basic premium."
+        },
+        {
+          "original_text": "Uncertified Subcontractor Penalty (Ssub): If a contractor utilizes uninsured or underinsured subcontractors lacking $1,000,000 CGL coverage, an automatic surcharge of $35.00 per $1,000 of total subcontracted cost is levied."
+        }
+      ],
+      "steps": [],
+      "steps_detailed": [],
+      "depends_on": [
+        "Table 3: Master Classification Schedule and Baseline Rates (Part 2 of 2: Codes 40100–70500)"
+      ],
+      "dependencies": [],
+      "inputs": [],
+      "outputs": [],
+      "purpose": "",
+      "applicability": "",
+      "execution_context": "",
+      "notes": "Sliq applies to hospitality code 60250. Ssub rate is $35.00 per $1,000 of total subcontracted cost.",
+      "review_status": "",
+      "confidence": null
+    },
+    {
+      "id": "R11",
+      "name": "Ecological Hazard Surcharge Formula (SEC-SUR-09)",
+      "kind": "formula",
+      "source_pages": [
+        16
+      ],
+      "source_type": "",
+      "source_location": "",
+      "evidence_text": "11.3 Ambiguity 3: Undefined Input Variable in Surcharge Formula\nRule SEC-SUR-09 states: Penv = Psubject × Keco (20)\nThe parameter Keco is referenced as the “Ecological Hazard Surcharge Factor,” but no table or formula in the entire manual defines the numerical range or lookup source for Keco.",
+      "expression_text": "Penv = Psubject × Keco (20)",
+      "conditions": [],
+      "conditions_detailed": [],
+      "steps": [],
+      "steps_detailed": [],
+      "depends_on": [
+        "Psubject"
+      ],
+      "dependencies": [],
+      "inputs": [
+        "Psubject",
+        "Keco"
+      ],
+      "outputs": [
+        "Penv"
+      ],
+      "purpose": "",
+      "applicability": "",
+      "execution_context": "",
+      "notes": "FLAG FOR REVIEW: Keco is undefined nowhere in the source. The parameter Keco is referenced as the “Ecological Hazard Surcharge Factor,” but no table or formula defines its numerical range or lookup source. Keep verbatim and flag as undefined instead of inventing a value. Also flag overlapping credibility boundary: Exactly $50,000 in expected losses produces boundary collision between Tier 1: Expected losses from $10,000 to $50,000 → Credibility = 0.20 and Tier 2: Expected losses from $50,000 to $150,000 → Credibility = 0.40; must flag whether $50,000 is inclusive in Tier 1 or Tier 2. Also flag schema null for Code 20999 BRprod [NOT SPECIFIED].",
+      "review_status": "",
+      "confidence": null
+    },
+    {
+      "id": "R12",
+      "name": "Worked Example 1: Commercial Electrical Contractor (Code 30150)",
+      "kind": "worked_example",
+      "source_pages": [
+        17,
+        18
+      ],
+      "source_type": "",
+      "source_location": "",
+      "evidence_text": "12.1 Worked Example 1: Commercial Electrical Contractor (Code 30150)\n• Named Insured: Apex Precision Electric Inc.\n• Classification: Code 30150 (Commercial Electrical Contractors)\n• Exposure Basis: Gross Annual Payroll (PAY) = $850,000\n• Hazard Group: HG-3 (Table 2)\n• Territory: Territory T-02 (Suburban A)\n• Policy Limits: Limit Code L-04 ($1,000,000 Occurrence / $2,000,000 Aggregate)\n• Deductible: Code D-02 ($1,000 Property Damage per claim)",
+      "expression_text": "",
+      "conditions": [],
+      "conditions_detailed": [],
+      "steps": [],
+      "steps_detailed": [],
+      "depends_on": [
+        "Routine 1: Core Line Premium Calculation (ROUT-01)",
+        "Routine 2: Modification and Surcharge Algorithm (ROUT-02)",
+        "Routine 3: Final Policy Minimum Premium and Total Balance (ROUT-03)"
+      ],
+      "dependencies": [],
+      "inputs": [
+        "Eraw=$850,000",
+        "Base=PAY",
+        "Class Code=30150",
+        "Hazard Group=HG-3",
+        "Territory=T-02",
+        "Limit Code=L-04",
+        "Deductible=D-02"
+      ],
+      "outputs": [
+        "Psubject",
+        "Pexp",
+        "Psched",
+        "Pmod",
+        "Pfinal"
+      ],
+      "purpose": "",
+      "applicability": "",
+      "execution_context": "",
+      "notes": "Expected values verbatim for review: Eunits = $850,000/1,000.0 = 850.0000 units; Table 2 (HG-3): BRprem=$3.40, BRprod=$2.10; Table 4 (T-02): TFprem=1.180, TFprod=1.050; TRprem=3.40×1.180=4.0120→4.012; TRprod=2.10×1.050=2.2050→2.205; Table 5 (L-04,HG-3): ILF=1.500; Table 6 (D-02,HG-3): Cded=0.040 => (1.000-Cded)=0.960; MFRprem=4.012×1.500×0.960=5.77728→5.7773; MFRprod=2.205×1.500×0.960=3.17520→3.1752; Pprem=Round(850.0000×5.7773,2)=Round(4910.705,2)=$4,910.71; Pprod=Round(850.0000×3.1752,2)=Round(2698.920,2)=$2,698.92; Psubject=4910.71+2698.92=$7,609.63; Et=$48,000×0.580=$27,840.00; Ce=(27,840-15,000)/(250,000-15,000)=12,840/235,000=0.054638→Floor at 0.150; Ap=min(42000,50000)=$42,000.00; Ep=27,840×0.350=$9,744.00, Ee=27,840×0.650=$18,096.00; EMFraw=(42,000+1,461.60+15,381.60)/27,840=58,843.20/27,840.00=2.11362→Capped at 1.750; Pexp=Round(7,609.63×1.750,2)=$13,316.85; Psched=Round(13,316.85×0.930,2)=$12,384.67; CG-2010 flat fee: 2×$150.00=$300.00; Pmod=12,384.67+300.00=$12,684.67; Preconciled=$12,684.67 (>$1,000.00); Ptria=max(100.00,Round(12,684.67×0.030,2))=$380.54; Pfinal=12,684.67+380.54=$13,065.21. All values reconcile with stated formulas.",
+      "review_status": "",
+      "confidence": null
+    },
+    {
+      "id": "R13",
+      "name": "Worked Example 2: Supermarket Retail Chain (Code 40100)",
+      "kind": "worked_example",
+      "source_pages": [
+        19,
+        20
+      ],
+      "source_type": "",
+      "source_location": "",
+      "evidence_text": "12.2 Worked Example 2: Supermarket Retail Chain (Code 40100)\n• Named Insured: Vanguard Supermarkets LLC\n• Classification: Code 40100 (Supermarkets & Grocery Chains)\n• Exposure Basis: Gross Annual Sales (SAL) = $14,500,000\n• Hazard Group: HG-2 (Table 2)\n• Territory: Territory T-01 (Metro Urban)\n• Policy Limits: Limit Code L-05 ($2,000,000 Occurrence / $4,000,000 Aggregate)\n• Deductible: Code D-04 ($5,000 Property Damage per claim)",
+      "expression_text": "",
+      "conditions": [],
+      "conditions_detailed": [],
+      "steps": [],
+      "steps_detailed": [],
+      "depends_on": [
+        "Routine 1: Core Line Premium Calculation (ROUT-01)",
+        "Routine 2: Modification and Surcharge Algorithm (ROUT-02)",
+        "Routine 3: Final Policy Minimum Premium and Total Balance (ROUT-03)"
+      ],
+      "dependencies": [],
+      "inputs": [
+        "Eraw=$14,500,000",
+        "Base=SAL",
+        "Class Code=40100",
+        "Hazard Group=HG-2",
+        "Territory=T-01",
+        "Limit Code=L-05",
+        "Deductible=D-04",
+        "EMF=0.910",
+        "SRF=0.930"
+      ],
+      "outputs": [
+        "Psubject",
+        "Pexp",
+        "Psched",
+        "Pmod",
+        "Pfinal"
+      ],
+      "purpose": "",
+      "applicability": "",
+      "execution_context": "",
+      "notes": "Expected values verbatim for review: Eunits=$14,500,000/1,000.0=14,500.0000 units; Table 2 (HG-2): BRprem=$1.65, BRprod=$0.45; Table 4 (T-01): TFprem=1.450, TFprod=1.150; TRprem=1.65×1.450=2.3925→2.393; TRprod=0.45×1.150=0.5175→0.518; Table 5 (L-05,HG-2): ILF=1.620; Table 6 (D-04,HG-2): Cded=0.145 => (1.000-Cded)=0.855; MFRprem=2.393×1.620×0.855=3.314619→3.3146; MFRprod=0.518×1.620×0.855=0.717489→0.7175; Pprem=Round(14,500.0000×3.3146,2)=$48,061.70; Pprod=Round(14,500.0000×0.7175,2)=$10,403.75; Psubject=48,061.70+10,403.75=$58,465.45; Pexp=Round(58,465.45×0.910,2)=$53,203.56; Psched=Round(53,203.56×0.930,2)=$49,479.31; Pmod=Round(49,479.31×1.035,2)=$51,211.09 (CG-2404 +3.5%); Ptria=Round(51,211.09×0.030,2)=$1,536.33; Pfinal=51,211.09+1,536.33=$52,747.42. All values reconcile with stated formulas.",
+      "review_status": "",
+      "confidence": null
+    }
+  ],
+  "issues": [
+    {
+      "id": "V1",
+      "severity": "warning",
+      "target_type": "table",
+      "target_id": "T6",
+      "message": "Table \"Table 6: Deductible Credit Relativities (Cded) by Hazard Group\" lists \"D-05\" in column \"Deductible Code\" but no routine references it while 5 of 7 \"D-\" codes are used; verify whether the omission is intended.",
+      "source_pages": [
+        8
+      ]
+    },
+    {
+      "id": "V2",
+      "severity": "warning",
+      "target_type": "table",
+      "target_id": "T6",
+      "message": "Table \"Table 6: Deductible Credit Relativities (Cded) by Hazard Group\" lists \"D-06\" in column \"Deductible Code\" but no routine references it while 5 of 7 \"D-\" codes are used; verify whether the omission is intended.",
+      "source_pages": [
+        8
+      ]
+    },
+    {
+      "id": "V3",
+      "severity": "warning",
+      "target_type": "table",
+      "target_id": "T3",
+      "message": "Table \"Table 3: Master Classification Schedule and Baseline Rates (Part 2 of 2: Codes 40100–70500)\" has identical column labels to table \"Table 2: Master Classification Schedule and Baseline Rates (Part 1 of 2: Codes 10100–30300)\" (T2); check for a multi-page or multi-sheet continuation.",
+      "source_pages": [
+        6
+      ]
+    },
+    {
+      "id": "V4",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R2",
+      "message": "Routine \"Routine 2: Modification and Surcharge Algorithm (ROUT-02)\" depends on \"Section 5 Experience Rating Plan\", which matches no extracted table, routine, input, or output.",
+      "source_pages": [
+        12,
+        13
+      ]
+    },
+    {
+      "id": "V5",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R2",
+      "message": "Routine \"Routine 2: Modification and Surcharge Algorithm (ROUT-02)\" depends on \"Section 6 Schedule Rating Plan\", which matches no extracted table, routine, input, or output.",
+      "source_pages": [
+        12,
+        13
+      ]
+    },
+    {
+      "id": "V6",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R2",
+      "message": "Routine \"Routine 2: Modification and Surcharge Algorithm (ROUT-02)\" notes report a possible contradiction (\"CONFLICT FLAG FOR REVIEW: RULE-CONF-B2 states an alternative conflicting formula for the same result: “In all filings g…\"); verify which definition applies — flagged without choosing one.",
+      "source_pages": [
+        12,
+        13
+      ]
+    },
+    {
+      "id": "V7",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R3",
+      "message": "Routine \"Routine 3: Final Policy Minimum Premium and Total Balance (ROUT-03)\" depends on \"TRIA Statutory Charge\", which matches no extracted table, routine, input, or output.",
+      "source_pages": [
+        13
+      ]
+    },
+    {
+      "id": "V8",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R4",
+      "message": "Routine \"Cross-Territorial Operations Allocation Formula\" declares input \"Payroll1..Payrolln\", which is used nowhere in its steps, conditions, expression, or dependencies; verify the name against the source.",
+      "source_pages": [
+        6
+      ]
+    },
+    {
+      "id": "V9",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R4",
+      "message": "Routine \"Cross-Territorial Operations Allocation Formula\" declares input \"TF1..TFn\", which is used nowhere in its steps, conditions, expression, or dependencies; verify the name against the source.",
+      "source_pages": [
+        6
+      ]
+    },
+    {
+      "id": "V10",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R5",
+      "message": "Step 1 references \"Subject Premium\", which matches no defined input, step output, routine output, table, column, routine, or constant; flagged as unresolved.",
+      "source_pages": [
+        8,
+        9
+      ]
+    },
+    {
+      "id": "V11",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R6",
+      "message": "Routine \"Schedule Modification Accumulator Formula\" declares input \"CPk for k=1 to 5\", which is used nowhere in its steps, conditions, expression, or dependencies; verify the name against the source.",
+      "source_pages": [
+        10
+      ]
+    },
+    {
+      "id": "V12",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R6",
+      "message": "Routine \"Schedule Modification Accumulator Formula\" notes report a possible contradiction (\"CONFLICT FLAG: See RULE-CONF-B2 additive alternative Padj=Round(Psubject×[1.000 + (EMF-1.000)+(SRF-1.000)],2) which con…\"); verify which definition applies — flagged without choosing one.",
+      "source_pages": [
+        10
+      ]
+    },
+    {
+      "id": "V13",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R7",
+      "message": "Condition 3 (\"RULE-ELIG-03: Multi-Story Department Store Minimum Deductib…\") states no explicit fallback or ELSE branch; verify the fallback behavior against the source.",
+      "source_pages": [
+        14
+      ]
+    },
+    {
+      "id": "V14",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R7",
+      "message": "Condition 4 (\"RULE-ELIG-04: Experience Modification Ineligibility Overrid…\") states no explicit fallback or ELSE branch; verify the fallback behavior against the source.",
+      "source_pages": [
+        14
+      ]
+    },
+    {
+      "id": "V15",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R7",
+      "message": "Condition 5 (\"RULE-ELIG-05: High-Hazard Limits Cap IF Hazard Group = HG-5…\") states no explicit fallback or ELSE branch; verify the fallback behavior against the source.",
+      "source_pages": [
+        14
+      ]
+    },
+    {
+      "id": "V16",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R8",
+      "message": "Routine \"Conflicting Rule Statement Pair A: Minimum Deductible for Hazardous Contracting\" has unrecognized kind \"conflict\"; needs review.",
+      "source_pages": [
+        15
+      ]
+    },
+    {
+      "id": "V17",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R8",
+      "message": "Routine \"Conflicting Rule Statement Pair A: Minimum Deductible for Hazardous Contracting\" notes report a possible contradiction (\"CONFLICT FLAG FOR REVIEW: Extraction System Test Assertion: A rule parsing engine must emit a severity-warning noting t…\"); verify which definition applies — flagged without choosing one.",
+      "source_pages": [
+        15
+      ]
+    },
+    {
+      "id": "V18",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R9",
+      "message": "Routine \"Conflicting Rule Statement Pair B: Schedule Rating Application Sequence\" has unrecognized kind \"conflict\"; needs review.",
+      "source_pages": [
+        15
+      ]
+    },
+    {
+      "id": "V19",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R9",
+      "message": "Condition 1 (\"RULE-CONF-B1 (Section 8.2, Routine 2, Step 2): “The Schedul…\") states no explicit fallback or ELSE branch; verify the fallback behavior against the source.",
+      "source_pages": [
+        15
+      ]
+    },
+    {
+      "id": "V20",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R9",
+      "message": "Condition 2 (\"RULE-CONF-B2 (Section 6.1, Schedule Plan Administration Rul…\") states no explicit fallback or ELSE branch; verify the fallback behavior against the source.",
+      "source_pages": [
+        15
+      ]
+    },
+    {
+      "id": "V21",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R9",
+      "message": "Routine \"Conflicting Rule Statement Pair B: Schedule Rating Application Sequence\" notes report a possible contradiction (\"CONFLICT FLAG FOR REVIEW: A rating engine must flag the conflict between multiplicative chaining and additive compoundi…\"); verify which definition applies — flagged without choosing one.",
+      "source_pages": [
+        15
+      ]
+    },
+    {
+      "id": "V22",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R10",
+      "message": "Condition 2 (\"Uncertified Subcontractor Penalty (Ssub): If a contractor u…\") states no explicit fallback or ELSE branch; verify the fallback behavior against the source.",
+      "source_pages": [
+        11,
+        12
+      ]
+    },
+    {
+      "id": "V23",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R12",
+      "message": "Routine \"Worked Example 1: Commercial Electrical Contractor (Code 30150)\" has unrecognized kind \"worked_example\"; needs review.",
+      "source_pages": [
+        17,
+        18
+      ]
+    },
+    {
+      "id": "V24",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R12",
+      "message": "Routine \"Worked Example 1: Commercial Electrical Contractor (Code 30150)\" declares input \"Eraw=$850,000\", which is used nowhere in its steps, conditions, expression, or dependencies; verify the name against the source.",
+      "source_pages": [
+        17,
+        18
+      ]
+    },
+    {
+      "id": "V25",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R12",
+      "message": "Routine \"Worked Example 1: Commercial Electrical Contractor (Code 30150)\" declares input \"Base=PAY\", which is used nowhere in its steps, conditions, expression, or dependencies; verify the name against the source.",
+      "source_pages": [
+        17,
+        18
+      ]
+    },
+    {
+      "id": "V26",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R12",
+      "message": "Routine \"Worked Example 1: Commercial Electrical Contractor (Code 30150)\" declares input \"Class Code=30150\", which is used nowhere in its steps, conditions, expression, or dependencies; verify the name against the source.",
+      "source_pages": [
+        17,
+        18
+      ]
+    },
+    {
+      "id": "V27",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R12",
+      "message": "Routine \"Worked Example 1: Commercial Electrical Contractor (Code 30150)\" declares input \"Hazard Group=HG-3\", which is used nowhere in its steps, conditions, expression, or dependencies; verify the name against the source.",
+      "source_pages": [
+        17,
+        18
+      ]
+    },
+    {
+      "id": "V28",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R12",
+      "message": "Routine \"Worked Example 1: Commercial Electrical Contractor (Code 30150)\" declares input \"Territory=T-02\", which is used nowhere in its steps, conditions, expression, or dependencies; verify the name against the source.",
+      "source_pages": [
+        17,
+        18
+      ]
+    },
+    {
+      "id": "V29",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R12",
+      "message": "Routine \"Worked Example 1: Commercial Electrical Contractor (Code 30150)\" declares input \"Limit Code=L-04\", which is used nowhere in its steps, conditions, expression, or dependencies; verify the name against the source.",
+      "source_pages": [
+        17,
+        18
+      ]
+    },
+    {
+      "id": "V30",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R12",
+      "message": "Routine \"Worked Example 1: Commercial Electrical Contractor (Code 30150)\" declares input \"Deductible=D-02\", which is used nowhere in its steps, conditions, expression, or dependencies; verify the name against the source.",
+      "source_pages": [
+        17,
+        18
+      ]
+    },
+    {
+      "id": "V31",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R13",
+      "message": "Routine \"Worked Example 2: Supermarket Retail Chain (Code 40100)\" has unrecognized kind \"worked_example\"; needs review.",
+      "source_pages": [
+        19,
+        20
+      ]
+    },
+    {
+      "id": "V32",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R13",
+      "message": "Routine \"Worked Example 2: Supermarket Retail Chain (Code 40100)\" declares input \"Eraw=$14,500,000\", which is used nowhere in its steps, conditions, expression, or dependencies; verify the name against the source.",
+      "source_pages": [
+        19,
+        20
+      ]
+    },
+    {
+      "id": "V33",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R13",
+      "message": "Routine \"Worked Example 2: Supermarket Retail Chain (Code 40100)\" declares input \"Base=SAL\", which is used nowhere in its steps, conditions, expression, or dependencies; verify the name against the source.",
+      "source_pages": [
+        19,
+        20
+      ]
+    },
+    {
+      "id": "V34",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R13",
+      "message": "Routine \"Worked Example 2: Supermarket Retail Chain (Code 40100)\" declares input \"Class Code=40100\", which is used nowhere in its steps, conditions, expression, or dependencies; verify the name against the source.",
+      "source_pages": [
+        19,
+        20
+      ]
+    },
+    {
+      "id": "V35",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R13",
+      "message": "Routine \"Worked Example 2: Supermarket Retail Chain (Code 40100)\" declares input \"Hazard Group=HG-2\", which is used nowhere in its steps, conditions, expression, or dependencies; verify the name against the source.",
+      "source_pages": [
+        19,
+        20
+      ]
+    },
+    {
+      "id": "V36",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R13",
+      "message": "Routine \"Worked Example 2: Supermarket Retail Chain (Code 40100)\" declares input \"Territory=T-01\", which is used nowhere in its steps, conditions, expression, or dependencies; verify the name against the source.",
+      "source_pages": [
+        19,
+        20
+      ]
+    },
+    {
+      "id": "V37",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R13",
+      "message": "Routine \"Worked Example 2: Supermarket Retail Chain (Code 40100)\" declares input \"Limit Code=L-05\", which is used nowhere in its steps, conditions, expression, or dependencies; verify the name against the source.",
+      "source_pages": [
+        19,
+        20
+      ]
+    },
+    {
+      "id": "V38",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R13",
+      "message": "Routine \"Worked Example 2: Supermarket Retail Chain (Code 40100)\" declares input \"Deductible=D-04\", which is used nowhere in its steps, conditions, expression, or dependencies; verify the name against the source.",
+      "source_pages": [
+        19,
+        20
+      ]
+    },
+    {
+      "id": "V39",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R13",
+      "message": "Routine \"Worked Example 2: Supermarket Retail Chain (Code 40100)\" declares input \"EMF=0.910\", which is used nowhere in its steps, conditions, expression, or dependencies; verify the name against the source.",
+      "source_pages": [
+        19,
+        20
+      ]
+    },
+    {
+      "id": "V40",
+      "severity": "warning",
+      "target_type": "routine",
+      "target_id": "R13",
+      "message": "Routine \"Worked Example 2: Supermarket Retail Chain (Code 40100)\" declares input \"SRF=0.930\", which is used nowhere in its steps, conditions, expression, or dependencies; verify the name against the source.",
+      "source_pages": [
+        19,
+        20
+      ]
+    }
+  ],
+  "status": "review",
+  "updated_at": "2026-10-29T06:50:48.456Z"
+}
