@@ -6,7 +6,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { createServer } from '../src/server.js';
+import { createServer, buildExportFilename } from '../src/server.js';
+import { saveJob } from '../src/store.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const storeDir = path.join(here, '..', 'test-jobs-tmp');
@@ -126,6 +127,75 @@ test('server: PDF upload without model config returns 409, not a silent stub', a
   });
   assert.equal(res.status, 409);
   assert.equal(json(res).code, 'MODEL_DISABLED');
+});
+
+test('server: xlsx download filename uses the original PDF name and date', async () => {
+  const handle = listener();
+  const created = await call(handle, { method: 'POST', url: '/api/demo/sample' });
+  const { id } = json(created);
+  const xlsx = await call(handle, { method: 'GET', url: `/api/jobs/${id}.xlsx` });
+  assert.equal(xlsx.status, 200);
+  assert.match(
+    xlsx.headers['content-disposition'],
+    /^attachment; filename="RateCraft_sample-guideline_\d{4}-\d{2}-\d{2}\.xlsx"$/
+  );
+  assert.equal(
+    xlsx.headers['content-disposition'],
+    `attachment; filename="${buildExportFilename('sample-guideline.pdf')}"`
+  );
+});
+
+test('server: repeated xlsx exports return the same filename and bytes', async () => {
+  const handle = listener();
+  const created = await call(handle, { method: 'POST', url: '/api/demo/sample' });
+  const { id } = json(created);
+  const first = await call(handle, { method: 'GET', url: `/api/jobs/${id}.xlsx` });
+  const second = await call(handle, { method: 'GET', url: `/api/jobs/${id}.xlsx` });
+  assert.equal(second.headers['content-disposition'], first.headers['content-disposition']);
+  assert.ok(second.body.equals(first.body));
+});
+
+test('server: xlsx download falls back safely when the job has no filename', async () => {
+  const handle = listener();
+  const created = await call(handle, { method: 'POST', url: '/api/demo/sample' });
+  const { job } = json(created);
+  job.document.filename = '';
+  await saveJob(storeDir, 'test-missing-name', job);
+  const xlsx = await call(handle, { method: 'GET', url: '/api/jobs/test-missing-name.xlsx' });
+  assert.equal(xlsx.status, 200);
+  assert.match(
+    xlsx.headers['content-disposition'],
+    /^attachment; filename="RateCraft_Export_\d{4}-\d{2}-\d{2}\.xlsx"$/
+  );
+});
+
+test('server: export filename sanitizes spaces, special chars, and traversal', () => {
+  const day = new Date(2026, 9, 29);
+  assert.equal(
+    buildExportFilename('Commercial Auto Rating Manual.pdf', day),
+    'RateCraft_Commercial_Auto_Rating_Manual_2026-10-29.xlsx'
+  );
+  assert.equal(
+    buildExportFilename('GL (Final) #2 @100%.pdf', day),
+    'RateCraft_GL_Final_2_100_2026-10-29.xlsx'
+  );
+  assert.equal(buildExportFilename('', day), 'RateCraft_Export_2026-10-29.xlsx');
+  assert.equal(buildExportFilename(null, day), 'RateCraft_Export_2026-10-29.xlsx');
+  assert.equal(buildExportFilename(undefined, day), 'RateCraft_Export_2026-10-29.xlsx');
+  assert.equal(buildExportFilename('.pdf', day), 'RateCraft_Export_2026-10-29.xlsx');
+  assert.equal(buildExportFilename('Report.PDF', day), 'RateCraft_Report_2026-10-29.xlsx');
+  assert.equal(
+    buildExportFilename('../../etc/passwd.pdf', day),
+    'RateCraft_passwd_2026-10-29.xlsx'
+  );
+  assert.equal(
+    buildExportFilename('C:\\docs\\Rate Sheet (v2).pdf', day),
+    'RateCraft_Rate_Sheet_v2_2026-10-29.xlsx'
+  );
+  assert.equal(
+    buildExportFilename('evil"; filename="x.pdf', day),
+    'RateCraft_evil_filename_x_2026-10-29.xlsx'
+  );
 });
 
 test('server: upload 409 reports offline ingest details and offline-sample hint', async () => {

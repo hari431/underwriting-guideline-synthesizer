@@ -35,6 +35,29 @@ function send(res, status, body, contentType = 'application/json; charset=utf-8'
 
 const sendJson = (res, status, obj) => send(res, status, JSON.stringify(obj));
 
+// Download filename for Excel exports:
+// `RateCraft_<upload stem>_<YYYY-MM-DD>.xlsx`. The stem drops a trailing
+// `.pdf`, swaps whitespace for underscores, and keeps only filename-safe
+// characters, so directory separators, quotes, and control characters from
+// the upload name can never reach the Content-Disposition header or the
+// filesystem. Empty or unusable names fall back to `Export`.
+export function buildExportFilename(originalName, now = new Date()) {
+  const at = now instanceof Date && !Number.isNaN(now.getTime()) ? now : new Date();
+  const date = [at.getFullYear(), String(at.getMonth() + 1).padStart(2, '0'), String(at.getDate()).padStart(2, '0')].join('-');
+  return `RateCraft_${sanitizeExportStem(originalName)}_${date}.xlsx`;
+}
+
+function sanitizeExportStem(originalName) {
+  const base = String(originalName ?? '').trim().split(/[\\/]/).pop() ?? '';
+  const stem = base.replace(/\.pdf$/i, '').trim()
+    .replace(/\s+/g, '_')
+    .replace(/[^A-Za-z0-9_.-]+/g, '_')
+    .replace(/_+/g, '_')
+    .slice(0, 80)
+    .replace(/^[_.]+|[_.]+$/g, '');
+  return stem || 'Export';
+}
+
 function readBody(req, maxBytes) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -118,7 +141,7 @@ export function createServer({ storeDir = path.join(ROOT, 'jobs'), modelEnv = pr
           res.writeHead(200, {
             'content-type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             'content-length': xlsx.length,
-            'content-disposition': `attachment; filename="ratecraft-${id}.xlsx"`,
+            'content-disposition': `attachment; filename="${buildExportFilename(job?.document?.filename)}"`,
           });
           return res.end(xlsx);
         }
