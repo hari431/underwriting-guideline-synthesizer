@@ -263,6 +263,11 @@ try { if (localStorage.getItem('ratecraft.theme') === 'dark') document.documentE
   }
   .fact .k { font-size: 0.7rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
   .fact .v { font-size: 1rem; font-weight: 700; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; margin-top: 0.1rem; overflow-wrap: anywhere; }
+  .fact-btn { text-align: left; cursor: pointer; transition: border-color 0.15s ease, background 0.15s ease; }
+  button.fact-btn:hover { border-color: #7d9a8e; background: var(--panel-soft); }
+  @media (prefers-reduced-motion: reduce) {
+    .fact-btn { transition: none; }
+  }
 
   /* ---- Pills & chips ---- */
   .pill {
@@ -344,17 +349,17 @@ try { if (localStorage.getItem('ratecraft.theme') === 'dark') document.documentE
   .toolbar[hidden] { display: none; }
 
   /* ---- Compact item cards (list) ---- */
-  .item-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr)); gap: 0.6rem; }
+  .item-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr)); gap: 0.5rem; }
   .item-card {
     text-align: left;
     background: var(--white);
     border: 1px solid var(--line);
     border-radius: 10px;
-    padding: 0.6rem 0.7rem;
+    padding: 0.55rem 0.65rem;
     cursor: pointer;
     display: flex;
     flex-direction: column;
-    gap: 0.4rem;
+    gap: 0.35rem;
     font: inherit;
     box-shadow: var(--shadow-sm);
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
@@ -398,6 +403,32 @@ try { if (localStorage.getItem('ratecraft.theme') === 'dark') document.documentE
   }
   .bottombar[hidden] { display: none; }
   .pager-info { font-size: 0.84rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  /* ---- Sticky loaded-document bar (flex header above the workspace) ---- */
+  .stickybar {
+    flex-shrink: 0;
+    display: flex;
+    gap: 0.6rem;
+    align-items: center;
+    flex-wrap: wrap;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel);
+    padding: 0.45rem 1rem;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+  }
+  .stickybar[hidden] { display: none; }
+  .stickybar .doc-ic { font-size: 1rem; color: var(--forest-600); flex-shrink: 0; }
+  .sticky-doc {
+    flex: 1;
+    min-width: 8rem;
+    font-weight: 650;
+    font-size: 0.84rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .sticky-export-btn { padding: 0.4rem 0.75rem; font-size: 0.8rem; white-space: nowrap; flex-shrink: 0; }
+  .sticky-export-btn .ic { font-size: 0.9rem; }
 
   /* ---- Requirement cards (detail editor) ---- */
   .card {
@@ -596,6 +627,100 @@ try { if (localStorage.getItem('ratecraft.theme') === 'dark') document.documentE
   .flow-sep { color: var(--muted); font-size: 0.8rem; }
   #upload:has(+ #jobSection:not([hidden])) .upload-art { display: none; }
 
+  /* ---- Home intro: compact orientation, visible until a job loads ---- */
+  section.home-intro { margin-top: 1.1rem; }
+  section.home-intro > h2.intro-title {
+    border-bottom: none;
+    padding-bottom: 0;
+    font-size: 0.92rem;
+    margin-bottom: 0.55rem;
+  }
+  .intro-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: 0.6rem; }
+  .intro-card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 0.6rem 0.75rem;
+    box-shadow: var(--shadow-sm);
+  }
+  .intro-card h3 {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-size: 0.86rem;
+    font-weight: 700;
+    letter-spacing: -0.005em;
+    margin: 0 0 0.2rem;
+  }
+  .intro-card h3 .ic { font-size: 1rem; color: var(--forest-600); }
+  .intro-card p { margin: 0; font-size: 0.8rem; color: var(--muted); line-height: 1.5; }
+  .trust-note {
+    display: flex;
+    gap: 0.5rem;
+    align-items: flex-start;
+    margin: 0.6rem 0 0;
+    padding: 0.55rem 0.7rem;
+    font-size: 0.8rem;
+    line-height: 1.5;
+    background: var(--panel-soft);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+  }
+  .trust-note .ic { font-size: 1rem; color: var(--forest-600); margin-top: 0.1rem; }
+  .trust-note strong { font-weight: 700; }
+  .workspace-inner:has(#jobSection:not([hidden])) .home-intro { display: none; }
+  #upload { margin-top: 1.4rem; }
+
+  /* ---- Upload drop zone ---- */
+  .dropzone {
+    display: flex;
+    gap: 0.75rem;
+    align-items: flex-start;
+    border: 1.5px dashed #9fb3aa;
+    border-radius: 10px;
+    background: var(--panel-soft);
+    padding: 0.8rem 0.9rem;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+  .dropzone.drag { border-color: var(--forest-600); background: var(--forest-100); }
+  .dropzone:has(input:disabled) { opacity: 0.65; }
+  .dropzone-ic { font-size: 1.5rem; color: var(--forest-600); margin-top: 0.1rem; }
+  .dropzone-body { flex: 1; min-width: 0; }
+  .dropzone-title { margin: 0; font-weight: 650; font-size: 0.88rem; letter-spacing: -0.005em; }
+  .dropzone-body input[type="file"] { margin-top: 0.4rem; max-width: 100%; }
+  .dropzone-help { margin: 0.35rem 0 0; font-size: 0.78rem; color: var(--muted); }
+  .upload-actions { margin-top: 0.7rem; }
+  @media (prefers-reduced-motion: reduce) {
+    .dropzone { transition: none; }
+  }
+
+  /* ---- Loaded document bar (compact replacement for the drop zone) ---- */
+  #upload.loaded .dropzone, #upload.loaded .upload-actions { display: none; }
+  .docbar {
+    display: flex;
+    gap: 0.7rem;
+    align-items: center;
+    flex-wrap: wrap;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--panel-soft);
+    padding: 0.6rem 0.75rem;
+  }
+  .docbar[hidden] { display: none; }
+  .docbar-ic { font-size: 1.4rem; color: var(--forest-600); flex-shrink: 0; }
+  .docbar-body { flex: 1; min-width: 10rem; }
+  .docbar-title {
+    margin: 0;
+    font-weight: 700;
+    font-size: 0.88rem;
+    letter-spacing: -0.005em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .docbar-meta { margin: 0.1rem 0 0; font-size: 0.78rem; color: var(--muted); }
+  .docbar button { flex-shrink: 0; white-space: nowrap; }
+
   /* ---- Dark theme (green/mint brand preserved; sidebar stays dark-green) ---- */
   [data-theme="dark"] {
     color-scheme: dark;
@@ -672,6 +797,15 @@ try { if (localStorage.getItem('ratecraft.theme') === 'dark') document.documentE
   [data-theme="dark"] .art-fold { stroke: #8fd6b4; }
   [data-theme="dark"] .art-line { stroke: #5f7d74; }
   [data-theme="dark"] .art-dot { fill: #8fd6b4; }
+  [data-theme="dark"] .dropzone { border-color: #3d5a53; }
+  [data-theme="dark"] .dropzone.drag { border-color: #8fd6b4; }
+  [data-theme="dark"] .intro-card h3 .ic,
+  [data-theme="dark"] .dropzone-ic,
+  [data-theme="dark"] .trust-note .ic { color: #8fd6b4; }
+  [data-theme="dark"] .main-col button.fact-btn:hover { border-color: #4c6f65; background: var(--panel-soft); }
+  [data-theme="dark"] .stickybar { box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4); }
+  [data-theme="dark"] .stickybar .doc-ic,
+  [data-theme="dark"] .docbar-ic { color: #8fd6b4; }
 
   @media (max-width: 900px) {
     body { overflow: auto; }
@@ -759,6 +893,12 @@ try { if (localStorage.getItem('ratecraft.theme') === 'dark') document.documentE
   </aside>
 
   <div class="main-col">
+    <div class="stickybar" id="stickyBar" hidden>
+      <svg class="ic doc-ic" aria-hidden="true"><use href="#i-doc"></use></svg>
+      <span class="sticky-doc" id="stickyDoc"></span>
+      <span id="stickyState"></span>
+      <button type="button" id="stickyExportBtn" class="primary sticky-export-btn"><svg class="ic" aria-hidden="true"><use href="#i-export"></use></svg>Export Excel</button>
+    </div>
     <main class="workspace" id="workspace">
       <div class="workspace-inner">
         <header class="topbar">
@@ -766,13 +906,49 @@ try { if (localStorage.getItem('ratecraft.theme') === 'dark') document.documentE
           <p class="sub">Turn underwriting guideline PDFs into traceable rating requirements — review tables &amp; routines against their source evidence, then export to Excel.</p>
         </header>
 
+        <section class="home-intro" aria-label="What you'll get">
+          <h2 class="intro-title">What you&rsquo;ll get</h2>
+          <div class="intro-grid">
+            <article class="intro-card">
+              <h3><svg class="ic" aria-hidden="true"><use href="#i-table"></use></svg>Rating Tables</h3>
+              <p>Headers, rows, footnotes and purpose extracted into tables you can review and correct.</p>
+            </article>
+            <article class="intro-card">
+              <h3><svg class="ic" aria-hidden="true"><use href="#i-routine"></use></svg>Rating Routines</h3>
+              <p>Formulas, conditions and calculation steps shown as Excel-style step detail.</p>
+            </article>
+            <article class="intro-card">
+              <h3><svg class="ic" aria-hidden="true"><use href="#i-evidence"></use></svg>Validation &amp; Source Evidence</h3>
+              <p>Deterministic checks flag issues; every item links back to its source pages.</p>
+            </article>
+          </div>
+          <p class="trust-note"><svg class="ic" aria-hidden="true"><use href="#i-review"></use></svg><span><strong>Analyst review required.</strong> Extracted results are a starting point — source gaps and conflicts stay flagged in Review until you resolve or acknowledge them.</span></p>
+        </section>
+
         <section id="upload">
-          <h2><span class="step-no">1</span> <svg class="ic sec-ic" aria-hidden="true"><use href="#i-upload"></use></svg> Upload <span class="hint">One guideline PDF per run</span></h2>
+          <h2><span class="step-no">1</span> <svg class="ic sec-ic" aria-hidden="true"><use href="#i-upload"></use></svg> Upload <span class="hint">PDF in — reviewed Excel out</span></h2>
           <div class="panel">
+            <div class="docbar" id="docBar" hidden>
+              <svg class="ic docbar-ic" aria-hidden="true"><use href="#i-doc"></use></svg>
+              <div class="docbar-body">
+                <p class="docbar-title" id="docBarTitle"></p>
+                <p class="docbar-meta" id="docBarMeta"></p>
+              </div>
+              <span id="docBarSource"></span>
+              <button type="button" id="changeDocBtn">Change PDF</button>
+              <button type="button" id="docClearBtn">Clear PDF</button>
+            </div>
             <div class="upload-flex">
               <div class="upload-controls">
-                <div class="row">
-                  <input type="file" id="file" accept="application/pdf">
+                <div class="dropzone" id="dropzone">
+                  <svg class="ic dropzone-ic" aria-hidden="true"><use href="#i-upload"></use></svg>
+                  <div class="dropzone-body">
+                    <p class="dropzone-title">Drop a guideline PDF here or choose a file</p>
+                    <input type="file" id="file" accept="application/pdf">
+                    <p class="dropzone-help">PDF only · One guideline per run · or try the offline sample below</p>
+                  </div>
+                </div>
+                <div class="row upload-actions">
                   <button id="uploadBtn" class="primary">Extract from PDF</button>
                   <button id="sampleBtn">Load sample guideline (offline)</button>
                   <button id="clearBtn" disabled>Clear PDF</button>
@@ -1057,10 +1233,15 @@ function clampPage(kind) {
 function statusPills(kind, item) {
   const parts = [];
   if (kind === 'routines' && item.kind) parts.push(`<span class="pill neutral">${esc(item.kind)}</span>`);
-  if (item.review_status && String(item.review_status).trim()) {
-    parts.push(`<span class="pill info">${esc(item.review_status)}</span>`);
-  }
   const iss = issuesFor(kind, item.id);
+  const reviewSteps = kind === 'routines' ? countReviewSteps(item) : 0;
+  if (isAcknowledged(item)) parts.push('<span class="pill ok">Reviewed</span>');
+  else if (iss.length > 0 || reviewSteps > 0) parts.push('<span class="pill warning">Needs review</span>');
+  else parts.push('<span class="pill ok">Clear</span>');
+  const rs = item.review_status && String(item.review_status).trim();
+  if (rs && !isAcknowledged(item)) {
+    parts.push(`<span class="pill info">${esc(rs)}</span>`);
+  }
   const e = iss.filter((i) => i.severity === 'error').length;
   const w = iss.filter((i) => i.severity === 'warning').length;
   if (e) parts.push(`<span class="pill error">${e} error${e > 1 ? 's' : ''}</span>`);
@@ -2029,6 +2210,19 @@ function updateUploadLocks() {
   if (uploadBtn) uploadBtn.disabled = locked;
   if (sampleBtn) sampleBtn.disabled = locked;
   if (clearBtn) clearBtn.disabled = !state || isBusy;
+  const stickyBar = $('stickyBar');
+  if (stickyBar && !state) stickyBar.hidden = true;
+  const docBar = $('docBar');
+  if (docBar && !state) docBar.hidden = true;
+  if (!state) $('upload').classList.toggle('loaded', false);
+  const stickyState = $('stickyState');
+  if (stickyState && !state) stickyState.innerHTML = '';
+  const stickyBtn = $('stickyExportBtn');
+  if (stickyBtn) {
+    if (!state) stickyBtn.disabled = true;
+    else if (isBusy) stickyBtn.disabled = true;
+    else if ($('exportBtn')) stickyBtn.disabled = $('exportBtn').disabled;
+  }
 }
 
 // Client-only reset: clears the active document, draft edits, validation
@@ -2050,6 +2244,10 @@ function clearSessionState() {
   $('reviewList').innerHTML = '';
   $('exportStatus').innerHTML = '';
   $('exportBtn').disabled = false;
+  syncStickyExport(0, 0, 0);
+  const docBar = $('docBar');
+  if (docBar) docBar.hidden = true;
+  $('upload').classList.toggle('loaded', false);
   $('sideJob').textContent = '';
   $('resultMeta').textContent = '';
   const file = $('file');
@@ -2076,10 +2274,25 @@ function renderJobSummary() {
     `<div class="fact"><div class="k">Pages</div><div class="v">${esc(job.document.page_count)}</div></div>` +
     `<div class="fact"><div class="k">Tables</div><div class="v">${job.tables.length}</div></div>` +
     `<div class="fact"><div class="k">Routines</div><div class="v">${job.routines.length}</div></div>` +
-    `<div class="fact"><div class="k">Errors</div><div class="v">${errors}</div></div>` +
-    `<div class="fact"><div class="k">Warnings</div><div class="v">${warnings}</div></div>` +
+    `<button type="button" class="fact fact-btn" data-goto-review="errors" title="Open Review to see errors"><div class="k">Errors</div><div class="v">${errors}</div></button>` +
+    `<button type="button" class="fact fact-btn" data-goto-review="warnings" title="Open Review to see warnings"><div class="k">Warnings</div><div class="v">${warnings}</div></button>` +
     `</div>`;
   $('sideJob').textContent = `${job.document.filename} · ${job.tables.length} tables · ${job.routines.length} routines · job ${state.id.slice(0, 8)}`;
+  renderDocBar();
+}
+
+// Loaded-document bar: compact replacement for the drop zone once a PDF or
+// sample is active. Shows the existing document facts only; the full upload
+// area returns after Clear/Change (see clearSessionState).
+function renderDocBar() {
+  const bar = $('docBar');
+  if (!bar) return;
+  const { job, source } = state;
+  bar.hidden = false;
+  $('docBarTitle').textContent = job.document.filename;
+  $('docBarMeta').textContent = `${job.document.page_count} pages · ${job.tables.length} tables · ${job.routines.length} routines`;
+  $('docBarSource').innerHTML = `<span class="pill ${esc(source)}">${esc(source)}</span>`;
+  $('upload').classList.toggle('loaded', true);
 }
 
 function truncateText(text, max) {
@@ -2225,6 +2438,32 @@ function unresolvedReviewRoutines() {
   return (draft.routines || []).filter((r) => !isAcknowledged(r) && countReviewSteps(r) > 0);
 }
 
+// Single export download: both the bottom Export button and the compact top
+// action call this handler, so the destination and guards stay in one place.
+function exportWorkbook() {
+  if (!state) return;
+  window.location.href = `/api/jobs/${state.id}.xlsx`;
+}
+
+// Sticky bar mirrors the bottom Export button: same disabled rule (errors
+// block, warnings and REVIEW steps allow) plus a compact status badge. The
+// counts come from renderExport's own computation — no second rule set.
+function syncStickyExport(errors, warnings, reviewSteps) {
+  const pill = !state ? '' : errors > 0
+    ? '<span class="pill error">Blocked</span>'
+    : (warnings > 0 || reviewSteps > 0)
+      ? '<span class="pill warning">Warnings</span>'
+      : '<span class="pill ok">Ready</span>';
+  const sticky = $('stickyBar');
+  if (sticky) sticky.hidden = !state;
+  const stickyDoc = $('stickyDoc');
+  if (stickyDoc) stickyDoc.textContent = state ? state.job.document.filename : '';
+  const stickyState = $('stickyState');
+  if (stickyState) stickyState.innerHTML = pill;
+  const stickyBtn = $('stickyExportBtn');
+  if (stickyBtn) stickyBtn.disabled = !state || isBusy || errors > 0;
+}
+
 // Export view: validation status, counts, and the Excel download only.
 // Warnings never block the download; errors do. Item-level review lives in
 // the Review view, so nothing is listed twice.
@@ -2245,6 +2484,7 @@ function renderExport() {
     `${reviewSteps} unresolved REVIEW step${reviewSteps === 1 ? '' : 's'}` +
     (unsaved ? ' · unsaved edits — save before export so the workbook matches your review' : '') + `.</p>`;
   $('exportBtn').disabled = errors > 0;
+  syncStickyExport(errors, warnings, reviewSteps);
 }
 
 // Accordion: at most one review card expanded at a time so the page stays
@@ -2591,10 +2831,8 @@ $('saveBtn').addEventListener('click', async () => {
   } catch (err) { setStatus(err.message, true); }
 });
 
-$('exportBtn').addEventListener('click', () => {
-  if (!state) return;
-  window.location.href = `/api/jobs/${state.id}.xlsx`;
-});
+$('exportBtn').addEventListener('click', exportWorkbook);
+$('stickyExportBtn').addEventListener('click', exportWorkbook);
 
 $('tabTables').addEventListener('click', () => switchTab('tables'));
 $('tabRoutines').addEventListener('click', () => switchTab('routines'));
@@ -2611,7 +2849,11 @@ $('filterSelect').addEventListener('change', (ev) => {
   renderBrowser();
 });
 
-$('clearBtn').addEventListener('click', () => {
+// Shared clear flow for both Clear PDF buttons and Change PDF: same
+// unsaved-edits guard, same confirm, same client-only reset.
+// One-PDF-per-run is unchanged — after clearing, the full upload area
+// returns for the next document.
+function requestClearSession() {
   if (isBusy) return;
   if (!state) return;
   syncDetailToDraft();
@@ -2621,7 +2863,10 @@ $('clearBtn').addEventListener('click', () => {
     : 'Clear the current PDF and discard this session? Saved jobs and exported files will be kept.';
   if (!window.confirm(msg)) return;
   clearSessionState();
-});
+}
+$('clearBtn').addEventListener('click', requestClearSession);
+$('changeDocBtn').addEventListener('click', requestClearSession);
+$('docClearBtn').addEventListener('click', requestClearSession);
 
 $('browser').addEventListener('click', (ev) => {
   const actEl = ev.target.closest('[data-act]');
@@ -2638,6 +2883,13 @@ $('reviewSection').addEventListener('click', (ev) => {
   if (btn) openReviewItem(btn.dataset.openKind, btn.dataset.openId);
 });
 
+// Summary fact navigation: the Errors and Warnings cards reuse the sidebar
+// Review navigation, so the destination and highlight stay identical.
+$('jobSummary').addEventListener('click', (ev) => {
+  const btn = ev.target.closest('[data-goto-review]');
+  if (btn && state) handleStepNav(5, ev);
+});
+
 // The toggle event does not bubble, hence the capture listener.
 $('reviewList').addEventListener('toggle', (ev) => collapseOtherReviewItems(ev.target), true);
 
@@ -2651,6 +2903,29 @@ document.querySelectorAll('.step').forEach((el) => {
     handleStepNav(Number(el.dataset.step), ev);
   });
 });
+
+// Drop-zone highlight: dragging a PDF over the upload card highlights it;
+// dropping hands the file to the existing picker so the normal Extract flow
+// and control locks apply unchanged. The native picker keeps working as-is.
+try {
+  const dz = $('dropzone');
+  const picker = $('file');
+  if (dz && picker && typeof dz.addEventListener === 'function') {
+    const over = (e) => { e.preventDefault(); dz.classList.toggle('drag', true); };
+    const leave = (e) => { e.preventDefault(); dz.classList.toggle('drag', false); };
+    dz.addEventListener('dragenter', over);
+    dz.addEventListener('dragover', over);
+    dz.addEventListener('dragleave', leave);
+    dz.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dz.classList.toggle('drag', false);
+      const files = e.dataTransfer && e.dataTransfer.files;
+      if (files && files.length > 0 && !picker.disabled) {
+        try { picker.files = files; } catch {}
+      }
+    });
+  }
+} catch {}
 
 initWorkflowSpy();
 $('themeToggle').addEventListener('click', () => { rcToggleTheme(); });
