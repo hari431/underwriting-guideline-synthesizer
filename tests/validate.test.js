@@ -102,11 +102,12 @@ test('validate: unresolved dependencies and duplicates warn', () => {
 
 test('validate: ragged rows and unknown kinds warn', () => {
   const job = jobWith({
-    tables: [{ name: 'T', sourcePages: [1], evidenceText: 'e', headers: ['A', 'B'], rows: [['1']] }],
+    tables: [{ name: 'T', sourcePages: [1], evidenceText: 'e', headers: ['A', 'B'], rows: [['1'], ['2', '3', '4']] }],
     routines: [{ name: 'R', kind: 'mystery', sourcePages: [1], evidenceText: 'e' }],
   });
   const issues = validateJob(job);
-  assert.ok(issues.some((i) => /column counts differing/.test(i.message)));
+  assert.ok(issues.some((i) => /more values than headers/.test(i.message)));
+  assert.ok(issues.some((i) => /values after a gap may sit under the wrong header/.test(i.message)));
   assert.ok(issues.some((i) => /unrecognized kind/.test(i.message)));
 });
 
@@ -870,4 +871,484 @@ test('validate: short rows warn misalignment; explicit blanks keep column attrib
     }],
   });
   assert.ok(validateJob(explicit).some((i) => /blank cell\(s\) in column "Low"/.test(i.message)), 'explicit blanks keep column attribution');
+});
+
+// ---------- bounded arithmetic consistency (G3) ----------
+// Recomputation warnings are filtered by /recomputing/ so these tests stay
+// independent of every other validator check.
+
+test('validate: matching step arithmetic stays silent', () => {
+  const job = jobWith({
+    routines: [{
+      name: 'R', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'e',
+      steps: [
+        'Alpha net = 3.40 x 1.180 = 4.0120',
+        'Ledger total = $12,500 / 100.0 = 125.0000 credits',
+      ],
+    }],
+  });
+  assert.deepEqual(
+    validateJob(job).filter((i) => /recomputing/.test(i.message)), [],
+    'consistent worked chains must not warn'
+  );
+});
+
+test('validate: rounding mismatch warns with step, stated, computed, and difference', () => {
+  const job = jobWith({
+    routines: [{
+      name: 'R', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'e',
+      steps: ['Pprem = Round(850.0000 x 5.7773, 2) = 4910.00'],
+    }],
+  });
+  const issues = validateJob(job);
+  const arithmetic = issues.filter((i) => /recomputing/.test(i.message));
+  assert.equal(arithmetic.length, 1);
+  assert.equal(arithmetic[0].severity, 'warning');
+  assert.match(arithmetic[0].message, /Step 1/);
+  assert.match(arithmetic[0].message, /Pprem/);
+  assert.match(arithmetic[0].message, /4910\.00/);
+  assert.match(arithmetic[0].message, /4910\.71/);
+  assert.match(arithmetic[0].message, /difference/);
+  // Source values are preserved, never auto-corrected.
+  assert.deepEqual(job.routines[0].steps_detailed[0].stated_results, [{ output: 'Pprem', value: '4910.00' }]);
+});
+
+test('validate: symbolic step expressions stay silent for arithmetic', () => {
+  const job = jobWith({
+    routines: [{
+      name: 'R', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'e',
+      steps: ['Rate step2 = Ratestep1 x Fconst = 9.99'],
+    }],
+  });
+  assert.deepEqual(
+    validateJob(job).filter((i) => /recomputing/.test(i.message)), [],
+    'unresolvable identifiers must not be manufactured into numbers'
+  );
+});
+
+test('validate: steps with missing operands stay silent for arithmetic', () => {
+  const job = jobWith({
+    routines: [{
+      name: 'R', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'e',
+      steps: [
+        { sequence: 1, instruction: 'Alpha = 3.40 x', operation: 'expression', expression: 'Alpha = 3.40 x', output: 'Alpha', stated_results: [{ output: 'Alpha', value: '9.99' }] },
+      ],
+    }],
+  });
+  assert.deepEqual(
+    validateJob(job).filter((i) => /recomputing/.test(i.message)), [],
+    'incomplete right-hand sides must not be evaluated'
+  );
+});
+
+test('validate: floating-point arithmetic within tolerance stays silent', () => {
+  const job = jobWith({
+    routines: [{
+      name: 'R', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'e',
+      steps: ['Gamma = 0.10 + 0.20 = 0.30'],
+    }],
+  });
+  assert.deepEqual(
+    validateJob(job).filter((i) => /recomputing/.test(i.message)), [],
+    '0.10 + 0.20 must not warn against stated 0.30'
+  );
+});
+
+// ---------- rating-band gaps, endpoints, condition ranges, precedence (G5) ----------
+
+test('validate: numeric gaps between rating bands warn; whole-unit adjacency stays silent', () => {
+  const job = jobWith({
+    tables: [{
+      name: 'Bands', sourcePages: [1], evidenceText: 'e', headers: ['Band', 'Factor'],
+      rows: [['1 to 3 Units', '1.05'], ['5 to 9 Units', '0.96']],
+    }],
+  });
+  const gaps = validateJob(job).filter((i) => /possible gap between range bands/.test(i.message));
+  assert.equal(gaps.length, 1);
+  assert.match(gaps[0].message, /1 to 3 Units/);
+  assert.match(gaps[0].message, /5 to 9 Units/);
+  assert.match(gaps[0].message, /between 3 and 5/);
+  assert.match(gaps[0].message, /without inferring a boundary/);
+  assert.equal(gaps[0].severity, 'warning');
+
+  const adjacent = jobWith({
+    tables: [{
+      name: 'Bands', sourcePages: [1], evidenceText: 'e', headers: ['Band', 'Factor'],
+      rows: [['$1,000 to $2,500', '1.05'], ['$2,501 to $5,000', '1.00']],
+    }],
+  });
+  assert.ok(!validateJob(adjacent).some((i) => /possible gap between range bands/.test(i.message)),
+    'consecutive whole-unit bands are the contiguous idiom');
+
+  const enumeration = jobWith({
+    tables: [{
+      name: 'Tiers', sourcePages: [1], evidenceText: 'e', headers: ['Tier', 'Factor'],
+      rows: [['1', '1.05'], ['2', '1.00'], ['4', '0.96']],
+    }],
+  });
+  assert.ok(!validateJob(enumeration).some((i) => /possible gap between range bands/.test(i.message)),
+    'pure single-value columns are enumerations, not bands');
+});
+
+test('validate: interior band overlaps keep the overlap message', () => {
+  const job = jobWith({
+    tables: [{
+      name: 'Bands', sourcePages: [1], evidenceText: 'e', headers: ['Band', 'Factor'],
+      rows: [['1 to 10 Units', '1.05'], ['5 to 15 Units', '0.96']],
+    }],
+  });
+  const overlaps = validateJob(job).filter((i) => /overlapping range bands/.test(i.message));
+  assert.equal(overlaps.length, 1);
+  assert.match(overlaps[0].message, /both cover 5 to 10/);
+});
+
+test('validate: shared endpoints flag unclear inclusivity; explicit bounds resolve silently', () => {
+  const shared = jobWith({
+    tables: [{
+      name: 'Bands', sourcePages: [1], evidenceText: 'e', headers: ['Band', 'Factor'],
+      rows: [['$10,000', '1.10'], ['$10,000 to $25,000', '1.05'], ['$30,000 to $40,000', '0.96']],
+    }],
+  });
+  const sharedIssues = validateJob(shared);
+  const endpoints = sharedIssues.filter((i) => /sharing the endpoint value/.test(i.message));
+  assert.equal(endpoints.length, 1);
+  assert.match(endpoints[0].message, /10000/);
+  assert.match(endpoints[0].message, /\$10,000 to \$25,000/);
+  assert.match(endpoints[0].message, /one band or both/);
+
+  const exclusive = jobWith({
+    tables: [{
+      name: 'Bands', sourcePages: [1], evidenceText: 'e', headers: ['Band', 'Factor'],
+      rows: [['<25', '1.10'], ['25 to 50', '1.05'], ['60 to 90', '0.96']],
+    }],
+  });
+  assert.ok(!validateJob(exclusive).some((i) => /endpoint value|overlapping range bands/.test(i.message)),
+    'an explicitly exclusive bound leaves no dual coverage');
+
+  const dual = jobWith({
+    tables: [{
+      name: 'Bands', sourcePages: [1], evidenceText: 'e', headers: ['Band', 'Factor'],
+      rows: [['<=25', '1.10'], ['>=25', '1.05'], ['60 to 90', '0.96'], ['100 to 120', '0.90']],
+    }],
+  });
+  const dualOverlaps = validateJob(dual).filter((i) => /overlapping range bands/.test(i.message));
+  assert.ok(dualOverlaps.some((i) => /both cover 25/.test(i.message)),
+    'two explicitly inclusive bounds genuinely overlap');
+});
+
+test('validate: overlapping condition ranges warn with the shared variable and region', () => {
+  const job = jobWith({
+    routines: [{
+      name: 'R', kind: 'condition', sourcePages: [1], evidenceText: 'e',
+      conditions: [
+        { condition: 'Harbor draft exceeds 30 feet', true_branch: 'Apply deep-draft fee' },
+        { condition: 'Harbor draft exceeds 25 feet', true_branch: 'Waive the fee' },
+      ],
+    }],
+  });
+  const overlaps = validateJob(job).filter((i) => /may both apply/.test(i.message));
+  assert.equal(overlaps.length, 1);
+  assert.match(overlaps[0].message, /Harbor draft/);
+  assert.match(overlaps[0].message, /above 30/);
+  assert.match(overlaps[0].message, /without choosing one|which takes precedence/);
+  assert.equal(overlaps[0].severity, 'warning');
+
+  const touching = jobWith({
+    routines: [{
+      name: 'R', kind: 'condition', sourcePages: [1], evidenceText: 'e',
+      conditions: [
+        { condition: 'Vessel length >= 50 feet', true_branch: 'Apply fee' },
+        { condition: 'Vessel length <= 50 feet', true_branch: 'Waive fee' },
+      ],
+    }],
+  });
+  const touchIssues = validateJob(touching).filter((i) => /may both apply/.test(i.message));
+  assert.equal(touchIssues.length, 1);
+  assert.match(touchIssues[0].message, /at exactly 50/);
+});
+
+test('validate: precedence cues are quoted without applying them', () => {
+  const cued = jobWith({
+    routines: [{
+      name: 'R', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'e',
+      notes: 'Rule A and Rule B conflict. Higher section number controls unless overridden by memo.',
+      steps: [
+        { sequence: 1, instruction: 'shared_total = a + b', operation: 'assignment', expression: 'shared_total = a + b', output: 'shared_total' },
+        { sequence: 2, instruction: 'shared_total = a * b', operation: 'assignment', expression: 'shared_total = a * b', output: 'shared_total' },
+      ],
+    }],
+  });
+  const cuedIssues = validateJob(cued).filter((i) => /different formulas/.test(i.message));
+  assert.equal(cuedIssues.length, 1);
+  assert.match(cuedIssues[0].message, /Higher section number controls/);
+  assert.match(cuedIssues[0].message, /without applying it/);
+
+  const plain = jobWith({
+    routines: [{
+      name: 'R', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'e',
+      steps: [
+        { sequence: 1, instruction: 'shared_total = a + b', operation: 'assignment', expression: 'shared_total = a + b', output: 'shared_total' },
+        { sequence: 2, instruction: 'shared_total = a * b', operation: 'assignment', expression: 'shared_total = a * b', output: 'shared_total' },
+      ],
+    }],
+  });
+  const plainIssues = validateJob(plain).filter((i) => /different formulas/.test(i.message));
+  assert.equal(plainIssues.length, 1);
+  assert.ok(!/precedence rule/.test(plainIssues[0].message), 'no cue, no citation');
+
+  const supersedes = jobWith({
+    routines: [{
+      name: 'R', kind: 'condition', sourcePages: [1], evidenceText: 'Section 114 supersedes standard discounts.',
+      conditions: [
+        { condition: 'Fleet size > 10 units', true_branch: 'Apply fleet discount' },
+        { condition: 'Fleet size > 5 units', true_branch: 'Charge full rate' },
+      ],
+    }],
+  });
+  const rangeIssues = validateJob(supersedes).filter((i) => /may both apply/.test(i.message));
+  assert.equal(rangeIssues.length, 1);
+  assert.match(rangeIssues[0].message, /supersedes standard discounts/);
+});
+
+test('validate: boundary and conflict warnings do not duplicate', () => {
+  const shared = jobWith({
+    tables: [{
+      name: 'Bands', sourcePages: [1], evidenceText: 'e', headers: ['Band', 'Factor'],
+      rows: [['$10,000', '1.10'], ['$10,000 to $25,000', '1.05'], ['$25,001 to $40,000', '0.96']],
+    }],
+  });
+  assert.equal(validateJob(shared).filter((i) => /range bands|endpoint value/.test(i.message)).length, 1);
+
+  const identical = jobWith({
+    routines: [{
+      name: 'R', kind: 'condition', sourcePages: [1], evidenceText: 'e',
+      conditions: [
+        { condition: 'Harbor draft exceeds 30 feet', true_branch: 'Apply deep-draft fee' },
+        { condition: 'Harbor draft exceeds 30 feet', true_branch: 'Waive the fee' },
+      ],
+    }],
+  });
+  const identicalIssues = validateJob(identical);
+  assert.ok(identicalIssues.some((i) => /different branches/.test(i.message)));
+  assert.ok(!identicalIssues.some((i) => /may both apply/.test(i.message)),
+    'identical conditions stay with the identical-condition check');
+});
+
+test('validate: missing markers warn once without duplicating blank-column warnings', () => {
+  const job = jobWith({
+    tables: [{
+      name: 'Codes', sourcePages: [1], evidenceText: 'e', headers: ['Code', 'Cost'],
+      columns: [{ label: 'Code', role: 'key' }, { label: 'Cost', role: 'output' }],
+      rows: [['A1', '1.10'], ['A2', '[N/A]'], ['A3', '']],
+    }],
+  });
+  const issues = validateJob(job);
+  const markers = issues.filter((i) => /not populated in source/.test(i.message));
+  assert.equal(markers.length, 1);
+  assert.match(markers[0].message, /marks row 2 column "Cost" as "\[N\/A\]"/);
+  const missing = issues.filter((i) => /missing value\(s\) in output column "Cost"/.test(i.message));
+  assert.equal(missing.length, 1);
+  assert.match(missing[0].message, /has 1 missing value/, 'marker cell stays with the marker check');
+});
+
+test('validate: page citations matching recorded pages stay silent', () => {
+  const job = jobWith({
+    tables: [{ name: 'Base Rates', sourcePages: [2], evidenceText: 'e', headers: ['Code', 'Rate'], rows: [['A1', '1.10']] }],
+    routines: [{
+      name: 'R', kind: 'calculation_steps', sourcePages: [3], evidenceText: 'e',
+      steps: [{ sequence: 1, instruction: 'Retrieve Rbase from Table Base Rates (Page 2) matching the territory.', operation: 'lookup', expression: 'Rstep1 = Rbase', inputs: ['Code'], output: 'Rstep1' }],
+    }],
+  });
+  assert.deepEqual(validateJob(job).filter((i) => /citation/.test(i.message)), []);
+});
+
+test('validate: page citations conflicting with recorded pages warn without rewriting', () => {
+  const job = jobWith({
+    tables: [{ name: 'Base Rates', sourcePages: [2], evidenceText: 'e', headers: ['Code', 'Rate'], rows: [['A1', '1.10']] }],
+    routines: [{
+      name: 'R', kind: 'calculation_steps', sourcePages: [3], evidenceText: 'e',
+      steps: [{ sequence: 1, instruction: 'Retrieve Rbase from Table Base Rates (Page 1) matching the territory.', operation: 'lookup', expression: 'Rstep1 = Rbase', inputs: ['Code'], output: 'Rstep1' }],
+    }],
+  });
+  const cites = validateJob(job).filter((i) => /citation/.test(i.message));
+  assert.equal(cites.length, 1);
+  assert.equal(cites[0].severity, 'warning');
+  assert.match(cites[0].message, /Step 1/);
+  assert.match(cites[0].message, /Base Rates/);
+  assert.match(cites[0].message, /Page 1/);
+  assert.match(cites[0].message, /page\(s\) 2/);
+  assert.match(cites[0].message, /preserved, not corrected/);
+  assert.equal(
+    job.routines[0].steps_detailed[0].instruction,
+    'Retrieve Rbase from Table Base Rates (Page 1) matching the territory.'
+  );
+});
+
+test('validate: known table, column, and input references resolve silently', () => {
+  const job = jobWith({
+    tables: [{ name: 'Base Rates', sourcePages: [1], evidenceText: 'e', headers: ['Code', 'Rate'], rows: [['A1', '1.10']] }],
+    routines: [{
+      name: 'R', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'e',
+      inputs: ['territory'],
+      steps: [{ sequence: 1, instruction: 'Cost = Rate + 0.05', operation: 'expression', expression: 'Cost = Rate + 0.05', inputs: ['Rate', 'territory'], output: 'Cost' }],
+      dependsOn: ['Base Rates'],
+    }],
+  });
+  const stray = validateJob(job).filter((i) => /matches no|flagged as unresolved|matches multiple tables/.test(i.message));
+  assert.deepEqual(stray, []);
+});
+
+test('validate: genuinely unresolved references still warn', () => {
+  const job = jobWith({
+    routines: [{
+      name: 'R', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'e',
+      steps: [{ sequence: 1, instruction: 'Cost = ghost_var + 1', operation: 'expression', expression: 'Cost = ghost_var + 1', inputs: ['ghost_var'], output: 'Cost' }],
+      dependsOn: ['No Such Table Anywhere'],
+    }],
+  });
+  const issues = validateJob(job);
+  assert.ok(issues.some((i) => /"ghost_var".*flagged as unresolved/.test(i.message)));
+  assert.ok(issues.some((i) => /"No Such Table Anywhere", which matches no extracted table/.test(i.message)));
+});
+
+test('validate: repeated note sentences warn once per rule', () => {
+  const repeated = jobWith({
+    routines: [{ name: 'R', kind: 'formula', sourcePages: [1], evidenceText: 'e', expressionText: 'a = 1', notes: 'Rule A conflicts with Rule B. Rule A conflicts with Rule B.' }],
+  });
+  assert.equal(validateJob(repeated).filter((i) => /possible contradiction/.test(i.message)).length, 1);
+
+  const fragment = jobWith({
+    routines: [{ name: 'R', kind: 'formula', sourcePages: [1], evidenceText: 'e', expressionText: 'a = 1', notes: 'Conflicting alternative preserved separately; flagged as conflicting with the main steps.' }],
+  });
+  assert.equal(validateJob(fragment).filter((i) => /possible contradiction/.test(i.message)).length, 1);
+});
+
+test('validate: distinct note sentences stay separate warnings', () => {
+  const job = jobWith({
+    routines: [{ name: 'R', kind: 'formula', sourcePages: [1], evidenceText: 'e', expressionText: 'a = 1', notes: 'Rule A conflicts with Rule B. Rule C contradicts Rule D instead.' }],
+  });
+  assert.equal(validateJob(job).filter((i) => /possible contradiction/.test(i.message)).length, 2);
+
+  const gaps = jobWith({
+    routines: [{ name: 'R', kind: 'formula', sourcePages: [1], evidenceText: 'e', expressionText: 'a = 1', notes: 'Flag the missing lookup range. Also flag the undefined surcharge factor.' }],
+  });
+  assert.equal(validateJob(gaps).filter((i) => /possible gap/.test(i.message)).length, 2);
+});
+
+test('validate: short rows never attribute missing values to a column', () => {
+  const job = jobWith({
+    tables: [{
+      name: 'Codes', sourcePages: [1], evidenceText: 'e', headers: ['Code', 'Cost', 'Note'],
+      columns: [{ label: 'Code', role: 'key' }, { label: 'Cost', role: 'output' }, { label: 'Note', role: 'output' }],
+      rows: [['A1', '1.10', 'x'], ['A2'], ['A3', '', 'y']],
+    }],
+  });
+  const issues = validateJob(job);
+  const missing = issues.filter((i) => /missing value\(s\) in output column "Cost"/.test(i.message));
+  assert.equal(missing.length, 1);
+  assert.match(missing[0].message, /has 1 missing value/, 'only the explicit blank counts, never the short-row gap');
+  assert.equal(issues.filter((i) => /values after a gap may sit under the wrong header/.test(i.message)).length, 1);
+});
+
+test('validate: ragged summary covers only over-long rows', () => {
+  const long = jobWith({
+    tables: [{ name: 'T', sourcePages: [1], evidenceText: 'e', headers: ['A', 'B'], rows: [['1', '2'], ['3', '4', '5']] }],
+  });
+  assert.ok(validateJob(long).some((i) => /more values than headers/.test(i.message)));
+
+  const shortOnly = jobWith({
+    tables: [{ name: 'T', sourcePages: [1], evidenceText: 'e', headers: ['A', 'B', 'C'], rows: [['1', '2', '3'], ['4', '5']] }],
+  });
+  const shortIssues = validateJob(shortOnly);
+  assert.ok(!shortIssues.some((i) => /column counts differing|more values than headers/.test(i.message)),
+    'the short-row detail already names the row');
+  assert.ok(shortIssues.some((i) => /values after a gap may sit under the wrong header/.test(i.message)));
+});
+
+test('validate: quoted citation conditions skip the fallback demand', () => {
+  const quoted = jobWith({
+    routines: [{
+      name: 'R', kind: 'condition', sourcePages: [1], evidenceText: 'e',
+      conditions: [
+        'RULE-CONF-B1 (Section 8.2): "The factor must be applied sequentially after the base."',
+        'RULE-CONF-B2 (Section 6.1): "The factors are additive adjustments applied concurrently."',
+      ],
+    }],
+  });
+  assert.deepEqual(validateJob(quoted).filter((i) => /no explicit fallback/.test(i.message)), []);
+
+  const conditionalQuote = jobWith({
+    routines: [{
+      name: 'R', kind: 'condition', sourcePages: [1], evidenceText: 'e',
+      conditions: ['Note: "Active" status applies if the count exceeds 5.'],
+    }],
+  });
+  assert.ok(validateJob(conditionalQuote).some((i) => /no explicit fallback/.test(i.message)),
+    'quoted text with conditional language still needs a fallback');
+
+  const plain = jobWith({
+    routines: [{
+      name: 'R', kind: 'condition', sourcePages: [1], evidenceText: 'e',
+      conditions: ['Widget count is steady. Apply widget credit.'],
+    }],
+  });
+  assert.ok(validateJob(plain).some((i) => /no explicit fallback/.test(i.message)));
+
+  const structured = jobWith({
+    routines: [{
+      name: 'R', kind: 'condition', sourcePages: [1], evidenceText: 'e',
+      conditions: [{ condition: '"Quoted rule text."', true_branch: 'Apply the cap' }],
+    }],
+  });
+  assert.ok(validateJob(structured).some((i) => /no explicit fallback/.test(i.message)),
+    'explicit branch structure still needs its fallback reviewed');
+});
+
+test('validate: marker cells and short rows warn independently', () => {
+  const job = jobWith({
+    tables: [{
+      name: 'Codes', sourcePages: [1], evidenceText: 'e', headers: ['Code', 'Cost', 'Note'],
+      rows: [['A1', '[TBD]', 'x'], ['A2', '1.20']],
+    }],
+  });
+  const issues = validateJob(job);
+  assert.equal(issues.filter((i) => /not populated in source/.test(i.message)).length, 1);
+  assert.equal(issues.filter((i) => /values after a gap may sit under the wrong header/.test(i.message)).length, 1);
+});
+
+test('validate: disjoint and consistent rules stay silent; worked examples stay illustrative', () => {
+  const disjoint = jobWith({
+    routines: [{
+      name: 'R', kind: 'condition', sourcePages: [1], evidenceText: 'e',
+      conditions: [
+        { condition: 'Harbor draft > 30 feet', true_branch: 'Apply deep-draft fee' },
+        { condition: 'Harbor draft < 20 feet', true_branch: 'Waive the fee' },
+      ],
+    }],
+  });
+  assert.ok(!validateJob(disjoint).some((i) => /may both apply/.test(i.message)));
+
+  const consistent = jobWith({
+    routines: [{
+      name: 'R', kind: 'condition', sourcePages: [1], evidenceText: 'e',
+      conditions: [
+        { condition: 'Harbor draft exceeds 30 feet', true_branch: 'Apply deep-draft fee' },
+        { condition: 'Harbor draft exceeds 25 feet', true_branch: 'Apply deep-draft fee' },
+      ],
+    }],
+  });
+  assert.ok(!validateJob(consistent).some((i) => /may both apply/.test(i.message)),
+    'overlapping conditions with the same branch agree');
+
+  const worked = jobWith({
+    routines: [{
+      name: 'W', kind: 'worked_example', sourcePages: [1], evidenceText: 'e',
+      steps: [
+        { sequence: 1, instruction: 'shared_total = a + b', operation: 'assignment', expression: 'shared_total = a + b', output: 'shared_total' },
+        { sequence: 2, instruction: 'shared_total = a * b', operation: 'assignment', expression: 'shared_total = a * b', output: 'shared_total' },
+      ],
+    }],
+  });
+  assert.ok(!validateJob(worked).some((i) => /different formulas/.test(i.message)),
+    'illustrative worked steps are not normative definitions');
 });

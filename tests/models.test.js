@@ -42,13 +42,47 @@ test('models: preserves leading zeros, precision, blanks, order, and ragged rows
   );
   const t = job.tables[0];
   assert.deepEqual(t.rows[0], ['0012', '1.10']);
-  assert.deepEqual(t.rows[1], ['0045', '']);
+  assert.deepEqual(t.rows[1], ['0045', null]);
   assert.deepEqual(t.rows[2], ['0108', '0']);
   assert.deepEqual(t.rows[3], ['0200', '-1.25']);
-  assert.equal(t.rows[1][1], '');
+  assert.equal(t.rows[1][1], null);
   assert.notEqual(t.rows[1][1], '0');
   const ragged = normalizeJob(createJob({ tables: [{ name: 'R', headers: ['A', 'B'], rows: [['1'], ['2', '3', '4']] }] }));
   assert.deepEqual(ragged.tables[0].rows, [['1'], ['2', '3', '4']]);
+});
+
+test('models: blank cells and sentinel markers normalize to null with originals preserved', () => {
+  const job = normalizeJob(
+    createJob({
+      tables: [{
+        name: 'Codes', sourcePages: [1], evidenceText: 'ev',
+        headers: ['Code', 'Cost'],
+        rows: [
+          ['A1', ''],
+          ['A2', '   '],
+          ['A3', '[NOT SPECIFIED]'],
+          ['A4', '[BLANK - N/A]'],
+          ['A5', 'N/A'],
+          ['A6', '[UNSPECIFIED]'],
+          ['A7', 'TBD'],
+          ['A8', '0'],
+          ['A9', 'None'],
+          ['A10', 'Hold for review'],
+        ],
+      }],
+    })
+  );
+  const t = job.tables[0];
+  assert.deepEqual(t.rows.map((r) => r[1]), [null, null, null, null, null, null, null, '0', 'None', 'Hold for review']);
+  assert.deepEqual(t.rows.map((r) => r[0]), ['A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'A8', 'A9', 'A10']);
+  assert.equal(t.original_cells['1:1'], '   ');
+  assert.equal(t.original_cells['2:1'], '[NOT SPECIFIED]');
+  assert.equal(t.original_cells['3:1'], '[BLANK - N/A]');
+  assert.equal(t.original_cells['4:1'], 'N/A');
+  assert.equal(t.original_cells['5:1'], '[UNSPECIFIED]');
+  assert.equal(t.original_cells['6:1'], 'TBD');
+  assert.ok(!('0:1' in (t.original_cells ?? {})), 'empty cells need no original record');
+  assert.ok(!('7:1' in (t.original_cells ?? {})), 'legitimate values need no original record');
 });
 
 test('models: columns preserve original labels, order, and metadata', () => {

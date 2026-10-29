@@ -1,7 +1,7 @@
 // End-to-end pipeline: ingest PDF -> extract -> normalize -> separate -> validate.
 import { extractPdfText } from './pdf-extract.js';
 import { ModelDisabledError, runExtraction } from './extract.js';
-import { createDocument, createJob, createValidationIssue, inferTableColumns, normalizeJob, tableLogicalGroupKey } from './models.js';
+import { createDocument, createJob, createValidationIssue, inferTableColumns, normalizeJob, tableContinuationBase, tableHasContinuationCue, tableHeaderKey, tableLogicalGroupKey, tablePagesAdjacent } from './models.js';
 import { expandRecordTables, splitMergedTables } from './table-split.js';
 import { groupStepRoutines } from './routine-group.js';
 import { validateJob } from './validate.js';
@@ -152,6 +152,81 @@ function linkLogicalTableGroups(tables) {
         related_tables: others,
       };
     }
+  }
+  linkHeaderContinuationChains(tables);
+  linkCueContinuationGroups(tables);
+}
+
+// Fill continuation metadata for members lacking it. IDs and rows are never
+// touched: linking records the relationship, it never merges tables.
+function fillContinuation(members, key, reason) {
+  const names = members.map((t) => String(t?.name ?? t?.id ?? ''));
+  for (const table of members) {
+    if (table.continuation !== null && table.continuation !== undefined) continue;
+    const others = names.filter((n) => n && n !== String(table?.name ?? table?.id ?? ''));
+    if (others.length === 0) continue;
+    table.continuation = {
+      logical_group: key,
+      group_size: members.length,
+      related_tables: others,
+      link_reason: reason,
+    };
+  }
+}
+
+function headerGroupSlug(headerKey) {
+  return headerKey.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 50);
+}
+
+// Link tables with identical headers on adjacent pages as continuation
+// chains. Same-page and page-less tables never link; chains break on page
+// gaps so repeated header sets on far pages form separate groups.
+function linkHeaderContinuationChains(tables) {
+  const byHeaders = new Map();
+  for (const table of tables ?? []) {
+    const key = tableHeaderKey(table);
+    if (!key) continue;
+    if (!byHeaders.has(key)) byHeaders.set(key, []);
+    byHeaders.get(key).push(table);
+  }
+  for (const [key, members] of byHeaders) {
+    const paged = members.filter((t) => (t?.source_pages ?? []).length > 0);
+    if (paged.length < 2) continue;
+    const sorted = [...paged].sort((a, b) =>
+      Math.min(...a.source_pages) - Math.min(...b.source_pages)
+      || Math.max(...a.source_pages) - Math.max(...b.source_pages));
+    let chain = [sorted[0]];
+    const flush = () => {
+      if (chain.length >= 2) {
+        fillContinuation(chain, `continued:${headerGroupSlug(key)}@p${Math.min(...chain[0].source_pages)}`, 'matching headers on adjacent pages');
+      }
+    };
+    for (let i = 1; i < sorted.length; i += 1) {
+      if (tablePagesAdjacent(chain[chain.length - 1], sorted[i])) chain.push(sorted[i]);
+      else {
+        flush();
+        chain = [sorted[i]];
+      }
+    }
+    flush();
+  }
+}
+
+// Link tables sharing a cue-stripped base name when at least one carries an
+// explicit continuation cue ('(continued)', 'Part N'). The cue overrides
+// page distance; same-name tables without any cue stay unlinked.
+function linkCueContinuationGroups(tables) {
+  const byBase = new Map();
+  for (const table of tables ?? []) {
+    const base = tableContinuationBase(table);
+    if (!base) continue;
+    if (!byBase.has(base)) byBase.set(base, []);
+    byBase.get(base).push(table);
+  }
+  for (const [base, members] of byBase) {
+    if (members.length < 2) continue;
+    if (!members.some(tableHasContinuationCue)) continue;
+    fillContinuation(members, `continued-part:${base}`, 'explicit continuation cue');
   }
 }
 

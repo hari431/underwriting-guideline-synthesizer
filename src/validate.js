@@ -1,7 +1,7 @@
 // Deterministic validation for extracted jobs. Pure functions, no model calls.
 // Policy: structural/traceability breaks are errors; anything interpretive —
 // including unfamiliar formula syntax — is a warning flagged for review.
-import { ROUTINE_KINDS, createValidationIssue, definedConstantTerms, findTableCandidates, isLogicalGroupReference, normalizeVariableKey, resolveRoutineReference, resolveTableReference, splitAssignmentSegment, splitHyphenSubtraction, splitTopLevel, tableReferenceTerms } from './models.js';
+import { ROUTINE_KINDS, createValidationIssue, definedConstantTerms, findTableCandidates, isBlankSentinel, isLogicalGroupReference, normalizeVariableKey, resolveRoutineReference, resolveTableReference, splitAssignmentSegment, splitHyphenSubtraction, splitTopLevel, tableReferenceTerms } from './models.js';
 import { tableHasRecordColumn } from './table-split.js';
 
 export { ROUTINE_KINDS };
@@ -88,9 +88,9 @@ export function validateJob(job) {
     } else if (headerCount === 0 && table.rows.length > 0) {
       warn('table', table.id, `Table "${table.name || table.id}" has rows but no column labels; verify the header extraction.`, table.source_pages);
     } else if (headerCount > 0) {
-      const ragged = table.rows.filter((r) => r.length !== table.headers.length).length;
-      if (ragged > 0) {
-        warn('table', table.id, `Table "${table.name || table.id}" has ${ragged} row(s) with column counts differing from headers.`, table.source_pages);
+      const overlong = table.rows.filter((r) => r.length > table.headers.length).length;
+      if (overlong > 0) {
+        warn('table', table.id, `Table "${table.name || table.id}" has ${overlong} row(s) with more values than headers; verify extra values against the source.`, table.source_pages);
       }
     }
     checkColumnLabels(table, warn);
@@ -102,6 +102,7 @@ export function validateJob(job) {
     checkShortRowMisalignment(table, warn);
     checkUnreferencedSeriesMembers(table, tables, routines, warn);
     checkOverlappingRangeBands(table, warn);
+    checkBandGaps(table, warn);
     checkNonNumericOutliers(table, warn);
     checkExplicitMissingMarkers(table, warn);
     checkSuspectedBreakdown(table, warn);
@@ -155,15 +156,18 @@ export function validateJob(job) {
     }
     checkConditionBranches(routine, warn);
     checkConflictingConditions(routine, warn);
+    checkOverlappingConditionRanges(routine, warn);
     checkUnstructuredStepConditions(routine, warn);
     checkStepFormulas(routine, warn);
     checkStepExpressionSyntax(routine, warn);
+    checkStepArithmeticConsistency(routine, warn);
     checkStepsWithoutOperations(routine, warn);
     checkIncompleteStepLogic(routine, warn);
     checkLookupKeys(routine, warn);
     checkConflictingStepDefinitions(routine, warn);
     checkUnusedInputs(routine, warn);
     checkStructuredDependencies(routine, warn, refCtx);
+    checkPageCitations(routine, tables, warn);
     checkDecodingIntegrity('routine', routine, warn);
     checkReportedContradictions('routine', routine, warn);
     checkReportedAmbiguities('routine', routine, warn);
@@ -304,6 +308,9 @@ function checkUnclearUnits(table, warn) {
   warn('table', table.id, `Table "${table.name || table.id}" has unclear units or value semantics; verify currency, percentage, or factor meaning against the source.`, table.source_pages);
 }
 
+// Cells missing because the row is short carry no column attribution (the
+// gap may sit anywhere), so they are owned by the short-row check and never
+// counted here — only explicit blanks in full-length rows count.
 function checkMissingKeyOutputValues(table, warn) {
   const columns = table.columns ?? [];
   if (columns.length === 0 || (table.rows ?? []).length === 0) return;
@@ -317,8 +324,11 @@ function checkMissingKeyOutputValues(table, warn) {
   if (roleIndexes.length === 0) return;
   for (const { idx, label, role } of roleIndexes) {
     let blanks = 0;
-    for (const row of table.rows) {
-      const cell = idx < (row?.length ?? 0) ? String(row[idx] ?? '') : '';
+    for (let r = 0; r < table.rows.length; r += 1) {
+      const row = table.rows[r];
+      if (hasMarkerOriginal(table, r, idx)) continue;
+      if (!Array.isArray(row) || idx >= row.length) continue;
+      const cell = String(row[idx] ?? '');
       if (!cell.trim()) blanks += 1;
     }
     if (blanks > 0) {
@@ -345,12 +355,15 @@ function checkInconsistentColumnValues(table, warn) {
     let blanks = 0;
     let filled = 0;
     const nums = [];
-    for (const row of rows) {
+    for (let r = 0; r < rows.length; r += 1) {
+      const row = rows[r];
       // Only explicit empty cells count as column blanks. Cells missing
       // because the row is short carry no column attribution: the gap may
       // sit anywhere in the row (short rows get their own misalignment
-      // warning), so blaming the trailing column would mislead.
+      // warning), so blaming the trailing column would mislead. Marker
+      // cells belong to the explicit-marker check, never counted here.
       if (!Array.isArray(row) || c >= row.length) continue;
+      if (hasMarkerOriginal(table, r, c)) continue;
       const cell = String(row[c] ?? '');
       if (!cell.trim()) blanks += 1;
       else filled += 1;
@@ -528,6 +541,25 @@ function parseRangeBand(cell) {
 // forms are skipped), and single values never overlap each other — only
 // range-vs-range (or range-vs-point) overlaps warn, naming the source
 // cells verbatim.
+// A band cell explicitly including its point value: parsed spans always
+// qualify (parsing requires an explicit to/dash separator), while single
+// values need an explicit <=, >=, or = marker. Bare points ('$10,000',
+// 'Class 9') state no inclusivity.
+function bandIncludesValue(band) {
+  if (band.min < band.max) return true;
+  return /(<=|>=)\s*[$€£¥]?\s*\d/.test(band.cell) || /^\s*=\s*[$€£¥]?\s*\d/.test(band.cell);
+}
+
+// A single-value cell explicitly excluding its value with a strict < or >
+// marker ('<25', '>25'). Arrows ('-> 25') and <=/>= never count, and
+// markers on span cells cannot be attributed to one end, so spans never
+// count either. When one side of a touching pair excludes the shared
+// value, no dual coverage is possible.
+function bandExcludesValue(band, value) {
+  if (band.min !== band.max || band.min !== value) return false;
+  return /(?<![=<>!-])(<|>)(?!=)\s*[$€£¥\d]/.test(band.cell);
+}
+
 function checkOverlappingRangeBands(table, warn) {
   const rows = table.rows ?? [];
   const colCount = table.headers?.length ?? 0;
@@ -554,15 +586,69 @@ function checkOverlappingRangeBands(table, warn) {
       for (let j = i + 1; j < bands.length; j += 1) {
         const a = bands[i];
         const b = bands[j];
-        if (a.min === a.max && b.min === b.max) continue;
+        if (a.min === a.max && b.min === b.max) {
+          // Identical single values are owned by the duplicate-row and
+          // conflicting-key checks — unless both explicitly include the
+          // value, which is genuine dual coverage of one point.
+          if (a.min !== b.min || !bandIncludesValue(a) || !bandIncludesValue(b)) continue;
+        }
         if (a.min > b.max || b.min > a.max) continue;
         const lo = Math.max(a.min, b.min);
         const hi = Math.min(a.max, b.max);
-        const coverage = lo === hi ? `both cover ${lo}` : `both cover ${lo} to ${hi}`;
-        warn('table', table.id, `Table "${table.name || table.id}" has overlapping range bands in column "${label}" ("${truncate(a.cell, 40)}" and "${truncate(b.cell, 40)}" ${coverage}); verify the boundary against the source.`, table.source_pages);
+        const touching = lo === hi;
+        if (touching && (bandExcludesValue(a, lo) || bandExcludesValue(b, lo))) continue;
+        const endpointUnclear = touching && !(bandIncludesValue(a) && bandIncludesValue(b));
+        const coverage = touching ? `both cover ${lo}` : `both cover ${lo} to ${hi}`;
+        const bandMessage = endpointUnclear
+          ? `Table "${table.name || table.id}" has range bands sharing the endpoint value ${lo} in column "${label}" ("${truncate(a.cell, 40)}" and "${truncate(b.cell, 40)}"); verify whether ${lo} belongs to one band or both — endpoint inclusivity is unclear from these cells.`
+          : `Table "${table.name || table.id}" has overlapping range bands in column "${label}" ("${truncate(a.cell, 40)}" and "${truncate(b.cell, 40)}" ${coverage}); verify the boundary against the source.`;
+        warn('table', table.id, `${bandMessage}${precedenceTail(table.notes, table.evidence_text)}`, table.source_pages);
         warned = true;
         break;
       }
+    }
+  }
+}
+
+// Numeric gaps between ordered rating bands: values strictly between one
+// band's end and the next band's start are covered nowhere. Same strict
+// column gate as overlap (every non-blank cell parses), and at least one
+// genuine span must be present so pure single-value columns (enumerations,
+// years, series — owned by other checks) stay silent. Coverage tracks a
+// running maximum so an earlier wide band shields later pairs, and
+// consecutive whole units (2500 then 2501, the standard contiguous-band
+// idiom) never count as a gap. Warns once per column quoting both bands,
+// never inferring which band a value belongs to.
+function checkBandGaps(table, warn) {
+  const rows = table.rows ?? [];
+  const colCount = table.headers?.length ?? 0;
+  if (rows.length < 2 || colCount === 0) return;
+  for (let c = 0; c < colCount; c += 1) {
+    const label = String(table.headers[c] ?? `column ${c + 1}`);
+    const bands = [];
+    let strict = true;
+    rows.forEach((row) => {
+      const cell = c < (row?.length ?? 0) ? String(row[c] ?? '') : '';
+      if (!cell.trim()) return;
+      const parsed = parseRangeBand(cell);
+      if (!parsed) {
+        strict = false;
+        return;
+      }
+      bands.push({ cell: cell.trim(), ...parsed });
+    });
+    if (!strict || bands.length < 2) continue;
+    if (!bands.some((b) => b.min < b.max)) continue;
+    const sorted = [...bands].sort((x, y) => x.min - y.min || x.max - y.max);
+    let running = sorted[0];
+    for (let k = 1; k < sorted.length; k += 1) {
+      const next = sorted[k];
+      if (next.min > running.max
+        && !(Number.isInteger(running.max) && Number.isInteger(next.min) && next.min - running.max === 1)) {
+        warn('table', table.id, `Table "${table.name || table.id}" has a possible gap between range bands in column "${label}" ("${truncate(running.cell, 40)}" ends at ${running.max} and "${truncate(next.cell, 40)}" starts at ${next.min}); verify values between ${running.max} and ${next.min} are covered — flagged without inferring a boundary.${precedenceTail(table.notes, table.evidence_text)}`, table.source_pages);
+        break;
+      }
+      if (next.max > running.max) running = next;
     }
   }
 }
@@ -601,11 +687,17 @@ function checkNonNumericOutliers(table, warn) {
 }
 
 // Explicit missing-value markers (`[NOT SPECIFIED]`, `N/A`, `TBD`) in data
-// cells: the source leaves the value unpopulated. Flagged in any table size
-// (unlike statistical outliers), quoting the marker verbatim. Standalone
-// "None" is a legitimate "no adjustment" value in rating tables, never a
-// missing marker, so it stays silent. Generic marker phrases, never values.
-const EXPLICIT_MISSING_MARKER = /^\[?\s*(not specified|n\/a|\bna\b|tbd|to be determined|missing|unknown|not available|unpopulated)\s*\]?$/i;
+// cells: the source leaves the value unpopulated. Normalized cells carry
+// null with the marker text preserved in original_cells, so this check
+// reads the originals (falling back to row text for pre-sentinel jobs).
+// Flagged in any table size (unlike statistical outliers), quoting the
+// marker verbatim. Standalone "None" is a legitimate "no adjustment" value
+// in rating tables, never a marker, so it stays silent. Generic marker
+// phrases, never values.
+function hasMarkerOriginal(table, rowIdx, colIdx) {
+  const original = table?.original_cells?.[`${rowIdx}:${colIdx}`];
+  return original !== undefined && isBlankSentinel(original);
+}
 
 function checkExplicitMissingMarkers(table, warn) {
   const rows = table.rows ?? [];
@@ -613,20 +705,35 @@ function checkExplicitMissingMarkers(table, warn) {
   if (rows.length === 0 || colCount === 0) return;
   const hits = [];
   const seen = new Set();
-  rows.forEach((row, idx) => {
-    for (let c = 0; c < colCount; c += 1) {
-      const cell = c < (row?.length ?? 0) ? String(row[c] ?? '') : '';
-      const trimmed = cell.trim();
-      if (!trimmed || !EXPLICIT_MISSING_MARKER.test(trimmed)) continue;
-      if (/^none$/i.test(trimmed)) continue;
-      const key = `${c}:${trimmed.toLowerCase()}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      hits.push({ row: idx + 1, col: c, label: String(table.headers[c] ?? `column ${c + 1}`), cell: trimmed });
+  const push = (rowIdx, colIdx, text) => {
+    const trimmed = String(text ?? '').trim();
+    if (!trimmed || !isBlankSentinel(trimmed)) return;
+    const key = `${colIdx}:${trimmed.toLowerCase()}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    hits.push({ row: rowIdx + 1, col: colIdx, label: String(table.headers[colIdx] ?? `column ${colIdx + 1}`), cell: trimmed });
+  };
+  const originals = table.original_cells;
+  if (originals && typeof originals === 'object' && !Array.isArray(originals)) {
+    const keys = Object.keys(originals)
+      .filter((k) => /^\d+:\d+$/.test(k))
+      .map((k) => k.split(':').map(Number))
+      .filter(([r, c]) => r < rows.length && c < colCount)
+      .sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    for (const [r, c] of keys) {
       if (hits.length >= 3) break;
+      push(r, c, originals[`${r}:${c}`]);
     }
-    if (hits.length >= 3) return;
-  });
+  } else {
+    rows.forEach((row, idx) => {
+      for (let c = 0; c < colCount; c += 1) {
+        const cell = c < (row?.length ?? 0) ? String(row[c] ?? '') : '';
+        push(idx, c, cell);
+        if (hits.length >= 3) break;
+      }
+      if (hits.length >= 3) return;
+    });
+  }
   for (const hit of hits) {
     warn('table', table.id, `Table "${table.name || table.id}" marks row ${hit.row} column "${hit.label}" as "${truncate(hit.cell, 40)}" (value not populated in source); verify before reuse.`, table.source_pages);
   }
@@ -708,14 +815,59 @@ function checkDecodingIntegrity(type, item, warn) {
 // alternative formula ... flagged as conflict`): surface them as issues
 // quoting the reporting sentence, without choosing a winner. Only
 // conflict-family wording counts; ordinary review notes stay silent.
+// Explicit precedence cues in source prose ('higher section number
+// controls', 'supersedes ...', 'unless overridden'): generic
+// precedence language, never rule contents. Quoted as evidence on
+// conflict warnings, never applied — the validator does not pick winners.
+const PRECEDENCE_CUES = [/\bhigher\s+section\s+number\b/i, /\bsupersede[sd]?\b/i, /\bunless\s+overridden\b/i, /\btakes?\s+precedence\b/i, /\boverride[sd]?\b/i, /\bnotwithstanding\b/i];
+
+function precedenceCueSentence(...texts) {
+  for (const text of texts) {
+    const sentences = String(text ?? '').split(/(?<=[.;\n])\s+/);
+    for (const s of sentences) {
+      if (PRECEDENCE_CUES.some((re) => re.test(s))) return s.trim();
+    }
+  }
+  return null;
+}
+
+function precedenceTail(...texts) {
+  const cue = precedenceCueSentence(...texts);
+  return cue ? ` Source states a possible precedence rule ("${truncate(cue, 120)}"); verify it resolves this case — flagged without applying it.` : '';
+}
+
 const CONTRADICTION_MARKERS = /\bconflicts?\b|\bconflicting\b|\bconflicted\b|\bcontradict(?:s|ed|ion|ory)?\b|\binconsisten(?:t|cy|cies)\b/i;
+
+// Sentence splitter for reported-note checks: period sentences only.
+// Semicolons join clauses of one report ('... preserved separately; flagged
+// as conflicting ...'), so splitting on them would fragment one report into
+// several warnings quoting shards. Distinct period sentences stay distinct.
+function splitReportSentences(notes) {
+  return String(notes ?? '').split(/(?<=[.!?\n])\s+/);
+}
+
+// First three sentences matching predicate, skipping normalized-verbatim
+// repeats of an already-collected sentence (same note, same rule).
+function dedupedNoteHits(sentences, predicate) {
+  const seen = new Set();
+  const hits = [];
+  for (const s of sentences) {
+    if (!predicate(s)) continue;
+    const norm = String(s ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+    if (seen.has(norm)) continue;
+    seen.add(norm);
+    hits.push(s);
+    if (hits.length >= 3) break;
+  }
+  return hits;
+}
 
 function checkReportedContradictions(type, item, warn) {
   const notes = String(item?.notes ?? '');
   if (!notes || !CONTRADICTION_MARKERS.test(notes)) return;
-  const sentences = notes.split(/(?<=[.;\n])\s+/);
-  const hits = sentences.filter((s) => CONTRADICTION_MARKERS.test(s));
-  for (const hit of (hits.length > 0 ? hits.slice(0, 3) : [notes])) {
+  const sentences = splitReportSentences(notes);
+  const hits = dedupedNoteHits(sentences, (s) => CONTRADICTION_MARKERS.test(s));
+  for (const hit of (hits.length > 0 ? hits : [notes])) {
     warn(type, item.id, `${label(type)} "${item.name || item.id}" notes report a possible contradiction ("${truncate(hit.trim(), 120)}"); verify which definition applies — flagged without choosing one.`, item.source_pages);
   }
 }
@@ -730,10 +882,10 @@ const AMBIGUITY_TERMS = /\bundefined\b|\bnot defined\b|\bno .* defines\b|\boverl
 function checkReportedAmbiguities(type, item, warn) {
   const notes = String(item?.notes ?? '');
   if (!notes || !AMBIGUITY_FLAG.test(notes) || !AMBIGUITY_TERMS.test(notes)) return;
-  const sentences = notes.split(/(?<=[.;\n])\s+/);
-  const hits = sentences.filter((s) => AMBIGUITY_FLAG.test(s) && AMBIGUITY_TERMS.test(s));
-  const fallback = hits.length > 0 ? hits : sentences.filter((s) => AMBIGUITY_TERMS.test(s));
-  for (const hit of (fallback.length > 0 ? fallback.slice(0, 3) : [notes])) {
+  const sentences = splitReportSentences(notes);
+  const hits = dedupedNoteHits(sentences, (s) => AMBIGUITY_FLAG.test(s) && AMBIGUITY_TERMS.test(s));
+  const fallback = hits.length > 0 ? hits : dedupedNoteHits(sentences, (s) => AMBIGUITY_TERMS.test(s));
+  for (const hit of (fallback.length > 0 ? fallback : [notes])) {
     warn(type, item.id, `${label(type)} "${item.name || item.id}" notes flag a possible gap ("${truncate(hit.trim(), 140)}"); verify against the source — flagged without inventing a value.`, item.source_pages);
   }
 }
@@ -882,12 +1034,30 @@ function checkSuspectedRecordMerge(table, warn) {
   warn('table', table.id, `Table "${table.name || table.id}" has column(s) whose values each embed their own key (e.g., "label: value"); verify adjacent tables were not merged into one.`, table.source_pages);
 }
 
+// A condition that merely quotes source wording ('RULE-X (...): "The factor
+// must ..."') cites evidence rather than stating executable branches, so no
+// fallback can be demanded of it. Only when the label-stripped text starts
+// with a quotation mark, a closing quote exists, and no conditional language
+// appears.
+const QUOTED_CITATION_LEAD = /^["'“‘«]/;
+const QUOTED_CITATION_CLOSE = /["'“‘«”’»]/;
+const CONDITIONAL_WORDS = /\b(if|then|else|when|unless|otherwise)\b/i;
+
+function isQuotedCitation(text) {
+  const stripped = String(text ?? '').replace(/^[^:]{1,100}:\s*/, '').trim();
+  if (!QUOTED_CITATION_LEAD.test(stripped)) return false;
+  if (!QUOTED_CITATION_CLOSE.test(stripped.slice(1))) return false;
+  return !CONDITIONAL_WORDS.test(stripped);
+}
+
 function checkConditionBranches(routine, warn) {
   const texts = (routine.conditions ?? []).map((c) => String(c ?? '').trim()).filter(Boolean);
   const detailed = routine.conditions_detailed ?? [];
   if (texts.length === 0 && detailed.length === 0) return;
   if (texts.length === 0) {
-    const hasStructuredFallback = detailed.some((d) => String(d?.false_branch ?? '').trim() || String(d?.referral_code ?? '').trim());
+    const actionable = detailed.filter((d) => !isQuotedCitation(d?.condition ?? d?.original_text ?? ''));
+    if (actionable.length === 0) return;
+    const hasStructuredFallback = actionable.some((d) => String(d?.false_branch ?? '').trim() || String(d?.referral_code ?? '').trim());
     if (!hasStructuredFallback) {
       warn('routine', routine.id, `Condition routine "${routine.name || routine.id}" has no explicit fallback or ELSE branch; verify the fallback behavior against the source.`, routine.source_pages);
     }
@@ -909,6 +1079,7 @@ function checkConditionBranches(routine, warn) {
     if (det && (String(det?.false_branch ?? '').trim() || String(det?.referral_code ?? '').trim())) return;
     if (FALLBACK_WORDS.test(text)) return;
     if (hasBareFallback) return;
+    if (!String(det?.true_branch ?? '').trim() && isQuotedCitation(text)) return;
     const which = texts.length > 1 ? `Condition ${idx + 1} ` : 'Condition ';
     warn('routine', routine.id, `${which}("${truncate(text, 60)}") states no explicit fallback or ELSE branch; verify the fallback behavior against the source.`, routine.source_pages);
   });
@@ -997,6 +1168,256 @@ function checkStepExpressionSyntax(routine, warn) {
     if (!expr || classifyFormula(expr) !== 'review') return;
     const pages = step?.source_pages?.length ? step.source_pages : routine.source_pages;
     warn('routine', routine.id, `Step ${stepSeq(step, idx)} expression "${truncate(expr)}" uses syntax the validator cannot reliably interpret; flagged for analyst review (not treated as invalid).`, pages);
+  });
+}
+
+// ---------- Bounded arithmetic consistency (G3) ----------
+// Recompute a step's right-hand side only when it states an explicit,
+// supported operation over all-numeric operands AND the source states a
+// result to compare against. Unknown tokens, identifiers, missing
+// operands, and unparseable stated values fail safe to null, so symbolic,
+// incomplete, and ambiguous steps stay silent. Rounding applies only with
+// an explicitly stated precision. Mismatches warn with step, stated,
+// computed, and difference; source values are never modified.
+const ARITHMETIC_EVAL_FUNCS = new Set(['round', 'round_half_up', 'min', 'max']);
+
+// Parse a source-stated amount ('$4,910.71', '125.0000 credits', '95%').
+// Trailing unit words are labels, not value. Returns { value, decimals }
+// or null when the text is not confidently numeric.
+export function parseStatedAmount(text) {
+  let s = String(text ?? '').trim();
+  if (!s) return null;
+  s = s.replace(/(?:\s+[A-Za-z_][\w.-]*)+\s*$/, '').trim();
+  let percent = false;
+  if (/%$/.test(s)) {
+    percent = true;
+    s = s.slice(0, -1).trim();
+  }
+  s = s.replace(/^[₹$€£¥]\s*/, '').trim().replace(/\s+/g, '').replace(/,/g, '');
+  const m = /^([-+]?(?:\d+(?:\.\d*)?|\.\d+))$/.exec(s);
+  if (!m) return null;
+  const value = Number(m[1]) * (percent ? 0.01 : 1);
+  if (!Number.isFinite(value)) return null;
+  return { value, decimals: (m[1].split('.')[1] ?? '').length };
+}
+
+// Tokenize fully-numeric arithmetic. Returns the token list plus whether an
+// explicit operation (binary operator or supported call) is present, or
+// null on any unknown character, identifier, or ambiguous construct. A
+// standalone '%' reads as ambiguous (modulo vs percent) and fails; only a
+// '%' attached to a number literal reads as percent.
+function tokenizeNumericRhs(rhs) {
+  let text = String(rhs ?? '')
+    .replace(/[×·•]/g, '*')
+    .replace(/÷/g, '/')
+    .replace(/−/g, '-')
+    .replace(/\s+x\s+/gi, ' * ');
+  const tokens = [];
+  let i = 0;
+  let sawOperation = false;
+  while (i < text.length) {
+    const ch = text[i];
+    if (/\s/.test(ch)) {
+      i += 1;
+      continue;
+    }
+    if (ch === '(' || ch === ')' || ch === ',') {
+      tokens.push({ type: ch === '(' ? 'lparen' : ch === ')' ? 'rparen' : 'comma', value: ch });
+      i += 1;
+      continue;
+    }
+    if (ch === '+' || ch === '-' || ch === '*' || ch === '/' || ch === '^') {
+      tokens.push({ type: 'op', value: ch });
+      sawOperation = true;
+      i += 1;
+      continue;
+    }
+    const idMatch = /[A-Za-z_]\w*/.exec(text.slice(i));
+    if (idMatch && idMatch.index === 0) {
+      const rest = text.slice(i + idMatch[0].length);
+      if (ARITHMETIC_EVAL_FUNCS.has(idMatch[0].toLowerCase()) && /^\s*\(/.test(rest)) {
+        tokens.push({ type: 'func', value: idMatch[0].toLowerCase() });
+        sawOperation = true;
+        i += idMatch[0].length;
+        continue;
+      }
+      return null;
+    }
+    const numMatch = /(?:[₹$€£¥]\s*)?(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?|\.\d+)%?/.exec(text.slice(i));
+    if (numMatch && numMatch.index === 0) {
+      let raw = numMatch[0].replace(/^[₹$€£¥]\s*/, '');
+      let scale = 1;
+      if (raw.endsWith('%')) {
+        scale = 0.01;
+        raw = raw.slice(0, -1);
+      }
+      const value = Number(raw.replace(/,/g, '')) * scale;
+      if (!Number.isFinite(value)) return null;
+      tokens.push({ type: 'number', value });
+      i += numMatch[0].length;
+      continue;
+    }
+    return null;
+  }
+  return { tokens, sawOperation };
+}
+
+// Round half up to an explicitly stated precision. The nudge (relative
+// 1e-12, far below any stated half-unit) absorbs binary floating-point
+// error when the intended decimal sits exactly on a .5 boundary, e.g.
+// 850 x 5.7773 = 4910.705. Direction matches half-up (toward +infinity).
+function roundHalfUp(value, precision) {
+  const factor = 10 ** precision;
+  const scaled = value * factor;
+  return Math.round(scaled + 1e-12 * Math.max(1, Math.abs(scaled))) / factor;
+}
+
+// Evaluate fully-numeric arithmetic with +, -, *, /, ^, parentheses, and
+// round/round_half_up/min/max over numeric arguments. Returns the number,
+// or null when anything is symbolic, missing, ambiguous, or non-finite.
+export function evaluateNumericExpression(rhs) {
+  const lexed = tokenizeNumericRhs(rhs);
+  if (!lexed || !lexed.sawOperation) return null;
+  const tokens = lexed.tokens;
+  let pos = 0;
+  const peek = () => tokens[pos] ?? null;
+  const parseExpr = () => {
+    let left = parseTerm();
+    if (left === null) return null;
+    for (;;) {
+      const t = peek();
+      if (!t || t.type !== 'op' || (t.value !== '+' && t.value !== '-')) return left;
+      pos += 1;
+      const right = parseTerm();
+      if (right === null) return null;
+      left = t.value === '+' ? left + right : left - right;
+    }
+  };
+  const parseTerm = () => {
+    let left = parseFactor();
+    if (left === null) return null;
+    for (;;) {
+      const t = peek();
+      if (!t || t.type !== 'op' || (t.value !== '*' && t.value !== '/')) return left;
+      pos += 1;
+      const right = parseFactor();
+      if (right === null) return null;
+      if (t.value === '/') {
+        if (right === 0) return null;
+        left /= right;
+      } else {
+        left *= right;
+      }
+    }
+  };
+  const parseFactor = () => {
+    const base = parseUnary();
+    if (base === null) return null;
+    const t = peek();
+    if (!t || t.type !== 'op' || t.value !== '^') return base;
+    pos += 1;
+    const exp = parseFactor();
+    if (exp === null) return null;
+    return Math.pow(base, exp);
+  };
+  const parseUnary = () => {
+    const t = peek();
+    if (t && t.type === 'op' && (t.value === '-' || t.value === '+')) {
+      pos += 1;
+      const inner = parseUnary();
+      if (inner === null) return null;
+      return t.value === '-' ? -inner : inner;
+    }
+    return parsePrimary();
+  };
+  const parsePrimary = () => {
+    const t = peek();
+    if (!t) return null;
+    if (t.type === 'number') {
+      pos += 1;
+      return t.value;
+    }
+    if (t.type === 'lparen') {
+      pos += 1;
+      const inner = parseExpr();
+      if (inner === null || peek()?.type !== 'rparen') return null;
+      pos += 1;
+      return inner;
+    }
+    if (t.type === 'func') {
+      pos += 1;
+      if (peek()?.type !== 'lparen') return null;
+      pos += 1;
+      const args = [];
+      if (peek()?.type !== 'rparen') {
+        for (;;) {
+          const arg = parseExpr();
+          if (arg === null) return null;
+          args.push(arg);
+          const sep = peek();
+          if (sep?.type === 'comma') {
+            pos += 1;
+            continue;
+          }
+          break;
+        }
+      }
+      if (peek()?.type !== 'rparen') return null;
+      pos += 1;
+      if (t.value === 'min' || t.value === 'max') {
+        if (args.length === 0) return null;
+        return t.value === 'min' ? Math.min(...args) : Math.max(...args);
+      }
+      if (args.length !== 2) return null;
+      const precision = args[1];
+      if (!Number.isInteger(precision) || precision < 0 || precision > 15) return null;
+      return roundHalfUp(args[0], precision);
+    }
+    return null;
+  };
+  const result = parseExpr();
+  if (result === null || pos !== tokens.length || !Number.isFinite(result)) return null;
+  return result;
+}
+
+// Render a recomputed value without floating-point tail artifacts.
+function formatRecomputed(n) {
+  return String(Number(Number(n).toPrecision(10)));
+}
+
+function formatDifference(d) {
+  return `${d < 0 ? '-' : '+'}${formatRecomputed(Math.abs(d))}`;
+}
+
+// Compare each stated step result against a recomputation of its own
+// assignment segment. Matching outputs pair by normalized variable key;
+// every other shape stays silent. Independent of conflict detection: this
+// check never compares steps or routines against each other.
+function checkStepArithmeticConsistency(routine, warn) {
+  const detailed = routine.steps_detailed ?? [];
+  if (detailed.length === 0) return;
+  detailed.forEach((step, idx) => {
+    const stated = step?.stated_results ?? [];
+    if (!Array.isArray(stated) || stated.length === 0) return;
+    const segments = splitTopLevel(String(step?.expression ?? ''), ';')
+      .map((s) => splitAssignmentSegment(s))
+      .filter(Boolean);
+    if (segments.length === 0) return;
+    const pages = step?.source_pages?.length ? step.source_pages : routine.source_pages;
+    for (const entry of stated) {
+      const key = normalizeVariableKey(String(entry?.output ?? ''));
+      if (!key) continue;
+      const seg = segments.find((s) => normalizeVariableKey(s.output) === key);
+      if (!seg) continue;
+      const computed = evaluateNumericExpression(seg.rhs);
+      if (computed === null) continue;
+      const target = parseStatedAmount(entry.value);
+      if (target === null) continue;
+      const tolerance = 0.5 * 10 ** -target.decimals + 1e-9 * Math.max(1, Math.abs(target.value));
+      const diff = computed - target.value;
+      if (Math.abs(diff) <= tolerance) continue;
+      warn('routine', routine.id, `Step ${stepSeq(step, idx)} ("${entry.output}") states ${String(entry.value).trim()} but recomputing "${truncate(seg.rhs, 60)}" gives ${formatRecomputed(computed)} (difference ${formatDifference(diff)}); verify the source arithmetic — source values are preserved, not corrected.`, pages);
+    }
   });
 }
 
@@ -1101,6 +1522,7 @@ function formulaKey(text) {
 // Two computed definitions of one output with different formulas read as a
 // possible source contradiction: flag for review, never silently pick one.
 function checkConflictingStepDefinitions(routine, warn) {
+  if (String(routine?.kind ?? '') === 'worked_example') return;
   const byOutput = new Map();
   (routine.steps_detailed ?? []).forEach((step, idx) => {
     const output = String(step?.output ?? '').trim();
@@ -1118,7 +1540,7 @@ function checkConflictingStepDefinitions(routine, warn) {
     if (distinct.length < 2) continue;
     const first = computed.find((d) => formulaKey(d.expr) === distinct[0]);
     const second = computed.find((d) => formulaKey(d.expr) === distinct[1]);
-    warn('routine', routine.id, `Steps ${first.seq} and ${second.seq} both assign "${first.name}" with different formulas ("${truncate(first.expr, 60)}" vs "${truncate(second.expr, 60)}"); verify which definition applies — flagged as a possible contradiction (not treated as invalid).`, routine.source_pages);
+    warn('routine', routine.id, `Steps ${first.seq} and ${second.seq} both assign "${first.name}" with different formulas ("${truncate(first.expr, 60)}" vs "${truncate(second.expr, 60)}"); verify which definition applies — flagged as a possible contradiction (not treated as invalid).${precedenceTail(routine.notes, routine.evidence_text)}`, routine.source_pages);
   }
 }
 
@@ -1137,7 +1559,131 @@ function singleAssignmentTarget(expr) {
 
 // One condition stated with different branches: same contradiction policy
 // as conflicting formulas — flag for review, never silently pick one.
+// Parse a single-threshold condition ('Harbor draft exceeds 30 feet',
+// 'Vessel length >= 50 feet') into { key, label, unit, lower, lowerIncl,
+// upper, upperIncl }. Only one variable, one comparison, and one value:
+// compounds, between-forms, and prose stay null. Operators are explicit,
+// so boundary inclusion is read, never guessed.
+const CONDITION_THRESHOLD_OPS = new Map([
+  ['>', '>'], ['>=', '>='], ['<', '<'], ['<=', '<='], ['=', '='],
+  ['exceeds', '>'], ['exceed', '>'], ['exceeding', '>'], ['more than', '>'], ['greater than', '>'], ['over', '>'], ['above', '>'],
+  ['under', '<'], ['below', '<'], ['less than', '<'], ['fewer than', '<'],
+  ['at least', '>='], ['or more', '>='], ['at most', '<='], ['up to', '<='], ['or less', '<='],
+]);
+const CONDITION_THRESHOLD = /^\s*(.+?)\s*(>=|<=|>|<|=|\b(?:exceeds|exceeding|exceed|more than|greater than|less than|fewer than|at least|at most|up to|or more|or less|over|above|under|below)\b)\s*([$€£¥]?\s*\d[\d,]*(?:\.\d+)?)\s*([A-Za-z%]*)\s*$/i;
+const CONDITION_COMPOUND_WORDS = /\b(and|or|not|if|then|else|when|with|where|between)\b/i;
+
+function parseConditionThreshold(condition) {
+  const m = CONDITION_THRESHOLD.exec(String(condition ?? '').trim());
+  if (!m) return null;
+  const variable = m[1].trim();
+  if (!/[A-Za-z]/.test(variable) || /[=<>]/.test(variable)) return null;
+  if (/[()[\]]/.test(variable)) return null;
+  if (CONDITION_COMPOUND_WORDS.test(variable)) return null;
+  const op = CONDITION_THRESHOLD_OPS.get(m[2].toLowerCase());
+  if (!op) return null;
+  const value = Number(m[3].replace(/[$€£¥\s]/g, '').replace(/,/g, ''));
+  if (!Number.isFinite(value)) return null;
+  const key = normalizeVariableKey(variable);
+  if (!key) return null;
+  return {
+    key,
+    label: variable,
+    op,
+    value,
+    unit: m[4].toLowerCase(),
+    lower: op === '>' || op === '>=' || op === '=' ? value : -Infinity,
+    lowerIncl: op === '>=' || op === '=',
+    upper: op === '<' || op === '<=' || op === '=' ? value : Infinity,
+    upperIncl: op === '<=' || op === '=',
+  };
+}
+
+// Overlap region of two threshold ranges as display text ('above 30',
+// 'from 5 to 10', 'at exactly 50'), or null when disjoint. Touching at
+// one point counts only when both sides include it — explicit operators
+// resolve the rest, so ('> 30', '<= 30') stays silent.
+function thresholdOverlapRegion(a, b) {
+  const loVal = Math.max(a.lower, b.lower);
+  const hiVal = Math.min(a.upper, b.upper);
+  if (loVal > hiVal) return null;
+  const loIncl = a.lower > b.lower ? a.lowerIncl : b.lower > a.lower ? b.lowerIncl : (a.lowerIncl && b.lowerIncl);
+  const hiIncl = a.upper < b.upper ? a.upperIncl : b.upper < a.upper ? b.upperIncl : (a.upperIncl && b.upperIncl);
+  if (loVal === hiVal) {
+    if (!loIncl || !hiIncl) return null;
+    return `at exactly ${loVal}`;
+  }
+  if (loVal === -Infinity) return `below ${hiVal}`;
+  if (hiVal === Infinity) return `above ${loVal}`;
+  return `from ${loVal} to ${hiVal}`;
+}
+
+function normConditionText(s) {
+  return String(s ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+// True when two same-key conditions parse as genuinely different
+// thresholds (different operator, value, or unit): the overlap check owns
+// those pairs, so the identical-condition check stands down.
+function thresholdsGenuinelyDiffer(a, b) {
+  const pa = parseConditionThreshold(a);
+  const pb = parseConditionThreshold(b);
+  if (!pa || !pb) return false;
+  return pa.op !== pb.op || pa.value !== pb.value || pa.unit !== pb.unit;
+}
+
+function conditionBranchKey(entry) {
+  return [entry?.true_branch, entry?.false_branch, entry?.referral_code]
+    .map((v) => String(v ?? '').trim()).join('|').replace(/\s+/g, ' ').toLowerCase();
+}
+
+// Two thresholds on one variable whose regions overlap with different
+// branches: both may apply to the same values. Pairs only within one
+// routine, units must match, and identical condition text stays with the
+// identical-condition check, so no pair warns twice. One warning per
+// variable quoting the first pair. Worked examples are illustrative
+// instance values, never normative definitions, so they are excluded.
+function checkOverlappingConditionRanges(routine, warn) {
+  if (String(routine?.kind ?? '') === 'worked_example') return;
+  const detailed = routine.conditions_detailed ?? [];
+  if (detailed.length < 2) return;
+  const parsed = detailed.map((entry, idx) => {
+    const condition = String(entry?.condition ?? '').trim();
+    if (!condition) return null;
+    const threshold = parseConditionThreshold(condition);
+    if (!threshold) return null;
+    return { idx, condition, entry, threshold };
+  });
+  const byVariable = new Map();
+  for (let i = 0; i < parsed.length; i += 1) {
+    const a = parsed[i];
+    if (!a) continue;
+    for (let j = i + 1; j < parsed.length; j += 1) {
+      const b = parsed[j];
+      if (!b) continue;
+      if (a.threshold.key !== b.threshold.key || a.threshold.unit !== b.threshold.unit) continue;
+      if (normConditionText(a.condition) === normConditionText(b.condition)) continue;
+      const branchesA = conditionBranchKey(a.entry);
+      const branchesB = conditionBranchKey(b.entry);
+      if (branchesA === branchesB) continue;
+      if (!branchesA.replace(/\|/g, '').trim() || !branchesB.replace(/\|/g, '').trim()) continue;
+      const region = thresholdOverlapRegion(a.threshold, b.threshold);
+      if (!region) continue;
+      const group = `${a.threshold.key} ${a.threshold.unit}`;
+      if (!byVariable.has(group)) byVariable.set(group, []);
+      byVariable.get(group).push({ a, b, region });
+    }
+  }
+  for (const pairs of byVariable.values()) {
+    const first = pairs[0];
+    const extra = pairs.length - 1;
+    const more = extra > 0 ? ` (${extra} more overlapping pair${extra === 1 ? '' : 's'} for "${first.a.threshold.label}")` : '';
+    warn('routine', routine.id, `Conditions ${first.a.idx + 1} and ${first.b.idx + 1} ("${truncate(first.a.condition, 50)}" and "${truncate(first.b.condition, 50)}") may both apply to "${first.a.threshold.label}" ${first.region}${more}; verify whether both branches apply or which takes precedence — flagged as a possible contradiction (not treated as invalid).${precedenceTail(routine.notes, routine.evidence_text)}`, routine.source_pages);
+  }
+}
+
 function checkConflictingConditions(routine, warn) {
+  if (String(routine?.kind ?? '') === 'worked_example') return;
   const detailed = routine.conditions_detailed ?? [];
   if (detailed.length < 2) return;
   const byCondition = new Map();
@@ -1160,7 +1706,8 @@ function checkConflictingConditions(routine, warn) {
     if (distinct.length < 2 || distinct.some((b) => !b.replace(/\|/g, '').trim())) continue;
     const first = defs.find((d) => d.branches.replace(/\s+/g, ' ').toLowerCase() === distinct[0]);
     const second = defs.find((d) => d.branches.replace(/\s+/g, ' ').toLowerCase() === distinct[1]);
-    warn('routine', routine.id, `Conditions ${first.idx + 1} and ${second.idx + 1} state the same condition ("${truncate(first.condition, 60)}") with different branches; verify which branch applies — flagged as a possible contradiction (not treated as invalid).`, routine.source_pages);
+    if (thresholdsGenuinelyDiffer(first.condition, second.condition)) continue;
+    warn('routine', routine.id, `Conditions ${first.idx + 1} and ${second.idx + 1} state the same condition ("${truncate(first.condition, 60)}") with different branches; verify which branch applies — flagged as a possible contradiction (not treated as invalid).${precedenceTail(routine.notes, routine.evidence_text)}`, routine.source_pages);
   }
 }
 
@@ -1184,7 +1731,7 @@ function checkConflictingRoutineFormulas(routines, warn) {
     }
     if (formulaKey(prior.expr) === formulaKey(parsed.expr)) continue;
     if (isTrivialRhs(prior.rhs) || isTrivialRhs(parsed.rhs)) continue;
-    warn('routine', r.id, `Routines "${prior.routine.name || prior.routine.id}" and "${r.name || r.id}" both assign "${parsed.output}" with different formulas ("${truncate(prior.expr, 60)}" vs "${truncate(parsed.expr, 60)}"); verify which definition applies — flagged as a possible contradiction (not treated as invalid).`, r.source_pages);
+    warn('routine', r.id, `Routines "${prior.routine.name || prior.routine.id}" and "${r.name || r.id}" both assign "${parsed.output}" with different formulas ("${truncate(prior.expr, 60)}" vs "${truncate(parsed.expr, 60)}"); verify which definition applies — flagged as a possible contradiction (not treated as invalid).${precedenceTail(prior.routine.notes, prior.routine.evidence_text, r.notes, r.evidence_text)}`, r.source_pages);
   }
 }
 
@@ -1216,7 +1763,7 @@ function checkConflictingStepDefinitionsAcrossRoutines(routines, warn) {
     const first = computed.find((d) => formulaKey(d.expr) === distinct[0]);
     const second = computed.find((d) => formulaKey(d.expr) === distinct[1]);
     if (first.routine === second.routine) continue;
-    warn('routine', second.routine.id, `Step ${second.seq} of routine "${second.routine.name || second.routine.id}" and step ${first.seq} of routine "${first.routine.name || first.routine.id}" both assign "${second.name}" with different formulas ("${truncate(second.expr, 50)}" vs "${truncate(first.expr, 50)}"); verify which definition applies — flagged as a possible contradiction (not treated as invalid).`, second.routine.source_pages);
+    warn('routine', second.routine.id, `Step ${second.seq} of routine "${second.routine.name || second.routine.id}" and step ${first.seq} of routine "${first.routine.name || first.routine.id}" both assign "${second.name}" with different formulas ("${truncate(second.expr, 50)}" vs "${truncate(first.expr, 50)}"); verify which definition applies — flagged as a possible contradiction (not treated as invalid).${precedenceTail(first.routine.notes, first.routine.evidence_text, second.routine.notes, second.routine.evidence_text)}`, second.routine.source_pages);
   }
 }
 
@@ -1551,6 +2098,42 @@ function isStepDefined(name, definedHere) {
   if (definedHere.lower.has(lower)) return true;
   const key = normalizeVariableKey(name);
   return Boolean(key && definedHere.normalized.has(key));
+}
+
+// Inline page citations anchored to a table mention (`from Table X (Page N)`
+// in a step): resolve the table and compare the cited page(s) against its
+// recorded source_pages. Matches stay silent; mismatches warn quoting the
+// step, the citation, and the recorded pages — the source text is never
+// rewritten. Citations without a nearby table mention, or mentions that
+// resolve to zero or several tables, stay silent: those are ambiguous
+// cross-references, owned by the reference checks, never guessed here.
+const PAGE_CITATION = /\bpages?\s+(\d+)(?:\s*[-–—,]\s*(\d+))?/gi;
+const TABLE_MENTION_BEFORE = /\btable\s+([^(),;:.]{1,60})/gi;
+
+function checkPageCitations(routine, tables, warn) {
+  const detailed = routine.steps_detailed ?? [];
+  if (detailed.length === 0) return;
+  detailed.forEach((step, idx) => {
+    const text = `${step?.instruction ?? ''}\n${step?.expression ?? ''}`;
+    if (!text.trim()) return;
+    for (const m of text.matchAll(PAGE_CITATION)) {
+      const cited = [Number(m[1])];
+      if (m[2] !== undefined) cited.push(Number(m[2]));
+      if (cited.some((n) => !Number.isInteger(n) || n <= 0)) continue;
+      const before = text.slice(Math.max(0, m.index - 80), m.index);
+      const mentions = [...before.matchAll(TABLE_MENTION_BEFORE)];
+      if (mentions.length === 0) continue;
+      const mention = mentions[mentions.length - 1][1].trim().replace(/\s+/g, ' ');
+      if (!mention) continue;
+      const candidates = findTableCandidates(tables ?? [], mention);
+      if (candidates.length !== 1) continue;
+      const recorded = candidates[0]?.source_pages ?? [];
+      if (cited.every((p) => recorded.includes(p))) continue;
+      const pages = step?.source_pages?.length ? step.source_pages : routine.source_pages;
+      warn('routine', routine.id, `Step ${stepSeq(step, idx)} cites Table "${mention}" on ${m[0].trim()}, but the table is recorded on page(s) ${recorded.length > 0 ? recorded.join(', ') : 'none recorded'}; verify the citation against the source — source text preserved, not corrected.`, pages);
+      break;
+    }
+  });
 }
 
 function checkStructuredDependencies(routine, warn, refCtx) {

@@ -191,6 +191,18 @@ function buildPart(table, cols, index, total) {
   const rows = (table?.rows ?? []).map((row) =>
     cols.map((c) => (Array.isArray(row) && c < row.length ? String(row[c] ?? '') : ''))
   );
+  const originals = table?.original_cells;
+  let original_cells;
+  if (originals && typeof originals === 'object' && !Array.isArray(originals)) {
+    original_cells = {};
+    for (const [key, value] of Object.entries(originals)) {
+      const m = /^(\d+):(\d+)$/.exec(key);
+      if (!m) continue;
+      const newC = cols.indexOf(Number(m[2]));
+      if (newC < 0 || Number(m[1]) >= (table?.rows ?? []).length) continue;
+      original_cells[`${m[1]}:${newC}`] = value;
+    }
+  }
   const priorContinuation = cloneContinuation(table?.continuation ?? null);
   const continuation = {
     ...(priorContinuation && typeof priorContinuation === 'object' ? priorContinuation : {}),
@@ -211,6 +223,7 @@ function buildPart(table, cols, index, total) {
     headers,
     columns,
     rows,
+    original_cells: original_cells ?? {},
     purpose: String(table?.purpose ?? ''),
     applicability: String(table?.applicability ?? ''),
     effective_period: String(table?.effective_period ?? ''),

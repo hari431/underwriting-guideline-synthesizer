@@ -40,6 +40,8 @@ export function createRatingTable({
   headers = [],
   columns = [],
   rows = [],
+  original_cells,
+  originalCells,
   purpose = '',
   applicability = '',
   effective_period,
@@ -52,6 +54,7 @@ export function createRatingTable({
   confidence = null,
 } = {}) {
   const { headers: normHeaders, columns: normColumns } = normalizeHeadersAndColumns({ headers, columns });
+  const { rows: normRows, originalCells: freshOriginals } = normalizeRows(rows);
   // Display name plus every distinct source label (asset code, title) as
   // aliases, so dependency references to any of them resolve. The display
   // name itself is never duplicated into aliases.
@@ -82,7 +85,8 @@ export function createRatingTable({
     evidence_text: String(evidenceText ?? evidence_text ?? evidence ?? ''),
     headers: normHeaders,
     columns: normColumns,
-    rows: normalizeRows(rows),
+    rows: normRows,
+    original_cells: mergeOriginalCells(normRows, freshOriginals, original_cells ?? originalCells),
     purpose: String(purpose ?? ''),
     applicability: String(applicability ?? ''),
     effective_period: String(effective_period ?? effectivePeriod ?? ''),
@@ -117,10 +121,12 @@ function stripTrailingProseSentence(segment) {
 // step machinery, so explicit formulas structure and genuinely ambiguous
 // segments stay unparsed for review. Generic syntax, never note contents.
 // Split comma-joined statements stating separate evaluations (`Ep = ... =
-// $1, Ee = ... = $2`) into ordered parts. Only when every part states an
-// assignment and at least one part states a chained evaluation: plain
-// comma bindings (`A=$1, B=$2`) stay one step for the multi-output reader.
-// Thousands separators and parenthesized commas never split.
+// $1, Ee = ... = $2`) into ordered parts. Only when at least one part
+// states a chained evaluation; parts without `=` then drop (or promote as
+// bare comparisons) while plain comma bindings (`A=$1, B=$2`) stay one step
+// for the multi-output reader. Thousands separators and parenthesized
+// commas never split.
+
 function splitCommaStatements(body) {
   const text = String(body ?? '');
   if (!text.includes(',')) return [text];
@@ -131,7 +137,7 @@ function splitCommaStatements(body) {
     for (let i = 0; i < p.length; i += 1) if (isStandaloneEquals(p, i)) n += 1;
     return n;
   });
-  if (!eqCounts.every((n) => n >= 1) || !eqCounts.some((n) => n >= 2)) return [text];
+  if (!eqCounts.some((n) => n >= 2)) return [text];
   return parts;
 }
 
@@ -139,13 +145,14 @@ function splitCommaStatements(body) {
 // statement and a check step. The check restates the comparison against the
 // main statement's evidenced output (or its own explicit variable when the
 // parenthesis names one); the verbatim parenthesis is kept as the check's
-// original text. Anything else stays whole.
+// original text. A leading `label:` inside the parenthesis is skipped when
+// detecting the comparison. Anything else stays whole.
 function splitTrailingComparison(part) {
   const text = String(part ?? '').trim();
   if (!text.includes('=')) return null;
   const m = /\(([^()]*)\)\s*$/.exec(text);
   if (!m) return null;
-  const inner = m[1].trim();
+  const inner = m[1].trim().replace(/^([A-Za-z_][A-Za-z0-9_. -]*):\s+(.+)$/, '$2').trim();
   const main = text.slice(0, m.index).trim();
   if (!main.includes('=')) return null;
   let output = '';
@@ -367,6 +374,17 @@ function normalizePages(pages) {
   return [...new Set(nums)].sort((a, b) => a - b);
 }
 
+// Recognized blank/missing markers: generic missing-value vocabulary only
+// (never domain wording). Standalone "None" is a legitimate "no
+// adjustment" value, never a marker.
+export const BLANK_SENTINEL_PATTERN = /^\[?\s*(not specified|unspecified|blank(?:\s*-\s*n\/a)?|n\/a|\bna\b|tbd|to be determined|missing|unknown|not available|unpopulated)\s*\]?$/i;
+
+export function isBlankSentinel(text) {
+  const s = String(text ?? '').trim();
+  if (!s || /^none$/i.test(s)) return false;
+  return BLANK_SENTINEL_PATTERN.test(s);
+}
+
 function normalizeCellValue(c) {
   if (c === null || c === undefined) return '';
   if (typeof c === 'string') return c;
@@ -380,11 +398,40 @@ function normalizeCellValue(c) {
 }
 
 function normalizeRows(rows) {
-  if (!Array.isArray(rows)) return [];
-  return rows.map((r) => {
+  if (!Array.isArray(rows)) return { rows: [], originalCells: {} };
+  const originalCells = {};
+  const out = rows.map((r, ri) => {
     const arr = Array.isArray(r) ? r : [r];
-    return arr.map((c) => normalizeCellValue(c));
+    return arr.map((c, ci) => {
+      const raw = normalizeCellValue(c);
+      if (raw === '') return null;
+      if (raw.trim() === '' || isBlankSentinel(raw)) {
+        originalCells[`${ri}:${ci}`] = raw;
+        return null;
+      }
+      return raw;
+    });
   });
+  return { rows: out, originalCells };
+}
+
+// Merge re-derived cell originals with carried ones (review round-trips):
+// carried entries survive only for cells that are still null with no fresh
+// record, so reviewer-filled cells never keep stale originals.
+function mergeOriginalCells(rows, fresh, incoming) {
+  const out = { ...fresh };
+  if (incoming && typeof incoming === 'object' && !Array.isArray(incoming)) {
+    for (const [key, value] of Object.entries(incoming)) {
+      if (!/^\d+:\d+$/.test(key) || key in out) continue;
+      const original = String(value ?? '');
+      if (!original) continue;
+      const [rs, cs] = key.split(':').map(Number);
+      const row = rows[rs];
+      if (!Array.isArray(row) || cs >= row.length || row[cs] !== null) continue;
+      out[key] = original;
+    }
+  }
+  return out;
 }
 
 function normalizeStringList(value) {
@@ -1520,6 +1567,57 @@ export function tableLogicalGroupKey(table) {
     if (codes.length > 0) return codes[codes.length - 1].toLowerCase();
   }
   return '';
+}
+
+// Normalized header signature for continuation matching: lowercased,
+// whitespace-collapsed labels joined in order. Empty when the table has no
+// non-blank headers, so headerless tables never match each other.
+export function tableHeaderKey(table) {
+  const segments = (table?.headers ?? [])
+    .map((h) => String(h ?? '').replace(/\s+/g, ' ').trim().toLowerCase())
+    .filter(Boolean);
+  if (segments.length === 0) return '';
+  return segments.join('|');
+}
+
+export function tablePageSpan(table) {
+  const pages = table?.source_pages ?? [];
+  if (pages.length === 0) return null;
+  return { min: Math.min(...pages), max: Math.max(...pages) };
+}
+
+// True when two page spans touch without overlapping: the signature of one
+// table continuing onto the next page. Same-page and overlapping spans are
+// not continuations.
+export function tablePagesAdjacent(a, b) {
+  const sa = tablePageSpan(a);
+  const sb = tablePageSpan(b);
+  if (!sa || !sb) return false;
+  return sa.max + 1 === sb.min || sb.max + 1 === sa.min;
+}
+
+// Explicit continuation language: continu* verbs and Part markers. Generic
+// English, never table names or contents.
+const CONTINUATION_CUE_WORD = /\bcontinu(?:e[ds]?|ing)\b/i;
+const CONTINUATION_PART_WORD = /\bpart\s+(?:\d+|[ivxlcdm]+|[a-z])(?:\s+of\s+(?:\d+|[ivxlcdm]+))?\b/i;
+
+export function tableHasContinuationCue(table) {
+  const joined = [table?.name, table?.notes, ...(table?.footnotes ?? []), table?.evidence_text]
+    .map((t) => String(t ?? '')).join('\n');
+  return CONTINUATION_CUE_WORD.test(joined) || CONTINUATION_PART_WORD.test(joined);
+}
+
+// Base-name slug with continuation qualifiers stripped ('Schedule (continued)'
+// and 'Schedule Part 1' both reduce to 'schedule'), for pairing explicitly
+// cued parts. Empty when no base name remains.
+export function tableContinuationBase(table) {
+  const base = String(table?.name ?? '')
+    .replace(/^\s*part\s+(?:\d+|[ivxlcdm]+|[a-z])(?:\s+of\s+(?:\d+|[ivxlcdm]+))?\s*[:\-–—]?\s*/i, '')
+    .replace(/\s+part\s+(?:\d+|[ivxlcdm]+|[a-z])(?:\s+of\s+(?:\d+|[ivxlcdm]+))?\s*$/i, '')
+    .replace(/\s*\([^()]*\bcontinu(?:e[ds]?|ing)\b[^()]*\)\s*/gi, ' ')
+    .replace(/\s+/g, ' ').trim().toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 50);
+  return base;
 }
 
 // True when every table in the list shares one non-empty logical group key

@@ -1377,6 +1377,88 @@ test('steps: chained multi-steps record per-part stated results', () => {
   ]);
 });
 
+test('steps: worked promotion splits newline-separated chains in order', () => {
+  const notes = 'Ep = 100 x 0.350 = $35.00\nEe = 100 x 0.650 = $65.00';
+  const r = ledgerRoutine([], { kind: 'worked_example', notes });
+  assert.equal(r.steps.length, 2);
+  assert.equal(r.steps_detailed[0].expression, 'Ep = 100 x 0.350');
+  assert.deepEqual(r.steps_detailed[0].stated_results, [{ output: 'Ep', value: '$35.00' }]);
+  assert.equal(r.steps_detailed[1].expression, 'Ee = 100 x 0.650');
+  assert.deepEqual(r.steps_detailed[1].stated_results, [{ output: 'Ee', value: '$65.00' }]);
+  assert.deepEqual(r.steps_detailed.map((d) => d.sequence), [1, 2]);
+  assert.equal(r.notes, notes);
+
+  const numbered = ledgerRoutine([], { kind: 'worked_example', notes: '1. Ep = 100 x 0.350 = $35.00\n2. Ee = 100 x 0.650 = $65.00' });
+  assert.equal(numbered.steps.length, 2);
+  assert.equal(numbered.steps_detailed[0].output, 'Ep');
+  assert.equal(numbered.steps_detailed[1].output, 'Ee');
+});
+
+test('steps: worked promotion rescues chains joined to prose by comma', () => {
+  const tail = ledgerRoutine([], { kind: 'worked_example', notes: 'Ep = 100 x 0.350 = $35.00, per vessel review' });
+  assert.equal(tail.steps.length, 1);
+  assert.equal(tail.steps_detailed[0].expression, 'Ep = 100 x 0.350');
+  assert.deepEqual(tail.steps_detailed[0].stated_results, [{ output: 'Ep', value: '$35.00' }]);
+
+  const head = ledgerRoutine([], { kind: 'worked_example', notes: 'Per vessel review, Ee = 100 x 0.650 = $65.00' });
+  assert.equal(head.steps.length, 1);
+  assert.equal(head.steps_detailed[0].expression, 'Ee = 100 x 0.650');
+  assert.deepEqual(head.steps_detailed[0].stated_results, [{ output: 'Ee', value: '$65.00' }]);
+  assert.equal(head.notes, 'Per vessel review, Ee = 100 x 0.650 = $65.00');
+});
+
+test('steps: worked promotion keeps incomplete comma parts for review', () => {
+  const r = ledgerRoutine([], { kind: 'worked_example', notes: 'Ep = 100 x 0.350 = $35.00, Ee = 100 +' });
+  assert.equal(r.steps.length, 2);
+  assert.equal(r.steps_detailed[0].operation, 'expression');
+  assert.equal(r.steps_detailed[0].output, 'Ep');
+  assert.equal(r.steps_detailed[1].instruction, 'Ee = 100 +');
+  assert.equal(r.steps_detailed[1].operation, undefined);
+  assert.equal(r.steps_detailed[1].expression, undefined);
+});
+
+test('steps: worked promotion preserves thousands separators and parenthesized commas', () => {
+  const r = ledgerRoutine([], { kind: 'worked_example', notes: 'Et = $48,000 x 0.580 = $27,840.00; Out = max(1.0, 0.5) = 1.0, Fee = min(2.0, 3.0) = 2.0' });
+  assert.equal(r.steps.length, 3);
+  assert.equal(r.steps_detailed[0].expression, 'Et = $48,000 x 0.580');
+  assert.deepEqual(r.steps_detailed[0].stated_results, [{ output: 'Et', value: '$27,840.00' }]);
+  assert.equal(r.steps_detailed[1].expression, 'Out = max(1.0, 0.5)');
+  assert.equal(r.steps_detailed[2].expression, 'Fee = min(2.0, 3.0)');
+});
+
+test('steps: worked promotion splits labeled parenthesized checks; notes stay put', () => {
+  const r = ledgerRoutine([], { kind: 'worked_example', notes: 'Ratio = 3/4 = 0.75 (check: Ratio > 0.5)' });
+  assert.equal(r.steps.length, 2);
+  assert.equal(r.steps_detailed[0].expression, 'Ratio = 3/4');
+  assert.deepEqual(r.steps_detailed[0].stated_results, [{ output: 'Ratio', value: '0.75' }]);
+  assert.equal(r.steps_detailed[1].operation, 'condition');
+  assert.equal(r.steps_detailed[1].expression, 'Ratio > 0.5');
+
+  const cited = ledgerRoutine([], { kind: 'worked_example', notes: 'Pmod = Round(49,479.31 x 1.035, 2) = $51,211.09 (CG-2404 +3.5%)' });
+  assert.equal(cited.steps.length, 1);
+  assert.equal(cited.steps_detailed[0].expression, 'Pmod = Round(49,479.31 x 1.035, 2)');
+  assert.deepEqual(cited.steps_detailed[0].stated_results, [{ output: 'Pmod', value: '$51,211.09' }]);
+});
+
+test('steps: worked promotion regression over a mixed worked note', () => {
+  const notes = 'Expected values verbatim: Net base = $12,500 / 100.0 = 125.0000 units; Rate table (R-2): Base rate=$3.40, Tier factor=1.180; Loaded = 3.40 x 1.180 = 4.0120; Capped total = $167.50 (>$100.00). All values reconcile.';
+  const r = ledgerRoutine([], { kind: 'worked_example', notes });
+  assert.deepEqual(r.steps_detailed.map((d) => d.sequence), [1, 2, 3, 4, 5]);
+  assert.equal(r.steps_detailed[0].output, 'Net base');
+  assert.deepEqual(r.steps_detailed[0].stated_results, [{ output: 'Net base', value: '125.0000 units' }]);
+  assert.equal(r.steps_detailed[1].expression, 'Base rate = $3.40; Tier factor = 1.180');
+  assert.equal(r.steps_detailed[2].output, 'Loaded');
+  assert.deepEqual(r.steps_detailed[2].stated_results, [{ output: 'Loaded', value: '4.0120' }]);
+  assert.equal(r.steps_detailed[3].output, 'Capped total');
+  assert.equal(r.steps_detailed[4].operation, 'condition');
+  assert.ok(r.steps_detailed.every((d) => Array.isArray(d.source_pages) && d.source_pages.length > 0));
+  assert.equal(r.notes, notes);
+
+  const formula = ledgerRoutine([], { kind: 'formula', notes, expressionText: '' });
+  assert.equal(formula.steps.length, 0);
+  assert.equal(formula.steps_detailed.length, 0);
+});
+
 test('steps: worked promotion leaves stepped examples and plain routines alone', () => {
   const stepped = ledgerRoutine(['Ledger total = $100 / 2 = 50.00 credits'], {
     kind: 'worked_example', notes: 'Ledger total = $100 / 2 = 50.00 credits',

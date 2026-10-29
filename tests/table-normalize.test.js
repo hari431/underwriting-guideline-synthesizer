@@ -153,7 +153,7 @@ test('table-normalize: pipeline expands recorded single-column grids with a revi
       ['Minimum Band', 'Maximum Band', 'Band Factor'],
       ['Tier', 'Tier Credit'],
     ]);
-    assert.deepEqual(job.tables[0].rows[3], ['71', '', '1.20']);
+    assert.deepEqual(job.tables[0].rows[3], ['71', null, '1.20']);
     assert.deepEqual(job.tables[1].rows[0], ['1', '5%']);
     assert.ok(job.tables.every((t) => t.id && t.source_pages.length > 0 && t.evidence_text));
     assert.equal(job.issues.filter((i) => i.severity === 'error').length, 0);
