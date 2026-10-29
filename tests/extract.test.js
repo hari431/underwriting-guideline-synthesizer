@@ -133,3 +133,42 @@ test('extract: prompt preserves grid-row cells with column roles, never as opera
     assert.ok(!prompt.includes(sample), `prompt must not hardcode sample value: ${sample}`);
   }
 });
+
+test('extract: prompt requests structured inputs and outputs for worked examples', () => {
+  const prompt = buildExtractionPrompt([{ page: 1, text: 'sample' }]);
+  for (const term of ['worked_example', 'inputs[]', 'outputs[]', 'explicitly stated', 'plain string', 'value and units', 'Never infer', 'never invent', 'calculation', 'intermediate as an input']) {
+    assert.ok(prompt.includes(term), `prompt missing worked I/O guidance: ${term}`);
+  }
+  for (const sample of ['$1,000,000', '$500', 'Light Delivery Van', '4 vehicles', 'Territory', 'policy_fee', 'territory_factor']) {
+    assert.ok(!prompt.includes(sample), `prompt must not hardcode sample value: ${sample}`);
+  }
+});
+
+test('extract: worked-example inputs and outputs pass through response parsing intact', async () => {
+  const worked = {
+    name: 'LX — Worked Tallage Case',
+    kind: 'worked_example',
+    source_pages: [1],
+    evidence_text: 'synthetic worked illustration',
+    inputs: ['Tally limit $1,000,000', 'Tally deductible $500', 'Policy ledger count 4 ledgers'],
+    outputs: ['$1.00 per ledger'],
+    notes: 'Expected result verbatim: $1.00 per ledger.',
+  };
+  const fetchImpl = async () => ({
+    ok: true,
+    json: async () => ({ choices: [{ message: { content: JSON.stringify({ tables: [], routines: [worked] }) } }] }),
+  });
+  const env = { UNDERWRITEIQ_ENABLE_MODEL: '1', UNDERWRITEIQ_API_KEY: 'test-key' };
+  const out = await extractWithModel([{ page: 1, text: 'x' }], { env, fetchImpl });
+  assert.deepEqual(out.routines[0].inputs, worked.inputs);
+  assert.deepEqual(out.routines[0].outputs, worked.outputs);
+});
+
+test('extract: absent worked-example inputs stay absent through parsing', () => {
+  const out = parseModelJson(JSON.stringify({
+    tables: [],
+    routines: [{ name: 'W', kind: 'worked_example', source_pages: [1], evidence_text: 'e', notes: 'An illustration.' }],
+  }));
+  assert.equal(out.routines[0].inputs, undefined);
+  assert.equal(out.routines[0].outputs, undefined);
+});

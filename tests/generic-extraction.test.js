@@ -313,6 +313,47 @@ test('generic: calculation inputs still clean to reusable terms', () => {
   assert.deepEqual(job.routines[0].inputs, ['Tally limit']);
 });
 
+test('generic: worked-example outputs keep stated values and units verbatim', () => {
+  const job = ledgerJob({
+    routines: [{
+      name: 'LX — Worked Tallage Case',
+      kind: 'worked_example',
+      sourcePages: [1],
+      evidenceText: 'synthetic worked illustration with expected values',
+      outputs: ['$1,066.08 per ledger per annum', '4 ledgers rated'],
+    }],
+  });
+  assert.deepEqual(job.routines[0].outputs, ['$1,066.08 per ledger per annum', '4 ledgers rated']);
+});
+
+test('generic: incomplete worked examples gain no invented inputs or outputs', () => {
+  const job = ledgerJob({
+    routines: [{
+      name: 'LX — Partial Tallage Case',
+      kind: 'worked_example',
+      sourcePages: [1],
+      evidenceText: 'synthetic partial illustration',
+      notes: 'An illustration with no stated selections.',
+      steps: [{ sequence: 1, instruction: '1. Base tallage', expression: 'Selected tallage for LKV', output: '$800.00' }],
+    }],
+  });
+  assert.deepEqual(job.routines[0].inputs, []);
+  assert.deepEqual(job.routines[0].outputs, []);
+});
+
+test('generic: formula and condition routines pass through without invented I/O', () => {
+  const job = ledgerJob({
+    routines: [
+      { name: 'LX — Tallage Formula', kind: 'formula', sourcePages: [1], evidenceText: 'e', expressionText: 'total = base x (1.0 + load)', inputs: ['base', 'load'], outputs: ['total'] },
+      { name: 'LX — Tallage Rule', kind: 'condition', sourcePages: [1], evidenceText: 'e', conditions: ['IF tallage is high THEN refer'] },
+    ],
+  });
+  assert.deepEqual(job.routines[0].inputs, ['base', 'load']);
+  assert.deepEqual(job.routines[0].outputs, ['total']);
+  assert.deepEqual(job.routines[1].inputs, []);
+  assert.deepEqual(job.routines[1].outputs, []);
+});
+
 test('generic: inferred columns feed validation without inventing values', () => {
   const table = {
     name: 'SYN-Gap', sourcePages: [1], evidenceText: 'e',
