@@ -696,3 +696,67 @@ test('models: exact keyword matches win over stemmed ones; stemmed ambiguity sta
   assert.deepEqual(findTableCandidates(stemmedDupes, 'north factor').map((t) => t.id), ['T1', 'T2']);
   assert.deepEqual(findTableCandidates(stemmedDupes, 'hull factor'), []);
 });
+
+test('models: stated-value branches keep their subject as the condition output', () => {
+  const job = normalizeJob(
+    createJob({
+      routines: [{
+        name: 'Tally Procedure', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'ev',
+        conditions: [
+          'If the policy covers 3 to 10 ledgers, the rebate is 5% of the pre-rebate tallage.',
+          'If the policy covers 1 or 2 ledgers, the rebate is 0%.',
+        ],
+      }],
+    })
+  );
+  const det = job.routines[0].conditions_detailed;
+  assert.equal(det.length, 2);
+  assert.equal(det[0].condition, 'the policy covers 3 to 10 ledgers');
+  assert.equal(det[0].true_branch, 'the rebate is 5% of the pre-rebate tallage.');
+  assert.equal(det[0].output, 'rebate');
+  assert.equal(det[0].false_branch, undefined);
+  assert.equal(det[1].condition, 'the policy covers 1 or 2 ledgers');
+  assert.equal(det[1].true_branch, 'the rebate is 0%.');
+  assert.equal(det[1].output, 'rebate');
+  assert.equal(det[1].false_branch, undefined);
+  assert.deepEqual(job.routines[0].conditions, [
+    'If the policy covers 3 to 10 ledgers, the rebate is 5% of the pre-rebate tallage.',
+    'If the policy covers 1 or 2 ledgers, the rebate is 0%.',
+  ]);
+});
+
+test('models: structured condition outputs pass through verbatim', () => {
+  const job = normalizeJob(
+    createJob({
+      routines: [{
+        name: 'Tally Procedure', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'ev',
+        conditions: [{ condition: 'ledger count is high', true_branch: 'rebate is 5%', output: 'rebate' }],
+      }],
+    })
+  );
+  assert.equal(job.routines[0].conditions_detailed[0].output, 'rebate');
+});
+
+test('models: branches without a stated value keep no condition output', () => {
+  const job = normalizeJob(
+    createJob({
+      routines: [{
+        name: 'Tally Procedure', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'ev',
+        conditions: [
+          'If the ledger count is high, the tallage is reviewed annually.',
+          'If the ledger count is high, apply the tallage adjustment.',
+          'If the ledger count is high, it is 5%.',
+          'IF ledger class is high THEN IF ledger zone is metro THEN apply metro factor ELSE apply base factor ELSE refer',
+        ],
+      }],
+    })
+  );
+  const det = job.routines[0].conditions_detailed;
+  assert.equal(det.length, 4);
+  for (const entry of det) {
+    assert.equal(entry.output, undefined);
+  }
+  assert.equal(det[0].true_branch, 'the tallage is reviewed annually.');
+  assert.equal(det[3].true_branch, 'IF ledger zone is metro THEN apply metro factor ELSE apply base factor');
+  assert.equal(det[3].false_branch, 'refer');
+});

@@ -1536,6 +1536,27 @@ test('steps: sequential conditionals do not leak nested variables into inputs', 
   assert.equal(det.inputs, undefined);
 });
 
+test('steps: stated-value conditional step keeps its branch subject as output', () => {
+  const r = ledgerRoutine([
+    'Step 6 — Ledger rebate: If the policy covers 3 to 10 ledgers, the rebate is 5% of the pre-rebate tallage. If the policy covers 1 or 2 ledgers, the rebate is 0%.',
+  ]);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, 'condition');
+  assert.equal(det.output, 'rebate');
+  assert.equal(det.inputs, undefined);
+});
+
+test('steps: conditional branches without a stated value keep no output', () => {
+  const r = ledgerRoutine([
+    'Step 6 — Ledger review: If the ledger count is high, the tallage is reviewed annually.',
+    'Step 7 — Ledger handling: If the ledger count is high, apply the tallage adjustment.',
+  ]);
+  assert.equal(r.steps_detailed[0].operation, 'condition');
+  assert.equal(r.steps_detailed[0].output, undefined);
+  assert.equal(r.steps_detailed[1].operation, 'condition');
+  assert.equal(r.steps_detailed[1].output, undefined);
+});
+
 test('steps: rounding captures multi-word targets and skips labels and negations', () => {
   const r = ledgerRoutine([
     'Step 8 — Rounding: Round only the final tallage to two decimal places using standard round-half-up rounding. Do not round intermediate tallages.',
@@ -1618,4 +1639,119 @@ test('steps: explicit prose expression without evidence stays unparsed with outp
   assert.equal(det.expression, 'the applicable tallage');
   assert.equal(det.output, '$1,050.00');
   assert.equal(det.interpretation_status, undefined);
+});
+
+// ---------- label-colon worked-calculation regressions ----------
+// Live extractions sometimes state each worked step as `N. Label:
+// <calculation>` with the stated result in `output`. The label names the
+// step's result exactly like the bare `N. Label` form, so promotion must
+// read through the colon: arithmetic, subtraction, call-form rounding,
+// and past-tense lookups structure with the label as output and the bare
+// amount kept as a stated result — never dropped, never invented. Prose
+// labels and prose suffixes stay unparsed instead of gaining outputs.
+
+test('steps: label-colon arithmetic promotes with label output and stated result', () => {
+  const r = explicitLedgerRoutine([
+    { sequence: 2, instruction: '2. Zone scaling: $1,050.00 × 1.00', expression: '$1,050.00 × 1.00', output: '$1,050.00' },
+  ]);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, 'expression');
+  assert.equal(det.expression, '$1,050.00 × 1.00');
+  assert.equal(det.output, 'Zone scaling');
+  assert.deepEqual(det.stated_results, [{ output: 'Zone scaling', value: '$1,050.00' }]);
+  assert.equal(det.interpretation_status, 'inferred');
+});
+
+test('steps: label-colon subtraction and call-form rounding promote in order', () => {
+  const r = explicitLedgerRoutine([
+    { sequence: 7, instruction: '7. Net before rounding: $1,122.1875 - $56.109375', expression: '$1,122.1875 - $56.109375', output: '$1,066.078125' },
+    { sequence: 8, instruction: '8. Final tallage: RoundHalfUp($1,066.078125, 2)', expression: 'RoundHalfUp($1,066.078125, 2)', output: '$1,066.08' },
+  ]);
+  const [sub, round] = r.steps_detailed;
+  assert.equal(sub.operation, 'expression');
+  assert.equal(sub.output, 'Net before rounding');
+  assert.deepEqual(sub.stated_results, [{ output: 'Net before rounding', value: '$1,066.078125' }]);
+  assert.equal(round.operation, 'expression');
+  assert.equal(round.output, 'Final tallage');
+  assert.deepEqual(round.stated_results, [{ output: 'Final tallage', value: '$1,066.08' }]);
+});
+
+test('steps: label-colon past-tense lookup promotes with key and stated value', () => {
+  const r = explicitLedgerRoutine([
+    { sequence: 1, instruction: '1. Base tallage: Selected tallage for LXV', expression: 'Selected tallage for LXV', output: '$800.00' },
+  ]);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, 'lookup');
+  assert.equal(det.output, 'Base tallage');
+  assert.deepEqual(det.inputs, ['LXV']);
+  assert.deepEqual(det.stated_results, [{ output: 'Base tallage', value: '$800.00' }]);
+});
+
+test('steps: assignment inside the expression beats an imperative colon label', () => {
+  const r = explicitLedgerRoutine([
+    { sequence: 2, instruction: '2. Compute base tallage: Tloaded = Tbase × Fzone', expression: 'Tloaded = Tbase × Fzone' },
+    { sequence: 3, instruction: '3. Add catastrophe surcharge: Tsurcharged = Tloaded + Lwind', expression: 'Tsurcharged = Tloaded + Lwind', output: '$1,200.00' },
+  ]);
+  const [first, second] = r.steps_detailed;
+  assert.equal(first.operation, 'expression');
+  assert.equal(first.output, 'Tloaded');
+  assert.equal(first.stated_results, undefined);
+  assert.equal(second.operation, 'expression');
+  assert.equal(second.output, 'Tsurcharged');
+  assert.deepEqual(second.stated_results, [{ output: 'Tsurcharged', value: '$1,200.00' }]);
+});
+
+test('steps: label-colon prose without calculation evidence stays unparsed', () => {
+  const r = explicitLedgerRoutine([
+    { sequence: 1, instruction: '1. Tallage note: review tallages annually', expression: 'review tallages annually' },
+  ]);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, undefined);
+  assert.equal(det.expression, 'review tallages annually');
+  assert.equal(det.output, undefined);
+  assert.equal(det.interpretation_status, undefined);
+});
+
+test('steps: overlong and backref colon labels gain no invented output', () => {
+  const r = explicitLedgerRoutine([
+    { sequence: 2, instruction: '2. The result after applying every ledger factor carefully: $1,050.00 × 1.00', expression: '$1,050.00 × 1.00', output: '$1,050.00' },
+    { sequence: 3, instruction: '3. Step 2 result: $1,050.00 × 0.90', expression: '$1,050.00 × 0.90', output: '$945.00' },
+  ]);
+  for (const det of r.steps_detailed) {
+    assert.equal(det.operation, 'expression');
+    assert.equal(det.output, undefined);
+    assert.equal(det.stated_results, undefined);
+  }
+});
+
+test('steps: label-colon worked steps render arithmetic rows without REVIEW', () => {
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'ledger-guideline.pdf', pageCount: 2 }),
+      routines: [{
+        name: 'LX — Worked Tallage Case',
+        kind: 'worked_example',
+        sourcePages: [2],
+        evidenceText: 'synthetic worked illustration with expected values',
+        steps: [
+          { sequence: 2, instruction: '2. Zone scaling: $1,050.00 × 1.00', expression: '$1,050.00 × 1.00', output: '$1,050.00' },
+          { sequence: 7, instruction: '7. Net before rounding: $1,122.1875 - $56.109375', expression: '$1,122.1875 - $56.109375', output: '$1,066.078125' },
+          { sequence: 8, instruction: '8. Final tallage: RoundHalfUp($1,066.078125, 2)', expression: 'RoundHalfUp($1,066.078125, 2)', output: '$1,066.08' },
+        ],
+        notes: 'Expected values preserved verbatim: $1,050.00, $1,066.078125, $1,066.08.',
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  const steps = sectionRows(routineSheetValues(job, 'LX — Worked Tallage Case'), 'Steps');
+  const opIndex = steps.header.indexOf('Op');
+  assert.ok(steps.body.every((row) => row[opIndex] !== 'REVIEW'), `unexpected REVIEW rows: ${JSON.stringify(steps.body)}`);
+  assert.deepEqual(steps.body.map((row) => row[0]), ['2.1', '2.2', '2.3', '7.1', '7.2', '7.3', '8.1', '8.2']);
+  assert.deepEqual(steps.body[0].slice(0, 6), ['2.1', 'Zone scaling', '<--', '', '$1,050.00', '']);
+  assert.deepEqual(steps.body[1].slice(0, 6), ['2.2', '', '×', '', '1.00', '']);
+  assert.deepEqual(steps.body[2].slice(0, 6), ['2.3', 'Zone scaling', '=', '', '$1,050.00', '']);
+  assert.deepEqual(steps.body[4].slice(0, 6), ['7.2', '', '-', '', '$56.109375', '']);
+  assert.deepEqual(steps.body[6].slice(0, 6), ['8.1', 'Final tallage', '<--', '', 'RoundHalfUp($1,066.078125, 2)', '']);
+  assert.deepEqual(steps.body[7].slice(0, 6), ['8.2', 'Final tallage', '=', '', '$1,066.08', '']);
+  assert.ok(steps.body.every((row) => row.length === 7 && row[6] !== ''));
 });

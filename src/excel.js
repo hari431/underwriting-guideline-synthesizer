@@ -17,7 +17,7 @@
 // Cover and the summaries link each asset name to its detail worksheet.
 // Fixed ZIP timestamps keep builds byte-deterministic.
 import { deflateRawSync } from 'node:zlib';
-import { cleanStepInputValue, cleanStepOutputValue, extractCellCodeTokens, normalizeVariableKey, parseAssignmentOperands, resolveTableReference, sanitizeExplicitStep, splitAssignmentSegment, splitHyphenSubtraction, splitTopLevel, tableCellCodes, tableReferenceTerms } from './models.js';
+import { cleanStepInputValue, cleanStepOutputValue, extractCellCodeTokens, normalizeVariableKey, parseAssignmentOperands, resolveTableReference, sanitizeExplicitStep, splitAssignmentSegment, splitBranchIsValue, splitHyphenSubtraction, splitTopLevel, tableCellCodes, tableReferenceTerms } from './models.js';
 
 // ---------- CRC32 + minimal ZIP writer ----------
 
@@ -1618,7 +1618,7 @@ function extractRatingConditionClause(text) {
 }
 
 // Assigned value of one conditional branch (`set X to Y`, `X is set to Y`,
-// `X = Y`, `X equals Y`); anything else stays verbatim.
+// `X = Y`, `X equals Y`, `X is <stated value>`); anything else stays verbatim.
 function extractBranchValue(branch) {
   const text = String(branch ?? '').trim().replace(/\.\s*$/, '').trim();
   if (!text) return '';
@@ -1630,6 +1630,8 @@ function extractBranchValue(branch) {
   if (m && m[1].trim()) return m[1].trim().replace(/\.\s*$/, '').trim();
   m = /\b[A-Za-z_]\w*\s+equals?\s+([A-Za-z_]\w*|\d+(?:\.\d+)?)/i.exec(text);
   if (m) return m[1];
+  const stated = splitBranchIsValue(text);
+  if (stated && stated.value) return stated.value;
   return text;
 }
 

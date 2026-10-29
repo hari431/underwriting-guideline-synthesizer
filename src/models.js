@@ -794,6 +794,7 @@ function normalizeOneCondition(entry) {
   if (entry.condition !== undefined && entry.condition !== null) out.condition = String(entry.condition);
   if (entry.true_branch !== undefined && entry.true_branch !== null) out.true_branch = String(entry.true_branch);
   if (entry.false_branch !== undefined && entry.false_branch !== null) out.false_branch = String(entry.false_branch);
+  if (entry.output !== undefined && entry.output !== null) out.output = String(entry.output);
   const referral = entry.referral_code ?? entry.referralCode ?? entry.referral;
   if (referral !== undefined && referral !== null && String(referral) !== '') out.referral_code = String(referral);
   const pages = entry.source_pages ?? entry.sourcePages;
@@ -832,7 +833,7 @@ function looksDerivedStep(entry) {
 
 function looksDerivedCondition(entry) {
   if (!entry || typeof entry !== 'object') return true;
-  const substantive = ['condition', 'true_branch', 'false_branch', 'referral_code', 'source_pages', 'source_location', 'evidence'];
+  const substantive = ['condition', 'true_branch', 'false_branch', 'referral_code', 'output', 'source_pages', 'source_location', 'evidence'];
   if (!substantive.some((k) => hasSubstantiveValue(entry[k]))) return true;
   return entry.interpretation_status === 'inferred'
     && (entry.source_pages === undefined || entry.source_pages.length === 0)
@@ -1616,14 +1617,26 @@ function isCallFormExpression(expr) {
 
 // The step label (instruction minus numbering) as an output variable: a
 // short lettered phrase with no clause punctuation, assignment, or amount.
-// Anything else yields '' so prose never poses as a variable.
+// A `Label: calculation` instruction reads its label through the colon the
+// same way, since the label still names the step's result; a step
+// back-reference (`Step 2 result`) never becomes a variable. Anything else
+// yields '' so prose never poses as a variable.
 function stepLabelForOutput(instruction) {
-  const label = stripStepLabel(String(instruction ?? '')).trim().replace(/[.;]+\s*$/, '').trim();
+  let label = stripStepLabel(String(instruction ?? '')).trim().replace(/[.;]+\s*$/, '').trim();
   if (!label || !/[A-Za-z]/.test(label)) return '';
-  if (/[:=;]/.test(label)) return '';
+  const colon = label.indexOf(':');
+  if (colon >= 0) {
+    const prefix = label.slice(0, colon).trim().replace(/[.;]+\s*$/, '').trim();
+    const suffix = label.slice(colon + 1).trim();
+    if (!suffix) return '';
+    label = prefix;
+  }
+  if (!label || /[=;]/.test(label)) return '';
+  if (label.includes(':')) return '';
   const words = label.split(/\s+/).filter(Boolean);
   if (words.length === 0 || words.length > 4) return '';
   if (isNumericFragment(label)) return '';
+  if (isStepBackrefLabel(label)) return '';
   return label;
 }
 
@@ -1655,6 +1668,10 @@ function promoteExplicitStepExpression(out) {
   const expr = String(out.expression ?? '').trim();
   if (!expr) return;
   const label = stepLabelForOutput(out.instruction);
+  // An assignment inside the expression names its own target (`Rloaded =
+  // ...` computes Rloaded): it beats the instruction label, which may be
+  // an imperative phrase (`Compute base loaded rate`) rather than a name.
+  const exprTarget = splitAssignmentSegment(expr)?.output ?? '';
   const adoptOutput = () => {
     const rawOutput = String(out.output ?? '').trim();
     const cleaned = cleanStepOutputValue(rawOutput);
@@ -1662,13 +1679,14 @@ function promoteExplicitStepExpression(out) {
       out.output = cleaned;
       return;
     }
-    if (rawOutput && label) {
+    const target = exprTarget || label;
+    if (rawOutput && target) {
       const existing = Array.isArray(out.stated_results) ? out.stated_results : [];
-      if (!existing.some((s) => String(s?.output ?? '') === label && String(s?.value ?? '') === rawOutput)) {
-        out.stated_results = [...existing, { output: label, value: rawOutput }];
+      if (!existing.some((s) => String(s?.output ?? '') === target && String(s?.value ?? '') === rawOutput)) {
+        out.stated_results = [...existing, { output: target, value: rawOutput }];
       }
     }
-    if (label) out.output = label;
+    if (target) out.output = target;
     else delete out.output;
   };
   if (hasArithmeticEvidence(expr) || isCallFormExpression(expr)) {
@@ -2414,7 +2432,8 @@ function extractConditionalClause(body) {
 }
 
 // Assignment target of one branch ("set X to", "X is set to", "store as X",
-// "X = ...", "X equals ..."). Generic syntax, not domain vocabulary.
+// "X = ...", "X equals ...", "X is <stated value>"). Generic syntax, not
+// domain vocabulary.
 function assignmentTargetFromBranch(branch) {
   const text = String(branch ?? '');
   if (!text.trim()) return null;
@@ -2428,7 +2447,44 @@ function assignmentTargetFromBranch(branch) {
   if (m && acceptableCapture(m[1])) return m[1];
   m = /\b([A-Za-z_]\w*)\s+equals?\s+/i.exec(text);
   if (m && acceptableCapture(m[1])) return m[1];
+  const stated = splitBranchIsValue(text);
+  if (stated) return stated.subject;
   return null;
+}
+
+// Pronouns that never name a calculated value in a stated-value branch
+// (`it is 5%` states no reusable subject). Generic English, never domain
+// vocabulary.
+const BRANCH_SUBJECT_PRONOUNS = new Set([
+  'i', 'me', 'my', 'we', 'us', 'our', 'ours', 'you', 'your', 'yours',
+  'he', 'him', 'his', 'she', 'her', 'hers', 'it', 'its',
+  'they', 'them', 'their', 'theirs', 'this', 'that', 'these', 'those', 'there',
+]);
+
+// A stated-value branch (`the discount is 5% of X`, `rebate is 0%`): a
+// short subject naming the calculated value, then is/are, then a
+// numeric-led stated value. Returns { subject, value } with the subject's
+// leading article dropped, or null when the shape is not evidenced —
+// nested conditionals, prose values, pronouns, and connective-led
+// subjects never match. Generic syntax, never branch contents. Exported
+// for the Excel branch renderer so stored and fresh jobs pair the same
+// subject with the same value.
+export function splitBranchIsValue(branch) {
+  const text = String(branch ?? '').trim().replace(/\.\s*$/, '').trim();
+  if (!text) return null;
+  if (/^(if|when|then|else|otherwise)\b/i.test(text)) return null;
+  const word = '[A-Za-z_][\\w]*(?:[-.][\\w]+)*';
+  const m = new RegExp(`^(?:(the|a|an)\\s+)?(${word}(?:\\s+${word}){0,3})\\s+(is|are)\\s+([\\s\\S]+?)\\s*$`, 'i').exec(text);
+  if (!m) return null;
+  const subject = m[2].replace(/\s+/g, ' ').trim();
+  const words = subject.split(' ');
+  if (words.some((w) => CONDITION_FILTER_WORDS.has(w.toLowerCase()))) return null;
+  if (words.some((w) => BRANCH_SUBJECT_PRONOUNS.has(w.toLowerCase()))) return null;
+  if (words.some((w) => /^(if|when|then|else|otherwise)$/i.test(w))) return null;
+  const value = m[4].trim();
+  if (!/^[-+₹$€£¥\d.\u2212]/.test(value)) return null;
+  if (!/\d/.test(value)) return null;
+  return { subject, value };
 }
 
 // Right-hand variables of one branch: values read (after equals, after
@@ -3514,6 +3570,9 @@ function deriveConditionDetail(text) {
       entry.true_branch = split.action;
     }
   }
+  const branchOutput = assignmentTargetFromBranch(entry.true_branch)
+    ?? assignmentTargetFromBranch(entry.false_branch);
+  if (branchOutput) entry.output = branchOutput;
   const referral = parseReferralCode(full);
   if (referral) entry.referral_code = referral;
   if (entry.condition || entry.true_branch || entry.false_branch || entry.referral_code) {
