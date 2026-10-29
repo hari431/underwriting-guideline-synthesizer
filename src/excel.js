@@ -371,13 +371,22 @@ function collectLookupKeyTerms(routines) {
   return out;
 }
 
-function candidateTablesForRoutine(routine, tables) {
+function candidateTablesForRoutine(routine, tables, routines) {
   const out = [];
   const seen = new Set();
   const targets = [
     ...((routine?.dependencies ?? []).map((d) => d?.target)),
     ...(routine?.depends_on ?? []),
   ];
+  // One-level transitive tables: routines this routine explicitly depends
+  // on contribute their own tables (a worked example illustrating a
+  // procedure looks up the procedure's tables). Structured references only,
+  // one level so dependency cycles cannot loop.
+  for (const t of [...targets]) {
+    for (const dep of findRoutinesByTarget(routines, t)) {
+      targets.push(...(dep?.depends_on ?? []), ...((dep?.dependencies ?? []).map((d) => d?.target)));
+    }
+  }
   for (const t of targets) {
     const mention = String(t ?? '').trim();
     if (!mention) continue;
@@ -446,11 +455,44 @@ function tablesMatchingCellCode(candidates, input) {
     tableCellCodes(t).some((code) => tokens.has(String(code ?? '').toLowerCase())));
 }
 
+// Lookup key evidenced for an input resolved to one table: the remainder
+// after the matched column label (`Tally limit $1,000,000` to
+// `$1,000,000`), kept only when it matches extracted cell data (a
+// whole-cell value or a code the table holds); otherwise, when resolution
+// came from cell-code evidence alone, the matched code token(s). Anything
+// else stays blank rather than guessed.
+function deriveInputKeys(table, input) {
+  const trimmed = String(input ?? '').trim().replace(/\s+/g, ' ');
+  const labels = tableHeaderLabels(table)
+    .map((h) => String(h ?? '').trim().replace(/\s+/g, ' '))
+    .filter((h) => h && isHeaderPrefixOfInput(h, trimmed))
+    .sort((a, b) => b.length - a.length);
+  if (labels.length > 0) {
+    const rest = trimmed.slice(labels[0].length).trim().replace(/^[:\-–—;,.]+\s*/, '').trim();
+    if (!rest || !inputValueEvidenced(table, rest)) return '';
+    return rest;
+  }
+  const codes = new Set(tableCellCodes(table).map((c) => String(c ?? '').toLowerCase()));
+  return [...new Set(
+    extractCellCodeTokens(trimmed).filter((t) => codes.has(String(t ?? '').toLowerCase()))
+  )].join(', ');
+}
+function inputValueEvidenced(table, rest) {
+  const lower = String(rest ?? '').trim().toLowerCase();
+  if (!lower) return false;
+  for (const row of table?.rows ?? []) {
+    for (const cell of row ?? []) {
+      if (String(cell ?? '').trim().toLowerCase() === lower) return true;
+    }
+  }
+  const codes = new Set(tableCellCodes(table).map((c) => String(c ?? '').toLowerCase()));
+  return extractCellCodeTokens(rest).some((t) => codes.has(String(t ?? '').toLowerCase()));
+}
 function resolveInputSources(routine, routines, tables) {
   const inputs = routine?.inputs ?? [];
   if (inputs.length === 0) return [];
   const allKeys = collectLookupKeyTerms(routines);
-  const candidates = candidateTablesForRoutine(routine, tables);
+  const candidates = candidateTablesForRoutine(routine, tables, routines);
   const hasSourcesEvidence = (routine?.depends_on ?? []).some((v) => String(v ?? '').trim())
     || (routine?.dependencies ?? []).length > 0
     || (routine?.steps_detailed ?? []).length > 0;
@@ -530,7 +572,7 @@ function resolveInputSources(routine, routines, tables) {
       const codeMatches = tablesMatchingCellCode(candidates, trimmed);
       const union = [...new Set([...prefixMatches, ...codeMatches])];
       if (union.length === 1) {
-        out.push({ input: trimmed, source: String(union[0].name ?? union[0].id ?? ''), keys: '' });
+        out.push({ input: trimmed, source: String(union[0].name ?? union[0].id ?? ''), keys: deriveInputKeys(union[0], trimmed) });
         continue;
       }
       if (union.length > 1) {
@@ -1685,6 +1727,33 @@ function expandCheckEntry(entry) {
   }];
 }
 
+// Split a conditional clause stating several independent IF/WHEN sentences
+// (`IF A, X. IF B, Y.`) into separately parseable statements in source
+// order. Every part must parse as its own conditional chain; anything else
+// yields null so the caller keeps the single-chain reading instead of
+// inventing boundaries. Generic sentence shapes, never branch contents.
+function splitSequentialConditions(clause) {
+  const parts = String(clause ?? '')
+    .split(/(?<=[.;?!])\s+(?=(?:if|when)\b)/i)
+    .map((s) => String(s ?? '').trim().replace(/[.;]+$/, '').trim())
+    .filter(Boolean);
+  if (parts.length < 2) return null;
+  if (!parts.every((p) => parseRatingConditionChain(p))) return null;
+  return parts;
+}
+// True when a structured expression states an assignment-wrapped conditional
+// (`Out = A if C else B`) that canonicalizes to an IF/ELSE clause. Such
+// expressions keep their existing canonical reading below; only fragment
+// expressions defer to the instruction clause.
+function hasAssignmentConditionalForm(clause) {
+  const assign = /^(.+?)\s*=\s*([\s\S]+)$/.exec(String(clause ?? ''));
+  const lhs = assign ? assign[1].trim() : '';
+  const rhs = assign ? assign[2].trim() : '';
+  return Boolean(lhs && rhs && !/=/.test(lhs) && !/^[=<>!]/.test(rhs) && conditionalRhsClause(lhs, rhs));
+}
+// A percent value (`5%`, `5% of X`) states a value, not a modulo operation.
+const PERCENT_VALUE_PROSE = /%\s*(of\b|$)/;
+
 function expandConditionEntry(entry, clauseOverride) {
   const det = entry?.det ?? null;
   const output = String(entry?.output ?? det?.output ?? '');
@@ -1692,6 +1761,13 @@ function expandConditionEntry(entry, clauseOverride) {
     || extractRatingConditionClause(entry?.instruction ?? '')
     || '';
   let clause = clauseOverride === undefined || clauseOverride === null ? fromEntry : String(clauseOverride);
+  if (clauseOverride === undefined || clauseOverride === null) {
+    // A structured expression carrying only a branch fragment (`5% of the
+    // pre-discount tallage`) is not the conditional clause: prefer the
+    // instruction's clause when it parses and the expression does not.
+    const instructionClause = extractRatingConditionClause(entry?.instruction ?? '');
+    if (instructionClause && !parseRatingConditionChain(clause) && !hasAssignmentConditionalForm(clause) && parseRatingConditionChain(instructionClause)) clause = instructionClause;
+  }
   if (clause && !parseRatingConditionChain(clause)) {
     // Assignment-wrapped conditional (`Out = A if C else B`): canonicalize
     // through the shared conditional-form parser so condition operations
@@ -1704,7 +1780,20 @@ function expandConditionEntry(entry, clauseOverride) {
       : null;
     if (canon) clause = canon;
   }
-  const parsed = clause ? parseRatingConditionChain(clause.replace(/[.;]+$/, '').trim() || clause) : null;
+  const cleanedClause = clause.replace(/[.;]+$/, '').trim() || clause;
+  const sequential = splitSequentialConditions(cleanedClause);
+  if (sequential) {
+    // Independent branches render as sequential IF/ENDIF groups in source
+    // order with no ELSE invented between them.
+    const groups = [];
+    for (const part of sequential) {
+      const group = expandConditionEntry(entry, part);
+      if (!group) return null;
+      groups.push(...group);
+    }
+    return groups;
+  }
+  const parsed = clause ? parseRatingConditionChain(cleanedClause) : null;
   if (!parsed) return null;
   const stages = (parsed.stages ?? []).filter((s) => String(s?.branch ?? '').trim());
   const elseBranch = String(parsed.elseBranch ?? '').trim();
@@ -1715,7 +1804,7 @@ function expandConditionEntry(entry, clauseOverride) {
     // A branch calculation with several operands splits into continuation
     // rows like any assignment; single values keep the branch assignment
     // row so true/false wording stays explicit.
-    if (output && value) {
+    if (output && value && !PERCENT_VALUE_PROSE.test(value)) {
       const expanded = expandAssignmentSegment(output, value);
       if (expanded && expanded.length > 1) {
         for (const row of expanded) rows.push(row);

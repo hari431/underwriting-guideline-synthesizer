@@ -254,8 +254,18 @@ export function createRatingRoutine({
   const normConds = normalizeConditionLists({ conditions, conditions_detailed: conditions_detailed ?? conditionsDetailed });
   const normDeps = normalizeDependencyLists({ depends_on: dependsOn ?? depends_on, dependencies });
   const expressionTextStr = String(expressionText ?? expression_text ?? '');
+  // Worked examples carry illustrative instance selections (`Tally limit
+  // $1,000,000`), not reusable variables: their inputs stay verbatim while
+  // every other kind still cleans to reusable terms.
+  const isWorkedExample = normalizeRoutineKind(kind, {
+    steps: normSteps.steps,
+    stepsDetailed: normSteps.steps_detailed,
+    expressionText: expressionTextStr,
+    conditions: normConds.conditions,
+    conditionsDetailed: normConds.conditions_detailed,
+  }) === 'worked_example';
   let normInputs = normalizeStringList(inputs)
-    .map(cleanStepInputValue)
+    .map((v) => (isWorkedExample ? String(v ?? '').trim() : cleanStepInputValue(v)))
     .filter((v) => v && String(v).trim());
   let normOutputs = normalizeStringList(outputs)
     .map(cleanStepOutputValue)
@@ -267,7 +277,7 @@ export function createRatingRoutine({
       if (isEffectivelyEmpty(normOutputs) && parsed.outputs.length > 0) normOutputs = parsed.outputs;
     }
   }
-  const normKind = normalizeRoutineKind(kind, {
+  const normKind = isWorkedExample ? 'worked_example' : normalizeRoutineKind(kind, {
     steps: normSteps.steps,
     stepsDetailed: normSteps.steps_detailed,
     expressionText: expressionTextStr,
@@ -609,6 +619,7 @@ function normalizeOneStep(entry, index) {
   promoteExplicitStepExpression(out);
   enrichSparseStep(out);
   sanitizeExplicitStep(out);
+  enrichRoundingTarget(out);
   return out;
 }
 
@@ -699,6 +710,21 @@ function enrichSparseStep(out) {
   if (parsed.stated_results !== undefined && out.stated_results === undefined) out.stated_results = parsed.stated_results;
   if (parsed.depends_on !== undefined && out.depends_on === undefined) out.depends_on = parsed.depends_on;
   if (!out.interpretation_status) out.interpretation_status = 'inferred';
+}
+
+// Fill a missing rounding target on an explicit rounding step from its own
+// instruction text (`Round only the final tallage to ...`): the target is
+// explicit source wording recognized by the shared rounding-target grammar,
+// never inferred. Steps whose instruction states no target keep no operand,
+// so validation and the workbook keep flagging them for review.
+function enrichRoundingTarget(out) {
+  if (!out || String(out.operation ?? '').toLowerCase() !== 'rounding') return;
+  if (String(out.operand ?? '').trim()) return;
+  const parsed = tryParseRoundingAnywhere(out.instruction);
+  if (!parsed || !parsed.operand) return;
+  out.operand = parsed.operand;
+  if (!String(out.output ?? '').trim() && parsed.output) out.output = parsed.output;
+  if ((!out.inputs || out.inputs.length === 0) && parsed.inputs) out.inputs = parsed.inputs;
 }
 
 function normalizeStepLists({ steps, steps_detailed }) {

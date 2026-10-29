@@ -231,6 +231,88 @@ test('generic: range-notation inputs match indexed uses', () => {
   assert.ok(issues.some((i) => /declares input "unused_drift"/.test(i.message)));
 });
 
+test('generic: explicit rounding keeps its stated multi-word target as operand', () => {
+  const job = ledgerJob({
+    routines: [{
+      name: 'LX — Ledger Tallage',
+      kind: 'calculation_steps',
+      sourcePages: [2],
+      evidenceText: 'synthetic ledger tallage',
+      steps: [{
+        sequence: 8,
+        instruction: 'Step 8 — Tallage rounding: Round only the final tallage to two decimal places using standard round-half-up rounding. Do not round intermediate calculations.',
+        operation: 'round',
+        expression: 'RoundHalfUp(final tallage, 2)',
+        inputs: ['final tallage'],
+        output: 'final annual tallage per ledger',
+      }],
+    }],
+  });
+  const det = job.routines[0].steps_detailed[0];
+  assert.equal(det.operation, 'rounding');
+  assert.equal(det.operand, 'final tallage');
+  assert.equal(det.output, 'final annual tallage per ledger');
+});
+
+test('generic: rounding without a stated target gains no operand', () => {
+  const job = ledgerJob({
+    routines: [{
+      name: 'LX — Ledger Tallage',
+      kind: 'calculation_steps',
+      sourcePages: [2],
+      evidenceText: 'synthetic ledger tallage',
+      steps: [
+        { sequence: 1, instruction: 'Round to two decimals.', operation: 'rounding' },
+        { sequence: 2, instruction: 'Do not round intermediate tallies.', operation: 'rounding' },
+      ],
+    }],
+  });
+  const [first, second] = job.routines[0].steps_detailed;
+  assert.equal(first.operation, 'rounding');
+  assert.equal(first.operand, undefined);
+  assert.equal(second.operation, 'rounding');
+  assert.equal(second.operand, undefined);
+});
+
+test('generic: worked-example inputs keep their selected values verbatim', () => {
+  const job = ledgerJob({
+    routines: [{
+      name: 'LX — Worked Tallage Case',
+      kind: 'worked_example',
+      sourcePages: [1],
+      evidenceText: 'synthetic worked illustration with expected values',
+      inputs: [
+        'Ledger class Harbor Skiff (LKV)',
+        'Tally limit $1,000,000',
+        'Tally deductible $500',
+        'Policy ledger count 4 ledgers',
+      ],
+      outputs: ['$1.00 per ledger'],
+      steps: [{ sequence: 1, instruction: '1. Base tallage', expression: 'Selected tallage for LKV', output: '$800.00' }],
+    }],
+  });
+  assert.deepEqual(job.routines[0].inputs, [
+    'Ledger class Harbor Skiff (LKV)',
+    'Tally limit $1,000,000',
+    'Tally deductible $500',
+    'Policy ledger count 4 ledgers',
+  ]);
+});
+
+test('generic: calculation inputs still clean to reusable terms', () => {
+  const job = ledgerJob({
+    routines: [{
+      name: 'LX — Ledger Tallage',
+      kind: 'calculation_steps',
+      sourcePages: [1],
+      evidenceText: 'synthetic ledger tallage',
+      steps: ['tally = base * factor'],
+      inputs: ['Tally limit $1,000,000'],
+    }],
+  });
+  assert.deepEqual(job.routines[0].inputs, ['Tally limit']);
+});
+
 test('generic: inferred columns feed validation without inventing values', () => {
   const table = {
     name: 'SYN-Gap', sourcePages: [1], evidenceText: 'e',

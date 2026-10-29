@@ -2209,3 +2209,177 @@ test('excel: input codes shared by two tables stay unresolved', () => {
   assert.equal(inputs.body[0][0], 'Harbor note QZX');
   assert.equal(inputs.body[0][1], 'unresolved — verify');
 });
+
+test('excel: sequential condition statements render each branch without review or invented else', () => {
+  // A condition step stating two independent IF branches (no ELSE anywhere)
+  // renders one IF/ENDIF group per branch in source order. The structured
+  // expression carries only a branch fragment, so the clause comes from the
+  // instruction; no fallback is invented for either branch.
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'synthetic.pdf', pageCount: 1 }),
+      routines: [{
+        name: 'Ledger Tally Procedure', kind: 'calculation_steps', sourcePages: [1],
+        evidenceText: 'synthetic tally procedure with two discount branches',
+        conditions: [
+          'If the policy covers 3 to 10 ledgers, the discount is 5% of the pre-discount tallage.',
+          'If the policy covers 1 or 2 ledgers, the discount is 0%.',
+        ],
+        steps: [{
+          sequence: 6,
+          instruction: 'Step 6 — Tally discount: If the policy covers 3 to 10 ledgers, the discount is 5% of the pre-discount tallage. If the policy covers 1 or 2 ledgers, the discount is 0%.',
+          operation: 'condition',
+          expression: '5% of the pre-discount tallage',
+          inputs: ['pre-discount tallage', 'Policy ledger count'],
+          output: 'tally discount',
+        }],
+      }],
+    })
+  );
+  for (const det of job.routines[0].conditions_detailed) {
+    assert.equal(String(det.false_branch ?? ''), '');
+  }
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Ledger Tally Procedure'), strings);
+  const steps = sectionRows(values, 'Steps');
+  const opIndex = steps.header.indexOf('Op');
+  assert.ok(steps.body.every((row) => row[opIndex] !== 'REVIEW'), `unexpected REVIEW rows: ${JSON.stringify(steps.body)}`);
+  const instructions = steps.body.map((row) => row[1]);
+  assert.deepEqual(instructions.filter((v) => v === 'IF').length, 2);
+  assert.deepEqual(instructions.filter((v) => v === 'ENDIF').length, 2);
+  assert.ok(!instructions.includes('ELSE'), `invented ELSE row: ${JSON.stringify(steps.body)}`);
+  const operands = steps.body.map((row) => row[4]);
+  assert.ok(operands.includes('the policy covers 3 to 10 ledgers'));
+  assert.ok(operands.includes('the policy covers 1 or 2 ledgers'));
+  assert.ok(steps.body.some((row) => row[1] === 'tally discount' && String(row[4]).includes('5%')));
+  assert.ok(steps.body.some((row) => row[1] === 'tally discount' && String(row[4]).includes('0%')));
+  assert.ok(steps.body.every((row) => row.length === 7 && row[6] !== ''));
+});
+
+test('excel: rounding row keeps its stated target in the operand', () => {
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'synthetic.pdf', pageCount: 1 }),
+      routines: [{
+        name: 'Ledger Tallage Procedure', kind: 'calculation_steps', sourcePages: [1],
+        evidenceText: 'synthetic tallage procedure with rounding',
+        steps: [{
+          sequence: 8,
+          instruction: 'Step 8 — Tallage rounding: Round only the final tallage to two decimal places using standard round-half-up rounding. Do not round intermediate calculations.',
+          operation: 'round',
+          expression: 'RoundHalfUp(final tallage, 2)',
+          inputs: ['final tallage'],
+          output: 'final annual tallage per ledger',
+        }],
+        inputs: ['final tallage'],
+        outputs: ['final annual tallage per ledger'],
+      }],
+    })
+  );
+  assert.equal(job.routines[0].steps_detailed[0].operand, 'final tallage');
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Ledger Tallage Procedure'), strings);
+  const steps = sectionRows(values, 'Steps');
+  assert.equal(steps.body.length, 1);
+  assert.deepEqual(steps.body[0].slice(0, 6), ['8', 'final annual tallage per ledger', 'R', '', 'final tallage', '']);
+  assert.notEqual(steps.body[0][6], '');
+});
+
+test('excel: worked inputs keep selected values with evidenced keys and transitive sources', () => {
+  // The worked case depends on the rating procedure rather than every table
+  // directly; the ledger-count input still resolves through the procedure's
+  // tables. Selected values stay in the Input column and evidenced lookup
+  // keys populate; the range-band selection keeps blank keys and the mystery
+  // input stays unresolved.
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'synthetic.pdf', pageCount: 1 }),
+      tables: [
+        {
+          name: 'Table L. Base Tallage by Ledger Class', sourcePages: [1], evidenceText: 'ev',
+          headers: ['Ledger class code', 'Ledger class', 'Base tallage'],
+          rows: [['LKV', 'Harbor Skiff', '800.00']],
+        },
+        {
+          name: 'Table Z. Zone Factors', sourcePages: [1], evidenceText: 'ev',
+          headers: ['Zone code', 'Zone narrative', 'Factor'],
+          rows: [['ZSH', 'Suburban Harbor', '1.00']],
+        },
+        {
+          name: 'Table T. Tenure Factors', sourcePages: [1], evidenceText: 'ev',
+          headers: ['Tenure band', 'Definition', 'Factor'],
+          rows: [['TNX-3', '4 or more years', '0.90']],
+        },
+        {
+          name: 'Table M. Tally Limit Factors', sourcePages: [1], evidenceText: 'ev',
+          headers: ['Tally limit', 'Factor'],
+          rows: [['$500,000', '1.00'], ['$1,000,000', '1.25']],
+        },
+        {
+          name: 'Table D. Tally Deductible Factors', sourcePages: [1], evidenceText: 'ev',
+          headers: ['Tally deductible', 'Factor'],
+          rows: [['$0', '1.00'], ['$500', '0.95']],
+        },
+        {
+          name: 'Tally rule', sourcePages: [1], evidenceText: 'ev',
+          headers: ['Policy ledger count', 'Tally rate'],
+          rows: [['1 to 2', '0%'], ['3 to 10', '5%']],
+        },
+      ],
+      routines: [
+        {
+          name: 'Ledger Rating Procedure', kind: 'formula', sourcePages: [1],
+          evidenceText: 'synthetic rating procedure',
+          expressionText: 'tallage = base * factor',
+          dependsOn: [
+            'Table L. Base Tallage by Ledger Class', 'Table Z. Zone Factors',
+            'Table T. Tenure Factors', 'Table M. Tally Limit Factors',
+            'Table D. Tally Deductible Factors', 'Tally rule',
+          ],
+          inputs: ['base', 'factor'],
+        },
+        {
+          name: 'Ledger Worked Case', kind: 'worked_example', sourcePages: [1],
+          evidenceText: 'synthetic worked illustration with expected values',
+          dependsOn: [
+            'Table L. Base Tallage by Ledger Class', 'Table Z. Zone Factors',
+            'Table T. Tenure Factors', 'Table M. Tally Limit Factors',
+            'Table D. Tally Deductible Factors', 'Ledger Rating Procedure',
+          ],
+          inputs: [
+            'Ledger class Harbor Skiff (LKV)',
+            'Zone Suburban Harbor (ZSH)',
+            'Tenure 4 completed years (TNX-3)',
+            'Tally limit $1,000,000',
+            'Tally deductible $500',
+            'Policy ledger count 4 ledgers',
+            'Mystery factor XQZ',
+          ],
+          outputs: ['$1.00 per ledger'],
+          steps: [{ sequence: 1, instruction: '1. Base tallage', expression: 'Selected tallage for LKV', output: '$800.00' }],
+        },
+      ],
+    })
+  );
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Ledger Worked Case'), strings);
+  const inputs = sectionRows(values, 'Inputs');
+  assert.deepEqual(inputs.header, ['Input', 'Source', 'Lookup keys']);
+  const byInput = new Map(inputs.body.map((row) => [row[0], row]));
+  assert.deepEqual(byInput.get('Ledger class Harbor Skiff (LKV)').slice(1), ['Table L. Base Tallage by Ledger Class', 'Harbor Skiff (LKV)']);
+  assert.deepEqual(byInput.get('Zone Suburban Harbor (ZSH)').slice(1), ['Table Z. Zone Factors', 'ZSH']);
+  assert.deepEqual(byInput.get('Tenure 4 completed years (TNX-3)').slice(1), ['Table T. Tenure Factors', 'TNX-3']);
+  assert.deepEqual(byInput.get('Tally limit $1,000,000').slice(1), ['Table M. Tally Limit Factors', '$1,000,000']);
+  assert.deepEqual(byInput.get('Tally deductible $500').slice(1), ['Table D. Tally Deductible Factors', '$500']);
+  assert.deepEqual(byInput.get('Policy ledger count 4 ledgers').slice(1), ['Tally rule', '']);
+  assert.deepEqual(byInput.get('Mystery factor XQZ').slice(1), ['unresolved — verify', '']);
+});
