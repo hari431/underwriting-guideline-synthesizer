@@ -1352,3 +1352,350 @@ test('validate: disjoint and consistent rules stay silent; worked examples stay 
   assert.ok(!validateJob(worked).some((i) => /different formulas/.test(i.message)),
     'illustrative worked steps are not normative definitions');
 });
+
+// ---------- generic validation defect fixes: literals, bindings, constants ----------
+
+test('validate: currency, percent, and signed literals in step refs resolve; unknown symbols still warn', () => {
+  const job = jobWith({
+    routines: [{
+      name: 'R', kind: 'worked_example', sourcePages: [1], evidenceText: 'e',
+      steps: [
+        {
+          sequence: 1,
+          instruction: 'Class premium', expression: '( $450,000 / 100 ) × $3.45',
+          inputs: ['$450,000', '$3.45'], output: '$15,525.00',
+        },
+        {
+          sequence: 2,
+          instruction: 'Schedule credit', expression: '$14,742.08 × (−0.05)',
+          inputs: ['$14,742.08', '−0.05', '0.00%'], output: '−$737.10',
+        },
+        {
+          sequence: 3, operation: 'expression',
+          instruction: 'Use missing', expression: 'ghost_var + 1',
+          inputs: ['ghost_var'], output: 'out',
+        },
+      ],
+    }],
+  });
+  const issues = validateJob(job);
+  const msgs = issues.map((i) => i.message).join(' | ');
+  for (const lit of ['$450,000', '$3.45', '$14,742.08', '−0.05', '0.00%']) {
+    assert.ok(!issues.some((i) => i.message.includes(`"${lit}"`) && /flagged as unresolved/.test(i.message)),
+      `literal ${lit} must resolve: ${msgs}`);
+  }
+  assert.ok(issues.some((i) => /"ghost_var".*flagged as unresolved/.test(i.message)),
+    `genuinely undefined symbol must still warn: ${msgs}`);
+});
+
+test('validate: var=value step bindings resolve; bindings of undefined refs still warn', () => {
+  const job = jobWith({
+    routines: [{
+      name: 'R', kind: 'worked_example', sourcePages: [1], evidenceText: 'e',
+      steps: [
+        {
+          sequence: 1,
+          instruction: 'Base premium', expression: '850 × $26.60',
+          inputs: ['E=850', 'Rcombined=$26.60'], output: '$22,610.00',
+        },
+        {
+          sequence: 2,
+          instruction: 'Bad binding', expression: 'X + 1',
+          inputs: ['X=undefined_var'], output: 'out',
+        },
+      ],
+    }],
+  });
+  const issues = validateJob(job);
+  const msgs = issues.map((i) => i.message).join(' | ');
+  assert.ok(!issues.some((i) => /"E=850"/.test(i.message)), `literal binding must resolve: ${msgs}`);
+  assert.ok(!issues.some((i) => /"Rcombined=\$26\.60"/.test(i.message)), `currency binding must resolve: ${msgs}`);
+  assert.ok(issues.some((i) => /"X=undefined_var"/.test(i.message) && /flagged as unresolved/.test(i.message)),
+    `binding of an undefined ref must still warn: ${msgs}`);
+});
+
+test('validate: constants with currency and unicode minus define terms; bare undefined refs still warn', () => {
+  const job = jobWith({
+    routines: [
+      {
+        name: 'Defs', kind: 'condition', sourcePages: [1], evidenceText: 'Credit −5.0% (Squestionnaire = −0.05). Floor Rfloor = $0.060.',
+        conditions: ['IF x THEN y ELSE z'],
+      },
+      {
+        name: 'Uses', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'e',
+        steps: [
+          { sequence: 1, instruction: 'M = Floss × (1 + Squestionnaire)', operation: 'expression', expression: 'M = Floss × (1 + Squestionnaire)', inputs: ['Floss', 'Squestionnaire'], output: 'M' },
+          { sequence: 2, instruction: 'F = max(A, Rfloor)', operation: 'expression', expression: 'F = max(A, Rfloor)', inputs: ['A', 'Rfloor'], output: 'F' },
+          { sequence: 3, instruction: 'G = ghost_var + 1', operation: 'expression', expression: 'G = ghost_var + 1', inputs: ['ghost_var'], output: 'G' },
+        ],
+        inputs: ['Floss', 'A'],
+      },
+    ],
+  });
+  const issues = validateJob(job);
+  const msgs = issues.map((i) => i.message).join(' | ');
+  assert.ok(!/"Squestionnaire"/.test(msgs), `unicode-minus constant must resolve: ${msgs}`);
+  assert.ok(!/"Rfloor"/.test(msgs), `currency constant must resolve: ${msgs}`);
+  assert.ok(issues.some((i) => /"ghost_var".*flagged as unresolved/.test(i.message)),
+    `genuinely undefined symbol must still warn: ${msgs}`);
+});
+
+test('validate: parenthesized header symbols resolve refs; unrelated symbols still warn', () => {
+  const job = jobWith({
+    tables: [{
+      name: 'Factors', sourcePages: [1], evidenceText: 'e',
+      headers: ['Class Code', 'Liability Factor (Fclass_liab)', 'Driver Factor (Fdriver)'],
+      rows: [['0120', '1.00', '1.00']],
+    }],
+    routines: [{
+      name: 'R', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'e',
+      steps: [
+        { sequence: 1, instruction: 'P = B × Fclass_liab × Fdriver', operation: 'expression', expression: 'P = B × Fclass_liab × Fdriver', inputs: ['B', 'Fclass_liab', 'Fdriver'], output: 'P' },
+        { sequence: 2, instruction: 'Q = ghost_var + 1', operation: 'expression', expression: 'Q = ghost_var + 1', inputs: ['ghost_var'], output: 'Q' },
+      ],
+      inputs: ['B'],
+    }],
+  });
+  const issues = validateJob(job);
+  const msgs = issues.map((i) => i.message).join(' | ');
+  assert.ok(!/"Fclass_liab"/.test(msgs), `header symbol must resolve: ${msgs}`);
+  assert.ok(!/"Fdriver"/.test(msgs), `header symbol must resolve: ${msgs}`);
+  assert.ok(issues.some((i) => /"ghost_var".*flagged as unresolved/.test(i.message)),
+    `genuinely undefined symbol must still warn: ${msgs}`);
+});
+
+test('validate: prior-step currency outputs with separators resolve; threshold-form refs need defined variables', () => {
+  const job = jobWith({
+    routines: [{
+      name: 'R', kind: 'worked_example', sourcePages: [1], evidenceText: 'e',
+      steps: [
+        {
+          sequence: 1,
+          instruction: 'Manual premium', expression: '( $450,000 / 100 ) × $3.45',
+          inputs: ['$450,000', '$3.45'], output: '$15,525.00',
+        },
+        {
+          sequence: 2,
+          instruction: 'Total', expression: '$15,525.00 + $187.00',
+          inputs: ['$15,525.00', '$187.00'], output: '$15,712.00',
+        },
+        {
+          sequence: 3, instruction: 'Expense constant', expression: 'Flat charge (STD < $200k)',
+          inputs: ['STD < $200k'], output: '$160.00',
+        },
+        {
+          sequence: 4, instruction: 'Bad qualifier', expression: 'Flat charge (GhostVar < $200k)',
+          inputs: ['GhostVar < $200k'], output: '$160.00',
+        },
+      ],
+    },
+    {
+      name: 'S', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'e',
+      steps: [{ sequence: 1, instruction: 'STD = SP + 1', operation: 'expression', expression: 'STD = SP + 1', inputs: ['SP'], output: 'STD' }],
+      inputs: ['SP'],
+    }],
+  });
+  const issues = validateJob(job);
+  const msgs = issues.map((i) => i.message).join(' | ');
+  assert.ok(!issues.some((i) => /"\$15,525\.00"/.test(i.message) && /flagged as unresolved/.test(i.message)),
+    `prior-step currency output must resolve: ${msgs}`);
+  assert.ok(!issues.some((i) => /"STD < \$200k"/.test(i.message) && /flagged as unresolved/.test(i.message)),
+    `threshold qualifier over a defined variable must resolve: ${msgs}`);
+  assert.ok(issues.some((i) => /"GhostVar < \$200k"/.test(i.message) && /flagged as unresolved/.test(i.message)),
+    `threshold qualifier over an undefined variable must still warn: ${msgs}`);
+});
+
+// ---------- formula and routine-kind recognition ----------
+
+test('validate: Greek-letter, Round2/Round0, max, and sum expressions are interpretable; unsafe syntax stays review', () => {
+  assert.equal(classifyFormula('Πgross = ΠCSL + ΠPIP + ΠOTC + ΠCOLL'), 'ok');
+  assert.equal(classifyFormula('Πunit_final = max( Round0( Πunit_raw × (1 − Dfleet) ), $450 )'), 'ok');
+  assert.equal(classifyFormula('ΠCSL = Round2( BCSL × Fclass × Fuse × Fdriver × ILF )'), 'ok');
+  assert.equal(classifyFormula('MP = ∑ [ ( Payroll / 100 ) × Rate ]'), 'ok');
+  assert.equal(classifyFormula('Πa = (Πb + 1'), 'review');
+  assert.equal(classifyFormula('STD = ( SP × ( 1 ± SCHED ) ) + DVIC'), 'review');
+
+  const job = jobWith({
+    routines: [{
+      name: 'R', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'e',
+      steps: [
+        { sequence: 1, instruction: 'ΠCSL = Round2( BCSL × ILF )', operation: 'expression', expression: 'ΠCSL = Round2( BCSL × ILF )', inputs: ['BCSL', 'ILF'], output: 'ΠCSL' },
+        { sequence: 2, instruction: 'STD = ( SP × ( 1 ± SCHED ) ) + DVIC', operation: 'assignment', expression: 'STD = ( SP × ( 1 ± SCHED ) ) + DVIC', inputs: ['SP', 'SCHED', 'DVIC'], output: 'STD' },
+      ],
+      inputs: ['BCSL', 'ILF', 'SP', 'SCHED', 'DVIC'],
+    }],
+  });
+  const issues = validateJob(job);
+  assert.ok(!issues.some((i) => /Step 1 expression/.test(i.message) && /cannot reliably interpret/.test(i.message)),
+    `Greek/Round2 expression must stay silent: ${issues.map((i) => i.message).join(' | ')}`);
+  assert.ok(issues.some((i) => /Step 2 expression/.test(i.message) && /cannot reliably interpret/.test(i.message)),
+    'ambiguous ± expression must stay flagged for review');
+});
+
+test('validate: lookup and floor_check are recognized kinds; unknown kinds still warn', () => {
+  const job = jobWith({
+    routines: [
+      { name: 'L', kind: 'lookup', sourcePages: [1], evidenceText: 'e', conditions: ['80% Coinsurance = 1.000 (Base)'] },
+      { name: 'F', kind: 'floor_check', sourcePages: [1], evidenceText: 'e', conditions: ['Net rate cannot be less than Rfloor = $0.060.'] },
+      { name: 'M', kind: 'mystery', sourcePages: [1], evidenceText: 'e' },
+    ],
+  });
+  const issues = validateJob(job);
+  assert.ok(!issues.some((i) => i.target_id === 'R1' && /unrecognized kind/.test(i.message)));
+  assert.ok(!issues.some((i) => i.target_id === 'R2' && /unrecognized kind/.test(i.message)));
+  assert.ok(issues.some((i) => i.target_id === 'R3' && /unrecognized kind "mystery"/.test(i.message)));
+});
+
+test('validate: prose parentheticals are not formula syntax; operator-bearing steps still flag', () => {
+  const job = jobWith({
+    routines: [{
+      name: 'R', kind: 'calculation_steps', sourcePages: [1], evidenceText: 'e',
+      steps: [
+        'All intermediate factors are maintained to four (4) decimal places without truncation.',
+        'Floor check (max with floor).',
+        'Apply (factor + 2) to the base.',
+      ],
+    }],
+  });
+  const issues = validateJob(job);
+  const flags = issues.filter((i) => /states no confident operation/.test(i.message));
+  assert.ok(!flags.some((i) => /four \(4\) decimal/.test(i.message)), 'prose number gloss must stay silent');
+  assert.ok(!flags.some((i) => /Floor check/.test(i.message)), 'prose gloss must stay silent');
+  assert.ok(flags.some((i) => /Apply \(factor/.test(i.message)), 'operator-bearing step must still flag');
+});
+
+// ---------- range-band grouping ----------
+
+test('validate: identical bands under different key groups stay silent; same-group overlaps still warn', () => {
+  const grouped = jobWith({
+    tables: [{
+      name: 'Radius', sourcePages: [1], evidenceText: 'e',
+      headers: ['Use Code', 'Category', 'Operating Radius', 'Factor'],
+      columns: [{ label: 'Use Code', role: 'key' }, { label: 'Category', role: 'key' }, { label: 'Operating Radius', role: 'key' }, { label: 'Factor', role: 'output' }],
+      rows: [
+        ['U-SRV-I', 'Service', 'Intermediate (51 – 200 miles)', '1.10'],
+        ['U-COM-I', 'Commercial', 'Intermediate (51 – 200 miles)', '1.30'],
+      ],
+    }],
+  });
+  assert.deepEqual(validateJob(grouped).filter((i) => /overlapping range bands|sharing the endpoint value/.test(i.message)), [],
+    'identical bands under different use codes are not a conflict');
+
+  const sameGroup = jobWith({
+    tables: [{
+      name: 'Radius', sourcePages: [1], evidenceText: 'e',
+      headers: ['Use Code', 'Category', 'Operating Radius', 'Factor'],
+      columns: [{ label: 'Use Code', role: 'key' }, { label: 'Category', role: 'key' }, { label: 'Operating Radius', role: 'key' }, { label: 'Factor', role: 'output' }],
+      rows: [
+        ['U-SRV-I', 'Service', 'Intermediate (51 – 200 miles)', '1.10'],
+        ['U-SRV-I', 'Service', 'Extended (100 – 300 miles)', '1.30'],
+      ],
+    }],
+  });
+  const overlaps = validateJob(sameGroup).filter((i) => /overlapping range bands/.test(i.message));
+  assert.equal(overlaps.length, 1, `same-group overlap must still warn: ${validateJob(sameGroup).map((i) => i.message).join(' | ')}`);
+  assert.match(overlaps[0].message, /both cover 100 to 200/);
+
+  const sameGroupEndpoint = jobWith({
+    tables: [{
+      name: 'Bands', sourcePages: [1], evidenceText: 'e',
+      headers: ['Tier', 'Band', 'Factor'],
+      columns: [{ label: 'Tier', role: 'key' }, { label: 'Band', role: 'key' }, { label: 'Factor', role: 'output' }],
+      rows: [
+        ['T1', '$10,000', '1.10'],
+        ['T1', '$10,000 to $25,000', '1.05'],
+        ['T1', '$30,000 to $40,000', '0.96'],
+      ],
+    }],
+  });
+  assert.ok(validateJob(sameGroupEndpoint).some((i) => /sharing the endpoint value/.test(i.message)),
+    'same-group shared endpoints stay flagged without inferring inclusivity');
+});
+
+// ---------- condition completeness ----------
+
+test('validate: lookup mappings, bounded rules, definitions, and regardless-clauses skip fallback; lone IF still warns', () => {
+  const job = jobWith({
+    routines: [
+      {
+        name: 'Lookup', kind: 'lookup', sourcePages: [1], evidenceText: 'e',
+        conditions: ['80% Coinsurance = 1.000 (Base)', '90% Coinsurance = 0.950'],
+      },
+      {
+        name: 'Bounded', kind: 'condition', sourcePages: [1], evidenceText: 'e',
+        conditions: ['Payroll is subject to a statutory minimum of $52,000 and a statutory maximum cap of $156,000.'],
+      },
+      {
+        name: 'Defined', kind: 'condition', sourcePages: [1], evidenceText: 'e',
+        conditions: ['Garaging jurisdiction is determined by the physical address where the unit is stored.'],
+      },
+      {
+        name: 'Regardless', kind: 'condition', sourcePages: [1], evidenceText: 'e',
+        conditions: ['Vans garaged in postal codes 88201–88204 must rate at Territory 02 regardless of boundary proximity.'],
+      },
+      {
+        name: 'LoneIf', kind: 'condition', sourcePages: [1], evidenceText: 'e',
+        conditions: ['IF operating terminal is within 5 miles of the boundary THEN Territory 01 rates apply'],
+      },
+    ],
+  });
+  const issues = validateJob(job);
+  for (const id of ['R1', 'R2', 'R3', 'R4']) {
+    assert.ok(!issues.some((i) => i.target_id === id && /no explicit fallback/.test(i.message)),
+      `${id} states a complete rule and must stay silent: ${issues.map((i) => i.message).join(' | ')}`);
+  }
+  assert.ok(issues.some((i) => i.target_id === 'R5' && /no explicit fallback/.test(i.message)),
+    'lone IF without ELSE must still warn');
+});
+
+// ---------- worked-example arithmetic ----------
+
+test('validate: explicit worked arithmetic checks silently when matching and warns on mismatch without changing values', () => {
+  const job = jobWith({
+    routines: [{
+      name: 'W', kind: 'worked_example', sourcePages: [1], evidenceText: 'e',
+      steps: [
+        {
+          sequence: 1,
+          instruction: 'Base premium', expression: '850 × $26.60',
+          inputs: ['E=850', 'Rcombined=$26.60'], output: '$22,610.00',
+        },
+        {
+          sequence: 2, operation: 'expression',
+          instruction: 'Loaded rate', expression: '$0.2500 × 1.150 × 1.200 × 0.950 × 1.150 = $0.3768',
+          output: '',
+        },
+        {
+          sequence: 3,
+          instruction: 'Total', expression: '$1,640.41 + $275.40',
+          output: '$9,999.99',
+        },
+        {
+          sequence: 4,
+          instruction: 'Symbolic', expression: 'E × Rcombined',
+          inputs: ['E', 'Rcombined'], output: '$22,610.00',
+        },
+        {
+          sequence: 5,
+          instruction: 'Credit', expression: '( $13,981.69 − $5,000.00 ) × 0.091',
+          inputs: ['$13,981.69', '$5,000.00', '0.091'], output: '−$817.33',
+        },
+      ],
+    }],
+  });
+  const before = JSON.stringify(job.routines[0].steps_detailed);
+  const issues = validateJob(job);
+  const msgs = issues.map((i) => i.message).join(' | ');
+  const arithmetic = issues.filter((i) => /recomputing/.test(i.message));
+  assert.ok(!arithmetic.some((i) => /Step 1/.test(i.message)), `matching bare expression must stay silent: ${msgs}`);
+  const step2 = arithmetic.find((i) => /Step 2/.test(i.message));
+  assert.ok(step2, `bare-equality mismatch must warn: ${msgs}`);
+  assert.match(step2.message, /\$0\.3768/);
+  assert.match(step2.message, /0\.3769125/);
+  assert.match(step2.message, /difference/);
+  assert.match(step2.message, /preserved, not corrected/);
+  assert.ok(arithmetic.some((i) => /Step 3/.test(i.message)), `output mismatch must warn: ${msgs}`);
+  assert.ok(!arithmetic.some((i) => /Step 4/.test(i.message)), `symbolic expression must stay silent: ${msgs}`);
+  assert.ok(!arithmetic.some((i) => /Step 5/.test(i.message)), `sign-convention magnitude match must stay silent: ${msgs}`);
+  assert.equal(JSON.stringify(job.routines[0].steps_detailed), before, 'source values must never be modified');
+});

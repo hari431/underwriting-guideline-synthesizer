@@ -13,7 +13,7 @@ export const ISSUE_PREFIX = 'V';
 // verbatim so validation can warn about genuinely unknown types.
 // worked_example marks illustrative calculations with expected values: they
 // are preserved for verification, never treated as normative definitions.
-export const ROUTINE_KINDS = ['formula', 'condition', 'calculation_steps', 'worked_example'];
+export const ROUTINE_KINDS = ['formula', 'condition', 'calculation_steps', 'worked_example', 'lookup', 'floor_check'];
 
 export function createDocument({ filename, pageCount, page_count } = {}) {
   return {
@@ -1797,8 +1797,10 @@ export function resolveRoutineReference(routines, mention) {
 
 // A variable assigned to a numeric literal in routine text, e.g. "Fixed
 // value: harbor_fee = 120." or "..., where basis = 1". Only the variable name
-// is collected; values stay in the source text for display.
-const CONSTANT_ASSIGNMENT = /\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*[-+]?\d+(?:\.\d+)?/g;
+// is collected; values stay in the source text for display. Currency symbols
+// and unicode minus signs are value punctuation ("Rfloor = $0.060",
+// "S = −0.05" define their variables the same way).
+const CONSTANT_ASSIGNMENT = /\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*[-+−]?\s*[$€£¥₹]?\s*\d+(?:\.\d+)?/g;
 
 function constantNamesIn(text, out) {
   const s = String(text ?? '');
@@ -1821,10 +1823,11 @@ function constantNamesInStep(step, out) {
   constantNamesIn(step.expression, out);
   constantNamesIn(step.operand, out);
   constantNamesIn(step.original_text, out);
+  for (const ref of [...(step.inputs ?? []), ...(step.depends_on ?? [])]) constantNamesIn(ref, out);
 }
 
 // Lowercased names assigned numeric literals anywhere in any routine's own
-// text (notes, evidence, expression, steps, conditions). Global like routine
+// text (notes, evidence, expression, steps, step inputs, conditions). Global like routine
 // outputs: a fixed value evidenced once resolves references to it. Generic:
 // driven by assignment syntax, never by variable names.
 export function definedConstantTerms(routines) {
@@ -1863,6 +1866,21 @@ function codeCellTerms(table, out) {
   }
 }
 
+// A parenthesized single token in a header or label (`Liability Factor
+// (Fclass_liab)`) is the source's own symbol for that column: references to
+// the symbol name the table structure. Multi-word glosses (`(Zero Losses
+// Reported)`), currency (`($100k)`), bare numbers, and single letters stay
+// out — too weak or not symbols. Generic punctuation shape, never names.
+function parenthesizedSymbolTerms(table, out) {
+  const labels = [table?.name, ...(table?.aliases ?? []), ...(table?.headers ?? []),
+    ...((table?.columns ?? []).map((c) => c?.label ?? c?.original_label))];
+  for (const raw of labels) {
+    for (const m of String(raw ?? '').matchAll(/\(([^()\s]{2,32})\)/g)) {
+      if (/^[A-Za-z0-9_][A-Za-z0-9_.\-/]*$/.test(m[1]) && !/^\d+(\.\d+)?$/.test(m[1])) out.push(m[1]);
+    }
+  }
+}
+
 // Lowercased id/name/alias/header/label terms identifying extracted
 // tables, plus code-shaped cell values, for matching references against
 // defined table structure.
@@ -1877,6 +1895,7 @@ export function tableReferenceTerms(tables) {
       ...(t?.columns ?? []).map((c) => c?.label ?? c?.original_label)
     );
     codeCellTerms(t, terms);
+    parenthesizedSymbolTerms(t, terms);
   }
   return new Set(
     terms

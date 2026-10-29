@@ -8,14 +8,14 @@ export { ROUTINE_KINDS };
 
 const CONDITIONAL_KEYWORDS = /\b(if|then|else|case|when|and|or|not|in)\b/i;
 const FORMULA_OPERATORS = /=|[+\-*/%()<>?×÷−·•\[\]{}^∑Σ≤≥≠∈]/;
-const FORMULA_ALLOWED_CHARS = /^[A-Za-z0-9_+\-*/().<>=!% \t,?×÷−$;·•\[\]{}^∑Σ≤≥≠∈]+$/;
+const FORMULA_ALLOWED_CHARS = /^[A-Za-z0-9_+\-*/().<>=!% \t,?×÷−$;·•\[\]{}^∑Σ≤≥≠∈Ͱ-Ͽ]+$/;
 const FALLBACK_WORDS = /\b(else|otherwise|fallback|refer|decline|exception|default)\b/i;
 const BARE_FALLBACK_CLAUSE = /^\s*(else|otherwise|fallback)\b/i;
 
 // Classify a formula expression without ever calling it "invalid":
 // 'ok' (reliably interpretable), 'conditional', or 'review' (flag for analyst).
-// Currency amounts (`$750.00`) and `;`-separated multi-statement expressions
-// are interpretable; each statement must carry its own operator or
+// Currency amounts (`$750.00`), Greek-letter variables, and `;`-separated
+// multi-statement expressions are interpretable; each statement must carry
 // assignment. Colons stay excluded: a `:` inside a formula is either prose
 // or a decoding artifact, both for the decoding check and review.
 export function classifyFormula(expressionText) {
@@ -161,6 +161,7 @@ export function validateJob(job) {
     checkStepFormulas(routine, warn);
     checkStepExpressionSyntax(routine, warn);
     checkStepArithmeticConsistency(routine, warn);
+    checkStepWorkedArithmetic(routine, warn);
     checkStepsWithoutOperations(routine, warn);
     checkIncompleteStepLogic(routine, warn);
     checkLookupKeys(routine, warn);
@@ -539,8 +540,8 @@ function parseRangeBand(cell) {
 // the column needs at least two genuine ranges (min < max), every
 // non-blank cell must parse (columns mixing ranges with `Any` or open
 // forms are skipped), and single values never overlap each other — only
-// range-vs-range (or range-vs-point) overlaps warn, naming the source
-// cells verbatim.
+// range-vs-range (or range-vs-point) overlaps warn within one key group,
+// naming the source cells verbatim.
 // A band cell explicitly including its point value: parsed spans always
 // qualify (parsing requires an explicit to/dash separator), while single
 // values need an explicit <=, >=, or = marker. Bare points ('$10,000',
@@ -558,6 +559,25 @@ function bandIncludesValue(band) {
 function bandExcludesValue(band, value) {
   if (band.min !== band.max || band.min !== value) return false;
   return /(?<![=<>!-])(<|>)(?!=)\s*[$€£¥\d]/.test(band.cell);
+}
+
+// Key-role columns (other than the band column itself) partition a band
+// column into lookup groups: identical bands under different keys (two use
+// codes sharing one radius band) are alternatives, not conflicts. Without
+// key roles the data supports no grouping and every row shares one group.
+function bandGroupKey(table, bandCol, rowIdx) {
+  const row = (table.rows ?? [])[rowIdx] ?? [];
+  const parts = [];
+  (table.columns ?? []).forEach((col, idx) => {
+    if (idx === bandCol) return;
+    if (!/\b(key|lookup|input)\b/i.test(String(col?.role ?? ''))) return;
+    parts.push(String(idx < row.length ? row[idx] ?? '' : '').trim());
+  });
+  return JSON.stringify(parts);
+}
+
+function sameBandGroup(table, bandCol, rowA, rowB) {
+  return bandGroupKey(table, bandCol, rowA) === bandGroupKey(table, bandCol, rowB);
 }
 
 function checkOverlappingRangeBands(table, warn) {
@@ -586,6 +606,7 @@ function checkOverlappingRangeBands(table, warn) {
       for (let j = i + 1; j < bands.length; j += 1) {
         const a = bands[i];
         const b = bands[j];
+        if (!sameBandGroup(table, c, a.idx, b.idx)) continue;
         if (a.min === a.max && b.min === b.max) {
           // Identical single values are owned by the duplicate-row and
           // conflicting-key checks — unless both explicitly include the
@@ -1050,12 +1071,31 @@ function isQuotedCitation(text) {
   return !CONDITIONAL_WORDS.test(stripped);
 }
 
+// A non-conditional rule that is complete on its face needs no ELSE: an
+// equational mapping or value definition (`80% Coinsurance = 1.000`), a
+// rule bounded on both sides (minimum and maximum), a definition (`X is
+// determined by Y`), or a rule holding regardless of the varying factor.
+// Any conditional wording (if/when/else/...) keeps the fallback demand,
+// since the unstated branch is then genuinely unknown. Generic rule
+// structure, never document contents.
+function isCompleteRule(text) {
+  const s = String(text ?? '');
+  if (!s.trim() || CONDITIONAL_WORDS.test(s)) return false;
+  if (hasStandaloneEquals(s)) return true;
+  if (/\bminimum\b/i.test(s) && /\bmaximum\b/i.test(s)) return true;
+  if (/\bis\s+(determined|defined|calculated|computed|derived)\s+by\b/i.test(s)) return true;
+  if (/\bdefined\s+as\b/i.test(s)) return true;
+  if (/\bregardless\s+of\b/i.test(s)) return true;
+  return false;
+}
+
 function checkConditionBranches(routine, warn) {
   const texts = (routine.conditions ?? []).map((c) => String(c ?? '').trim()).filter(Boolean);
   const detailed = routine.conditions_detailed ?? [];
   if (texts.length === 0 && detailed.length === 0) return;
   if (texts.length === 0) {
-    const actionable = detailed.filter((d) => !isQuotedCitation(d?.condition ?? d?.original_text ?? ''));
+    const actionable = detailed.filter((d) => !isQuotedCitation(d?.condition ?? d?.original_text ?? '')
+      && !isCompleteRule(d?.condition ?? d?.original_text ?? ''));
     if (actionable.length === 0) return;
     const hasStructuredFallback = actionable.some((d) => String(d?.false_branch ?? '').trim() || String(d?.referral_code ?? '').trim());
     if (!hasStructuredFallback) {
@@ -1079,6 +1119,7 @@ function checkConditionBranches(routine, warn) {
     if (det && (String(det?.false_branch ?? '').trim() || String(det?.referral_code ?? '').trim())) return;
     if (FALLBACK_WORDS.test(text)) return;
     if (hasBareFallback) return;
+    if (isCompleteRule(text)) return;
     if (!String(det?.true_branch ?? '').trim() && isQuotedCitation(text)) return;
     const which = texts.length > 1 ? `Condition ${idx + 1} ` : 'Condition ';
     warn('routine', routine.id, `${which}("${truncate(text, 60)}") states no explicit fallback or ELSE branch; verify the fallback behavior against the source.`, routine.source_pages);
@@ -1127,6 +1168,15 @@ function checkUnstructuredStepConditions(routine, warn) {
   }
 }
 
+// A parenthetical group holding no operator or assignment (`(4)`, `(max with
+// floor)`) is a prose gloss, not formula syntax: strip such groups before
+// testing whether a step reaches for a formula. Groups with operators
+// (`(1 − Dfleet)`, `(factor + 2)`) stay, so genuinely formula-like steps
+// still flag. Generic punctuation shape, never contents.
+function stripProseParentheticals(text) {
+  return String(text ?? '').replace(/\([^()]*\)/g, (group) => (/[=+\-*/%×÷−·•^∑Σ<>]/.test(group) ? group : ' '));
+}
+
 function checkStepFormulas(routine, warn) {
   const steps = routine.steps ?? [];
   steps.forEach((step, idx) => {
@@ -1139,7 +1189,7 @@ function checkStepFormulas(routine, warn) {
     // the missing evidence class — no explicit operator, assignment, or
     // table reference — never off which characters happen to appear, so
     // equivalent steps warn consistently regardless of charset accidents.
-    if (!FORMULA_OPERATORS.test(text)) return;
+    if (!FORMULA_OPERATORS.test(stripProseParentheticals(text))) return;
     if (CONDITIONAL_KEYWORDS.test(text) && !text.includes('=')) return;
     warn('routine', routine.id, `Step ${idx + 1} ("${truncate(text, 60)}") states no confident operation — no explicit operator, '=' assignment, or table lookup; flagged for analyst review (not treated as invalid).`, routine.source_pages);
   });
@@ -1181,11 +1231,12 @@ function checkStepExpressionSyntax(routine, warn) {
 // computed, and difference; source values are never modified.
 const ARITHMETIC_EVAL_FUNCS = new Set(['round', 'round_half_up', 'min', 'max']);
 
-// Parse a source-stated amount ('$4,910.71', '125.0000 credits', '95%').
+// Parse a source-stated amount ('$4,910.71', '125.0000 credits', '95%', '−$817.33').
 // Trailing unit words are labels, not value. Returns { value, decimals }
 // or null when the text is not confidently numeric.
 export function parseStatedAmount(text) {
   let s = String(text ?? '').trim();
+  s = s.replace(/^[−–—]/, '-');
   if (!s) return null;
   s = s.replace(/(?:\s+[A-Za-z_][\w.-]*)+\s*$/, '').trim();
   let percent = false;
@@ -1193,7 +1244,7 @@ export function parseStatedAmount(text) {
     percent = true;
     s = s.slice(0, -1).trim();
   }
-  s = s.replace(/^[₹$€£¥]\s*/, '').trim().replace(/\s+/g, '').replace(/,/g, '');
+  s = s.replace(/^([-+])?\s*[₹$€£¥₹]?\s*/, '$1').replace(/\s+/g, '').replace(/,/g, '');
   const m = /^([-+]?(?:\d+(?:\.\d*)?|\.\d+))$/.exec(s);
   if (!m) return null;
   const value = Number(m[1]) * (percent ? 0.01 : 1);
@@ -1393,6 +1444,48 @@ function formatDifference(d) {
 // assignment segment. Matching outputs pair by normalized variable key;
 // every other shape stays silent. Independent of conflict detection: this
 // check never compares steps or routines against each other.
+// Bare worked arithmetic: a step whose expression is a fully-numeric
+// computation with a stated result to compare against — either a bare
+// equality (`$0.2500 × 1.150 = $0.3768`, where the left side assigns no
+// variable) or a bare expression with a numeric step output (`850 × $26.60`
+// with output `$22,610.00`). Symbolic, incomplete, and chained forms fail
+// safe to null and stay silent, exactly like the stated-results check.
+// Magnitudes compare: a matching magnitude with a differing sign is a
+// display convention for credits, not an arithmetic error, so only
+// magnitude mismatches warn. Source values are never modified.
+function checkStepWorkedArithmetic(routine, warn) {
+  const detailed = routine.steps_detailed ?? [];
+  if (detailed.length === 0) return;
+  detailed.forEach((step, idx) => {
+    const expr = String(step?.expression ?? '').trim();
+    if (!expr) return;
+    const pages = step?.source_pages?.length ? step.source_pages : routine.source_pages;
+    const equals = standaloneEqualsIndexes(expr);
+    if (equals.length === 1 && !splitAssignmentSegment(expr)) {
+      const lhs = expr.slice(0, equals[0]).trim();
+      const rhs = expr.slice(equals[0] + 1).trim().replace(/[.,]\s*$/, '').trim();
+      const computed = evaluateNumericExpression(lhs);
+      const target = parseStatedAmount(rhs);
+      if (computed === null || target === null) return;
+      compareWorkedArithmetic(routine, step, idx, rhs, rhs, lhs, computed, target, pages, warn);
+    } else if (equals.length === 0) {
+      const output = String(step?.output ?? '').trim();
+      if (!output) return;
+      const computed = evaluateNumericExpression(expr);
+      const target = parseStatedAmount(output);
+      if (computed === null || target === null) return;
+      compareWorkedArithmetic(routine, step, idx, output, output, expr, computed, target, pages, warn);
+    }
+  });
+}
+
+function compareWorkedArithmetic(routine, step, idx, label, stated, source, computed, target, pages, warn) {
+  const tolerance = 0.5 * 10 ** -target.decimals + 1e-9 * Math.max(1, Math.abs(target.value));
+  if (Math.abs(Math.abs(computed) - Math.abs(target.value)) <= tolerance) return;
+  const diff = computed - target.value;
+  warn('routine', routine.id, `Step ${stepSeq(step, idx)} ("${label}") states ${String(stated).trim()} but recomputing "${truncate(source, 60)}" gives ${formatRecomputed(computed)} (difference ${formatDifference(diff)}); verify the source arithmetic — source values are preserved, not corrected.`, pages);
+}
+
 function checkStepArithmeticConsistency(routine, warn) {
   const detailed = routine.steps_detailed ?? [];
   if (detailed.length === 0) return;
@@ -1820,7 +1913,7 @@ function checkUnusedInputs(routine, warn) {
     addTokens(dep);
   }
   for (const name of inputs) {
-    if (isNumericReference(name)) continue;
+    if (isLiteralReference(name)) continue;
     const key = normalizeVariableKey(name);
     if (used.has(name.toLowerCase()) || (key && used.has(key))) continue;
     if (rangeInputUsed(name, used)) continue;
@@ -1888,8 +1981,9 @@ function buildReferenceContext(tables, routines) {
   // Multi-output steps join their targets (`output: "A, B"`): each part is a
   // defined term of its own. Commas never belong in a variable name, so the
   // split cannot merge distinct variables — it only stops the joined string
-  // from hiding every part at once.
-  const outputParts = (value) => String(value ?? '').split(/[,;]/).map((s) => s.trim()).filter(Boolean);
+  // from hiding every part at once. A comma between digits is a thousands
+  // separator (`$15,525.00`), never a join.
+  const outputParts = (value) => String(value ?? '').split(';').flatMap((part) => String(part ?? '').split(/,(?!\d)/)).map((s) => s.trim()).filter(Boolean);
   const tableTerms = tableReferenceTerms(tables);
   const routineOutputs = lowered((routines ?? []).flatMap((r) => (r.outputs ?? []).flatMap(outputParts)));
   const stepOutputs = lowered((routines ?? []).flatMap((r) => (r.steps_detailed ?? []).flatMap((s) => outputParts(s?.output))));
@@ -1917,6 +2011,40 @@ function buildReferenceContext(tables, routines) {
   };
 }
 
+// A stated literal value rather than a symbolic reference: plain numbers
+// plus the punctuation sources wrap them in — one leading sign (ASCII or
+// unicode minus), one leading currency symbol, thousands separators, and
+// one trailing percent (`$15,525.00`, `−$737.10`, `0.00%`). Anything else
+// (identifiers, suffixed forms like `$200k`, prose) is not a literal.
+function isLiteralReference(value) {
+  if (isNumericReference(value)) return true;
+  let s = String(value ?? '').trim().replace(/,/g, '');
+  if (!s) return false;
+  s = s.replace(/^[+\-−]/, '').trim();
+  s = s.replace(/^[$€£¥₹]\s*/, '');
+  s = s.replace(/%\s*$/, '');
+  if (!s) return false;
+  return /^(\d+(\.\d*)?|\.\d+)$/.test(s);
+}
+
+// Indexes of standalone `=` assignments (never `==`, `!=`, `<=`, `>=`, `=>`).
+function standaloneEqualsIndexes(text) {
+  const s = String(text ?? '');
+  const out = [];
+  for (let i = 0; i < s.length; i += 1) {
+    if (s[i] !== '=') continue;
+    const prev = s[i - 1] ?? '';
+    const next = s[i + 1] ?? '';
+    if (prev === '=' || prev === '!' || prev === '<' || prev === '>' || next === '=' || next === '>') continue;
+    out.push(i);
+  }
+  return out;
+}
+
+function hasStandaloneEquals(text) {
+  return standaloneEqualsIndexes(text).length > 0;
+}
+
 function isNumericReference(value) {
   const s = String(value ?? '').trim().replace(/,/g, '');
   return s !== '' && /^[-+]?(\d+(\.\d*)?|\.\d+)$/.test(s);
@@ -1931,7 +2059,19 @@ function isNumericReference(value) {
 // because it is not a table column.
 function isResolvedReference(routine, target, ctx) {
   const name = String(target ?? '').trim();
-  if (!name || isNumericReference(name)) return true;
+  if (!name || isLiteralReference(name)) return true;
+  // A `variable = value` binding states its own definition: it resolves
+  // when the value is a literal or itself resolves, and warns otherwise.
+  const binding = splitAssignmentSegment(name);
+  if (binding) {
+    if (isLiteralReference(binding.rhs)) return true;
+    if (!hasStandaloneEquals(binding.rhs) && isResolvedReference(routine, binding.rhs, ctx)) return true;
+  }
+  // A threshold-form qualifier (`STD < $200k`) is a condition fragment, not
+  // a value: it resolves when its variable does (the parse itself validates
+  // the numeric bound), and warns otherwise.
+  const thresholdRef = parseConditionThreshold(name);
+  if (thresholdRef) return isResolvedReference(routine, thresholdRef.label, ctx);
   const lower = name.toLowerCase();
   if (ctx.knownNames.has(lower)) return true;
   if (resolveRoutineReference(ctx.routines, name)) return true;
