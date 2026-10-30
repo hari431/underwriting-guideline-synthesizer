@@ -120,3 +120,66 @@ test('pipeline: same-page identical tables without cues stay unlinked', () => {
   assert.ok(built.tables[0].continuation === null || built.tables[0].continuation === undefined);
   assert.ok(built.tables[1].continuation === null || built.tables[1].continuation === undefined);
 });
+
+// ---------- parameterized lookup generation ----------
+
+function lookupExtraction({ inputs } = {}) {
+  return {
+    tables: [
+      { name: 'Schedule S. Cover Factors', sourcePages: [1], evidenceText: 'cover factor schedule', headers: ['Cover code', 'Factor'], rows: [['C1', '1.10'], ['C2', '1.20']] },
+    ],
+    routines: [{
+      name: 'Cover Rating Procedure', kind: 'calculation_steps', sourcePages: [2], evidenceText: 'e',
+      inputs: inputs ?? ['Cover'],
+      steps: [
+        'Step 1 — Base amount: Select the base amount for the ledger class from Schedule B.',
+        'Step 2 — Adjusted amount: Multiply the base amount by the cover factor from Schedule S.',
+      ],
+      steps_detailed: [
+        { instruction: 'Step 1 — Base amount: Select the base amount for the ledger class from Schedule B.', operation: 'lookup', inputs: ['ledger class'], output: 'Base amount', depends_on: ['Schedule B'], evidence: 'Select the base amount for the ledger class from Schedule B.', source_pages: [2] },
+        { instruction: 'Step 2 — Adjusted amount: Multiply the base amount by the cover factor from Schedule S.', operation: 'expression', expression: 'Base amount * cover factor', inputs: ['Base amount', 'cover factor'], output: 'Adjusted amount', depends_on: ['Schedule S'], evidence: 'Multiply the base amount by the cover factor from Schedule S.', source_pages: [2] },
+      ],
+    }],
+  };
+}
+
+test('pipeline: buildJobFromExtraction generates a parameterized lookup before validation', () => {
+  const job = buildJobFromExtraction(lookupExtraction(), { filename: 'p.pdf', pageCount: 2 });
+  const routine = job.routines[0];
+  assert.equal(routine.steps.length, 3);
+  assert.equal(routine.steps_detailed.length, 3);
+  assert.equal(routine.steps[1], 'Look up the cover factor from Schedule S using Cover.');
+  const generated = routine.steps_detailed[1];
+  assert.equal(generated.operation, 'lookup');
+  assert.deepEqual(generated.inputs, ['Cover']);
+  assert.equal(generated.output, 'cover factor');
+  assert.deepEqual(generated.depends_on, ['Schedule S']);
+  const msgs = job.issues.map((i) => i.message).join(' | ');
+  assert.ok(!job.issues.some((i) => /"cover factor"/.test(i.message)), `produced factor must stay silent: ${msgs}`);
+});
+
+test('pipeline: reviewer edits regenerate lookups without model calls', () => {
+  const stored = normalizeJob(createJob({
+    document: createDocument({ filename: 'p.pdf', pageCount: 2 }),
+    ...lookupExtraction(),
+  }));
+  assert.equal(stored.routines[0].steps_detailed.length, 2);
+  const edited = applyReviewEdits(stored, {});
+  const routine = edited.routines[0];
+  assert.equal(routine.steps_detailed.length, 3);
+  assert.equal(routine.steps_detailed[1].operation, 'lookup');
+  assert.equal(routine.steps_detailed[1].output, 'cover factor');
+  const msgs = edited.issues.map((i) => i.message).join(' | ');
+  assert.ok(!edited.issues.some((i) => /"cover factor"/.test(i.message)), `produced factor must stay silent: ${msgs}`);
+});
+
+test('pipeline: procedure without key support keeps the unresolved factor warning', () => {
+  const job = buildJobFromExtraction(lookupExtraction({ inputs: [] }), { filename: 'p.pdf', pageCount: 2 });
+  const routine = job.routines[0];
+  assert.equal(routine.steps_detailed.length, 2);
+  assert.ok(!routine.steps_detailed.some((s) => s.output === 'cover factor'), 'no lookup may be generated without a bound key');
+  const msgs = job.issues.map((i) => i.message).join(' | ');
+  const hit = job.issues.find((i) => /uses "cover factor" from Table "Schedule S\. Cover Factors"/.test(i.message));
+  assert.ok(hit, `unsupported factor must warn with its table: ${msgs}`);
+  assert.match(hit.message, /no routine input or preceding step provides the lookup key/);
+});

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createDocument, createJob, normalizeJob } from '../src/models.js';
+import { createDocument, createJob, generateParameterizedLookups, normalizeJob } from '../src/models.js';
 import { classifyFormula, evaluateNumericExpression, validateJob } from '../src/validate.js';
 
 function jobWith(overrides) {
@@ -1895,4 +1895,108 @@ test('validate: factor matching several named tables names each as unresolved', 
   assert.ok(hit, `multi-table factor must name each table: ${msgs}`);
   assert.match(hit.message, /no lookup step selecting it/);
   assert.match(hit.message, /flagged as unresolved/);
+});
+
+test('validate: unresolved factor warning explains the missing lookup key binding', () => {
+  // Table, key column and factor column are unambiguous, but no routine
+  // input or preceding step provides the key: the warning names the
+  // identified columns and the missing binding for analyst review.
+  const job = jobWith({
+    tables: [
+      { name: 'Table 2. Territory Tallage Factors', sourcePages: [1], evidenceText: 'territory factor schedule', headers: ['Territory code', 'Description', 'Factor'], rows: [['SUB', 'Suburban', '1.00']] },
+    ],
+    routines: [{
+      name: 'Ledger Tally Procedure', kind: 'calculation_steps', sourcePages: [2], evidenceText: 'e',
+      steps: [
+        { sequence: 1, instruction: 'Step 1 — Zone scaling: Multiply the base tallage by the territory factor from Table 2.', operation: 'expression', expression: 'Base tallage * territory factor', inputs: ['Base tallage', 'territory factor'], output: 'Zone scaling', depends_on: ['Table 2'] },
+      ],
+    }],
+  });
+  const issues = validateJob(job);
+  const msgs = issues.map((i) => i.message).join(' | ');
+  const hit = issues.find((i) => /Step 1 uses "territory factor" from Table "Table 2\. Territory Tallage Factors"/.test(i.message));
+  assert.ok(hit, `unproduced factor must warn with its table: ${msgs}`);
+  assert.match(hit.message, /no lookup step selecting it/);
+  assert.match(hit.message, /key column "Territory code" and factor column "Factor"/);
+  assert.match(hit.message, /no routine input or preceding step provides the lookup key/);
+  assert.match(hit.message, /flagged as unresolved/);
+});
+
+test('validate: unresolved factor warning names ambiguous key columns', () => {
+  // `Territory code` and `Territory description` both match the factor, so
+  // no single key column is identifiable: the warning names the candidates
+  // instead of guessing which one selects the factor.
+  const job = jobWith({
+    tables: [
+      { name: 'Table 2. Territory Tallage Factors', sourcePages: [1], evidenceText: 'territory factor schedule', headers: ['Territory code', 'Territory description', 'Factor'], rows: [['SUB', 'Suburban', '1.00']] },
+    ],
+    routines: [{
+      name: 'Ledger Tally Procedure', kind: 'calculation_steps', sourcePages: [2], evidenceText: 'e',
+      inputs: ['Territory'],
+      steps: [
+        { sequence: 1, instruction: 'Step 1 — Zone scaling: Multiply the base tallage by the territory factor from Table 2.', operation: 'expression', expression: 'Base tallage * territory factor', inputs: ['Base tallage', 'territory factor'], output: 'Zone scaling', depends_on: ['Table 2'] },
+      ],
+    }],
+  });
+  const issues = validateJob(job);
+  const msgs = issues.map((i) => i.message).join(' | ');
+  const hit = issues.find((i) => /Step 1 uses "territory factor" from Table "Table 2\. Territory Tallage Factors"/.test(i.message));
+  assert.ok(hit, `unproduced factor must warn with its table: ${msgs}`);
+  assert.match(hit.message, /key column is ambiguous \("Territory code", "Territory description"\)/);
+  assert.match(hit.message, /flagged as unresolved/);
+});
+
+test('validate: generated parameterized lookup silences the factor warning', () => {
+  // Mirrors the pipeline: generation runs before validation, so a supported
+  // lookup produces the factor and neither the factor nor its key warns.
+  const job = jobWith({
+    tables: [
+      { name: 'Schedule S. Cover Factors', sourcePages: [1], evidenceText: 'cover factor schedule', headers: ['Cover code', 'Factor'], rows: [['C1', '1.10']] },
+    ],
+    routines: [{
+      name: 'Cover Rating Procedure', kind: 'calculation_steps', sourcePages: [2], evidenceText: 'e',
+      inputs: ['Cover'],
+      steps: [
+        'Step 1 — Base amount: Select the base amount for the ledger class from Schedule B.',
+        'Step 2 — Adjusted amount: Multiply the base amount by the cover factor from Schedule S.',
+      ],
+      steps_detailed: [
+        { instruction: 'Step 1 — Base amount: Select the base amount for the ledger class from Schedule B.', operation: 'lookup', inputs: ['ledger class'], output: 'Base amount', depends_on: ['Schedule B'], evidence: 'Select the base amount for the ledger class from Schedule B.', source_pages: [2] },
+        { instruction: 'Step 2 — Adjusted amount: Multiply the base amount by the cover factor from Schedule S.', operation: 'expression', expression: 'Base amount * cover factor', inputs: ['Base amount', 'cover factor'], output: 'Adjusted amount', depends_on: ['Schedule S'], evidence: 'Multiply the base amount by the cover factor from Schedule S.', source_pages: [2] },
+      ],
+    }],
+  });
+  assert.equal(generateParameterizedLookups(job.routines[0], job.tables, job.routines), 1);
+  const issues = validateJob(job);
+  const msgs = issues.map((i) => i.message).join(' | ');
+  assert.ok(!issues.some((i) => /"cover factor"/.test(i.message)), `produced factor must stay silent: ${msgs}`);
+  assert.ok(!issues.some((i) => /"Cover"/.test(i.message)), `bound lookup key must stay silent: ${msgs}`);
+});
+
+test('validate: unresolved factor warning names ambiguous binding candidates', () => {
+  // Two inputs overlap the key column with no exact or specificity
+  // winner: no lookup is generated and the warning names both candidates,
+  // identically regardless of input order.
+  const build = (inputs) => jobWith({
+    tables: [
+      { name: 'Schedule S. Cover Factors', sourcePages: [1], evidenceText: 'cover factor schedule', headers: ['Cover code', 'Factor'], rows: [['C1', '1.10']] },
+    ],
+    routines: [{
+      name: 'Cover Rating Procedure', kind: 'calculation_steps', sourcePages: [2], evidenceText: 'e',
+      inputs,
+      steps: [
+        { sequence: 1, instruction: 'Step 1 — Adjusted amount: Multiply the base amount by the cover factor from Schedule S.', operation: 'expression', expression: 'Base amount * cover factor', inputs: ['Base amount', 'cover factor'], output: 'Adjusted amount', depends_on: ['Schedule S'] },
+      ],
+    }],
+  });
+  const messages = [['Cover', 'Cover region'], ['Cover region', 'Cover']].map((inputs) => {
+    const issues = validateJob(build(inputs));
+    const msgs = issues.map((i) => i.message).join(' | ');
+    const hit = issues.find((i) => /Step 1 uses "cover factor" from Table "Schedule S\. Cover Factors"/.test(i.message));
+    assert.ok(hit, `unproduced factor must warn with its table: ${msgs}`);
+    return hit.message;
+  });
+  assert.equal(messages[0], messages[1]);
+  assert.match(messages[0], /lookup key binding is ambiguous \("Cover", "Cover region"\)/);
+  assert.match(messages[0], /flagged as unresolved/);
 });

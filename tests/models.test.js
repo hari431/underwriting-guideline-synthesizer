@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { assignmentTargetFromBranch, cleanStepInputValue, conditionsMutuallyExclusive, createJob, createDocument, findTableCandidates, normalizeJob, resolveTableReference, splitBranchIsValue, splitSequentialConditionParts, stepInputTables } from '../src/models.js';
+import { assignmentTargetFromBranch, cleanStepInputValue, conditionsMutuallyExclusive, createJob, createDocument, diagnoseFactorLookup, findTableCandidates, generateParameterizedLookups, normalizeJob, resolveTableReference, splitBranchIsValue, splitSequentialConditionParts, stepInputTables } from '../src/models.js';
 
 test('normalizeJob assigns stable sequential IDs and preserves evidence', () => {
   const job = normalizeJob(
@@ -810,4 +810,344 @@ test('models: stepInputTables attributes inputs to step-named tables', () => {
   assert.deepEqual(names({ depends_on: ['Table 99'] }, 'territory factor'), []);
   assert.deepEqual(names({}, 'territory factor'), []);
   assert.deepEqual(names({ depends_on: ['Table 2'] }, ''), []);
+});
+
+// ---------- parameterized lookup generation ----------
+
+function coverFactorTable() {
+  return { name: 'Schedule S. Cover Factors', sourcePages: [1], evidenceText: 'cover factor schedule', headers: ['Cover code', 'Factor'], rows: [['C1', '1.10'], ['C2', '1.20']] };
+}
+
+function coverRatingRoutine() {
+  return {
+    name: 'Cover Rating Procedure', kind: 'calculation_steps', source_pages: [2], evidence_text: 'e',
+    inputs: ['Cover'],
+    outputs: [],
+    steps: [
+      'Step 1 \u2014 Base amount: Select the base amount for the ledger class from Schedule B.',
+      'Step 2 \u2014 Adjusted amount: Multiply the base amount by the cover factor from Schedule S.',
+      'Step 3 \u2014 Total amount: Add the fee to the Cover Factor from Schedule S.',
+    ],
+    steps_detailed: [
+      { instruction: 'Step 1 \u2014 Base amount: Select the base amount for the ledger class from Schedule B.', operation: 'lookup', inputs: ['ledger class'], output: 'Base amount', depends_on: ['Schedule B'], evidence: 'Select the base amount for the ledger class from Schedule B.', source_pages: [2] },
+      { instruction: 'Step 2 \u2014 Adjusted amount: Multiply the base amount by the cover factor from Schedule S.', operation: 'expression', expression: 'Base amount * cover factor', inputs: ['Base amount', 'cover factor'], output: 'Adjusted amount', depends_on: ['Schedule S'], evidence: 'Multiply the base amount by the cover factor from Schedule S.', source_pages: [2] },
+      { instruction: 'Step 3 \u2014 Total amount: Add the fee to the Cover Factor from Schedule S.', operation: 'expression', expression: 'Cover Factor + fee', inputs: ['Cover Factor', 'fee'], output: 'Total amount', depends_on: ['Schedule S'], evidence: 'Add the fee to the Cover Factor from Schedule S.', source_pages: [2] },
+    ],
+  };
+}
+
+test('models: factor lookup diagnosis succeeds with an input-bound key column', () => {
+  const d = diagnoseFactorLookup(coverRatingRoutine(), 1, 'cover factor', coverFactorTable());
+  assert.equal(d.status, 'ok');
+  assert.equal(d.keyColumn, 'Cover code');
+  assert.equal(d.valueColumn, 'Factor');
+  assert.equal(d.binding, 'Cover');
+  assert.equal(d.bindingSource, 'input');
+});
+
+test('models: factor lookup diagnosis lets an exact match beat a partial match across sources', () => {
+  // Inputs no longer outrank preceding outputs: the exact header match
+  // wins wherever it is evidenced, without any source-order tie-break.
+  const routine = coverRatingRoutine();
+  routine.steps_detailed[0].output = 'Cover code';
+  const d = diagnoseFactorLookup(routine, 1, 'cover factor', coverFactorTable());
+  assert.equal(d.status, 'ok');
+  assert.equal(d.binding, 'Cover code');
+  assert.equal(d.bindingSource, 'step');
+});
+
+test('models: factor lookup diagnosis binds a preceding step output', () => {
+  const routine = coverRatingRoutine();
+  routine.inputs = [];
+  routine.steps_detailed[0].output = 'Cover code';
+  const d = diagnoseFactorLookup(routine, 1, 'cover factor', coverFactorTable());
+  assert.equal(d.status, 'ok');
+  assert.equal(d.binding, 'Cover code');
+  assert.equal(d.bindingSource, 'step');
+});
+
+test('models: factor lookup diagnosis ignores outputs of later steps', () => {
+  const routine = coverRatingRoutine();
+  routine.inputs = [];
+  routine.steps_detailed[2].output = 'Cover';
+  const d = diagnoseFactorLookup(routine, 1, 'cover factor', coverFactorTable());
+  assert.equal(d.status, 'no-binding');
+  assert.equal(d.keyColumn, 'Cover code');
+  assert.equal(d.valueColumn, 'Factor');
+});
+
+test('models: factor lookup diagnosis reports an unsupported key', () => {
+  const routine = coverRatingRoutine();
+  routine.inputs = [];
+  const d = diagnoseFactorLookup(routine, 1, 'cover factor', coverFactorTable());
+  assert.equal(d.status, 'no-binding');
+  assert.equal(d.keyColumn, 'Cover code');
+  assert.equal(d.valueColumn, 'Factor');
+  assert.equal(d.binding, '');
+});
+
+test('models: factor lookup diagnosis reports ambiguous key columns', () => {
+  const table = { name: 'Table 2. Territory Factors', headers: ['Territory code', 'Territory description', 'Factor'], rows: [['SUB', 'Suburban', '1.00']] };
+  const routine = { inputs: ['Territory'], steps_detailed: [{ inputs: ['territory factor'], output: 'Zone scaling' }] };
+  const d = diagnoseFactorLookup(routine, 0, 'territory factor', table);
+  assert.equal(d.status, 'ambiguous-key-column');
+  assert.deepEqual(d.keyCandidates, ['Territory code', 'Territory description']);
+  assert.equal(d.valueColumn, 'Factor');
+});
+
+test('models: factor lookup diagnosis reports a missing key column', () => {
+  const table = { name: 'Table 2. Territory Factors', headers: ['Region', 'Factor'], rows: [['R1', '1.00']] };
+  const routine = { inputs: ['Territory'], steps_detailed: [{ inputs: ['territory factor'], output: 'Zone scaling' }] };
+  const d = diagnoseFactorLookup(routine, 0, 'territory factor', table);
+  assert.equal(d.status, 'no-key-column');
+  assert.equal(d.valueColumn, 'Factor');
+});
+
+test('models: factor lookup diagnosis reports a missing factor column', () => {
+  const table = { name: 'Schedule S. Cover Rates', headers: ['Cover code', 'Rate'], rows: [['C1', '1.10']] };
+  const routine = { inputs: ['Cover'], steps_detailed: [{ inputs: ['cover factor'], output: 'Adjusted' }] };
+  const d = diagnoseFactorLookup(routine, 0, 'cover factor', table);
+  assert.equal(d.status, 'no-value-column');
+  assert.equal(d.keyColumn, '');
+});
+
+test('models: factor lookup diagnosis reports an ambiguous factor column', () => {
+  const table = { name: 'Schedule S. Cover Factors', headers: ['Cover code', 'Factor', 'Factor percent'], rows: [['C1', '1.10', '110%']] };
+  const routine = { inputs: ['Cover'], steps_detailed: [{ inputs: ['cover factor'], output: 'Adjusted' }] };
+  const d = diagnoseFactorLookup(routine, 0, 'cover factor', table);
+  assert.equal(d.status, 'ambiguous-value-column');
+  assert.deepEqual(d.valueCandidates, ['Factor', 'Factor percent']);
+});
+
+test('models: parameterized lookup generation inserts a lookup step before first use', () => {
+  const routine = coverRatingRoutine();
+  assert.equal(generateParameterizedLookups(routine, [coverFactorTable()]), 1);
+  assert.equal(routine.steps.length, 4);
+  assert.equal(routine.steps_detailed.length, 4);
+  assert.equal(routine.steps[1], 'Look up the cover factor from Schedule S using Cover.');
+  assert.deepEqual(routine.steps_detailed[1], {
+    instruction: 'Look up the cover factor from Schedule S using Cover.',
+    operation: 'lookup',
+    inputs: ['Cover'],
+    output: 'cover factor',
+    depends_on: ['Schedule S'],
+    evidence: 'Multiply the base amount by the cover factor from Schedule S.',
+    source_pages: [2],
+    interpretation_status: 'inferred',
+  });
+  assert.equal(routine.steps_detailed[2].output, 'Adjusted amount');
+  assert.equal(routine.steps_detailed[3].output, 'Total amount');
+});
+
+test('models: generated lookup recases downstream references to the canonical factor name', () => {
+  const routine = coverRatingRoutine();
+  generateParameterizedLookups(routine, [coverFactorTable()]);
+  const third = routine.steps_detailed[3];
+  assert.deepEqual(third.inputs, ['cover factor', 'fee']);
+  assert.equal(third.expression, 'cover factor + fee');
+  assert.deepEqual(routine.steps_detailed[2].inputs, ['Base amount', 'cover factor']);
+});
+
+test('models: lookup generation is idempotent and preserves explicit lookups', () => {
+  const routine = coverRatingRoutine();
+  const table = coverFactorTable();
+  assert.equal(generateParameterizedLookups(routine, [table]), 1);
+  const snapshot = JSON.stringify(routine);
+  assert.equal(generateParameterizedLookups(routine, [table]), 0);
+  assert.equal(JSON.stringify(routine), snapshot);
+  const explicit = coverRatingRoutine();
+  explicit.steps.splice(1, 0, 'Step 1b \u2014 Cover factor: Look up the Cover Factor from Schedule S using Cover.');
+  explicit.steps_detailed.splice(1, 0, { instruction: 'Look up the Cover Factor from Schedule S using Cover.', operation: 'lookup', inputs: ['Cover'], output: 'Cover Factor', depends_on: ['Schedule S'], evidence: 'e', source_pages: [2] });
+  assert.equal(generateParameterizedLookups(explicit, [table]), 0);
+  assert.equal(explicit.steps_detailed.length, 4);
+  assert.deepEqual(explicit.steps_detailed[2].inputs, ['Base amount', 'cover factor']);
+});
+
+test('models: lookup generation skips factors that are routine inputs', () => {
+  const routine = coverRatingRoutine();
+  routine.inputs = ['Cover', 'cover factor'];
+  const before = JSON.stringify(routine);
+  assert.equal(generateParameterizedLookups(routine, [coverFactorTable()]), 0);
+  assert.equal(JSON.stringify(routine), before);
+});
+
+test('models: lookup generation skips factors naming no extracted table', () => {
+  const routine = coverRatingRoutine();
+  for (const s of routine.steps_detailed) {
+    if (s.output === 'Adjusted amount' || s.output === 'Total amount') s.depends_on = ['Schedule Z'];
+  }
+  const before = JSON.stringify(routine);
+  assert.equal(generateParameterizedLookups(routine, [coverFactorTable()]), 0);
+  assert.equal(JSON.stringify(routine), before);
+});
+
+test('models: lookup generation skips factors matching several tables', () => {
+  const tables = [
+    coverFactorTable(),
+    { name: 'Table 9. Cover Factor Riders', headers: ['Rider code', 'Factor'], rows: [['R1', '1.00']] },
+  ];
+  const routine = coverRatingRoutine();
+  routine.steps_detailed[1].depends_on = ['Schedule S', 'Table 9'];
+  const before = JSON.stringify(routine);
+  assert.equal(generateParameterizedLookups(routine, tables), 0);
+  assert.equal(JSON.stringify(routine), before);
+});
+
+test('models: lookup generation skips factors used from different tables', () => {
+  const tables = [
+    coverFactorTable(),
+    { name: 'Table 9. Cover Factor Riders', headers: ['Cover code', 'Factor'], rows: [['C1', '1.05']] },
+  ];
+  const routine = coverRatingRoutine();
+  routine.steps_detailed[2].depends_on = ['Table 9'];
+  const before = JSON.stringify(routine);
+  assert.equal(generateParameterizedLookups(routine, tables), 0);
+  assert.equal(JSON.stringify(routine), before);
+});
+
+test('models: lookup generation never borrows another routine\u2019s inputs', () => {
+  const routine = coverRatingRoutine();
+  routine.inputs = [];
+  const worked = { name: 'Worked Example', kind: 'worked_example', inputs: ['Cover: C1'], steps: [], steps_detailed: [] };
+  const before = JSON.stringify(routine);
+  assert.equal(generateParameterizedLookups(routine, [coverFactorTable()], [routine, worked]), 0);
+  assert.equal(JSON.stringify(routine), before);
+});
+
+test('models: lookup generation binds a preceding step output', () => {
+  const routine = coverRatingRoutine();
+  routine.inputs = [];
+  routine.steps_detailed[0].output = 'Cover code';
+  assert.equal(generateParameterizedLookups(routine, [coverFactorTable()]), 1);
+  assert.equal(routine.steps[1], 'Look up the cover factor from Schedule S using Cover code.');
+  assert.deepEqual(routine.steps_detailed[1].inputs, ['Cover code']);
+});
+
+test('models: lookup generation emits one lookup per factor', () => {
+  const tables = [
+    coverFactorTable(),
+    { name: 'Schedule M. Mode Factors', sourcePages: [1], evidenceText: 'mode factor schedule', headers: ['Mode code', 'Factor'], rows: [['M1', '0.95']] },
+  ];
+  const routine = {
+    name: 'Rating', kind: 'procedure', source_pages: [2], evidence_text: 'e',
+    inputs: ['Cover', 'Mode'],
+    outputs: [],
+    steps: ['Use cover.', 'Use mode.'],
+    steps_detailed: [
+      { instruction: 'Use cover.', operation: 'expression', expression: 'Base * cover factor', inputs: ['Base', 'cover factor'], output: 'Adjusted', depends_on: ['Schedule S'], evidence: 'Use cover.', source_pages: [2] },
+      { instruction: 'Use mode.', operation: 'expression', expression: 'Adjusted * mode factor', inputs: ['Adjusted', 'mode factor'], output: 'Total', depends_on: ['Schedule M'], evidence: 'Use mode.', source_pages: [2] },
+    ],
+  };
+  assert.equal(generateParameterizedLookups(routine, tables), 2);
+  assert.equal(routine.steps.length, 4);
+  assert.equal(routine.steps_detailed.length, 4);
+  assert.equal(routine.steps_detailed[0].output, 'cover factor');
+  assert.equal(routine.steps_detailed[2].output, 'mode factor');
+  assert.deepEqual(routine.steps_detailed[2].inputs, ['Mode']);
+});
+
+test('models: lookup generation anchors on the first generatable use', () => {
+  // An earlier use without table evidence does not block generation: the
+  // lookup anchors on the first evidenced use, and only downstream
+  // references take the canonical name.
+  const routine = coverRatingRoutine();
+  routine.steps_detailed[2].depends_on = [];
+  assert.equal(generateParameterizedLookups(routine, [coverFactorTable()]), 1);
+  assert.equal(routine.steps[1], 'Look up the cover factor from Schedule S using Cover.');
+  assert.deepEqual(routine.steps_detailed[3].inputs, ['cover factor', 'fee']);
+});
+
+test('models: generated lookups survive repeated normalization', () => {
+  const job = normalizeJob(createJob({
+    document: createDocument({ filename: 'g.pdf', pageCount: 2 }),
+    tables: [coverFactorTable()],
+    routines: [coverRatingRoutine()],
+  }));
+  const routine = job.routines[0];
+  assert.equal(generateParameterizedLookups(routine, job.tables, job.routines), 1);
+  const twice = normalizeJob(normalizeJob(job));
+  const steps = twice.routines[0].steps_detailed;
+  assert.equal(steps.filter((s) => s.operation === 'lookup' && s.output === 'cover factor').length, 1);
+  assert.equal(twice.routines[0].steps.length, steps.length);
+  assert.equal(twice.routines[0].steps[1], 'Look up the cover factor from Schedule S using Cover.');
+});
+
+test('models: factor lookup diagnosis reports an ambiguous binding', () => {
+  // Two inputs overlap the key column with no exact or specificity
+  // winner: no lookup may guess, so the candidates are named for review.
+  const routine = coverRatingRoutine();
+  routine.inputs = ['Cover', 'Cover region'];
+  const d = diagnoseFactorLookup(routine, 1, 'cover factor', coverFactorTable());
+  assert.equal(d.status, 'ambiguous-binding');
+  assert.deepEqual(d.bindingCandidates, ['Cover', 'Cover region']);
+  assert.equal(d.binding, '');
+});
+
+test('models: factor lookup diagnosis is independent of candidate order', () => {
+  const table = coverFactorTable();
+  const forward = coverRatingRoutine();
+  forward.inputs = ['Cover', 'Cover region'];
+  const reversed = coverRatingRoutine();
+  reversed.inputs = ['Cover region', 'Cover'];
+  const a = diagnoseFactorLookup(forward, 1, 'cover factor', table);
+  const b = diagnoseFactorLookup(reversed, 1, 'cover factor', table);
+  assert.equal(a.status, 'ambiguous-binding');
+  assert.deepEqual(a, b);
+});
+
+test('models: factor lookup diagnosis lets an exact match beat a partial match', () => {
+  // Exact header agreement wins in either order: source order never
+  // breaks the tie.
+  const table = coverFactorTable();
+  for (const inputs of [['Cover', 'Cover code'], ['Cover code', 'Cover']]) {
+    const routine = coverRatingRoutine();
+    routine.inputs = inputs;
+    const d = diagnoseFactorLookup(routine, 1, 'cover factor', table);
+    assert.equal(d.status, 'ok');
+    assert.equal(d.binding, 'Cover code');
+    assert.equal(d.bindingSource, 'input');
+  }
+});
+
+test('models: factor lookup diagnosis lets unique specificity win without an exact match', () => {
+  // No input equals the header, but one shares strictly more words: that
+  // most-evidenced candidate binds.
+  const table = { name: 'Schedule S. Cover Factors', headers: ['Policy cover code', 'Factor'], rows: [['P1', '1.10']] };
+  const routine = { inputs: ['Code', 'Cover code'], steps_detailed: [{ inputs: ['cover factor'], output: 'Adjusted' }] };
+  const d = diagnoseFactorLookup(routine, 0, 'cover factor', table);
+  assert.equal(d.status, 'ok');
+  assert.equal(d.keyColumn, 'Policy cover code');
+  assert.equal(d.binding, 'Cover code');
+});
+
+test('models: factor lookup diagnosis collapses duplicate and case-variant inputs', () => {
+  // Identical and case-variant surfaces denote one variable, not two
+  // candidates.
+  const table = coverFactorTable();
+  const dupes = coverRatingRoutine();
+  dupes.inputs = ['Cover', 'Cover'];
+  assert.equal(diagnoseFactorLookup(dupes, 1, 'cover factor', table).status, 'ok');
+  const cased = coverRatingRoutine();
+  cased.inputs = ['cover', 'Cover'];
+  const d = diagnoseFactorLookup(cased, 1, 'cover factor', table);
+  assert.equal(d.status, 'ok');
+  assert.equal(d.binding, 'Cover');
+});
+
+test('models: lookup generation skips factors with an ambiguous binding', () => {
+  const routine = coverRatingRoutine();
+  routine.inputs = ['Cover', 'Cover region'];
+  const before = JSON.stringify(routine);
+  assert.equal(generateParameterizedLookups(routine, [coverFactorTable()]), 0);
+  assert.equal(JSON.stringify(routine), before);
+});
+
+test('models: lookup generation binds the exact match in either candidate order', () => {
+  for (const inputs of [['Cover', 'Cover code'], ['Cover code', 'Cover']]) {
+    const routine = coverRatingRoutine();
+    routine.inputs = inputs;
+    assert.equal(generateParameterizedLookups(routine, [coverFactorTable()]), 1);
+    assert.equal(routine.steps[1], 'Look up the cover factor from Schedule S using Cover code.');
+    assert.deepEqual(routine.steps_detailed[1].inputs, ['Cover code']);
+  }
 });

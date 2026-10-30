@@ -1940,6 +1940,442 @@ function namesTableItself(table, raw) {
   });
 }
 
+// Shared reference predicates for factor lookups, moved from validate.js
+// unchanged so generation and validation classify references identically.
+export function isNumericReference(value) {
+  const s = String(value ?? '').trim().replace(/,/g, '');
+  return s !== '' && /^[-+]?(\d+(\.\d*)?|\.\d+)$/.test(s);
+}
+
+// A stated literal value rather than a symbolic reference: plain numbers
+// plus the punctuation sources wrap them in — one leading sign (ASCII or
+// unicode minus), one leading currency symbol, thousands separators, and
+// one trailing percent (`$15,525.00`, `−$737.10`, `0.00%`). Anything else
+// (identifiers, suffixed forms like `$200k`, prose) is not a literal.
+export function isLiteralReference(value) {
+  if (isNumericReference(value)) return true;
+  let s = String(value ?? '').trim().replace(/,/g, '');
+  if (!s) return false;
+  s = s.replace(/^[+\-−]/, '').trim();
+  s = s.replace(/^[$€£¥₹]\s*/, '');
+  s = s.replace(/%\s*$/, '');
+  if (!s) return false;
+  return /^(\d+(\.\d*)?|\.\d+)$/.test(s);
+}
+
+// Lookup-flavored step operations, mirroring the lookup-key check: steps
+// that introduce values from tables rather than computing from inputs.
+export function isLookupLikeOperation(op) {
+  const o = String(op ?? '').toLowerCase();
+  return o.includes('lookup') || o.includes('look-up') || o.includes('table');
+}
+
+// Terms a step defines for itself in its own instruction or expression:
+// the target of every standalone `=` assignment and the retrieved value of
+// every `<verb> <phrase> from (the) table(s)` retrieval phrase (its last
+// identifier: `Retrieve harbor rate HarborRate from Fee Schedule ...`
+// defines HarborRate). Lookup keys (`matching PORT-01`) and surrounding
+// prose are never collected. References to these terms are step-internal,
+// never unresolved. Generic syntax, never variable names.
+const STEP_RETRIEVAL_VERBS = '(?:retrieves?|retrieved|look\\s*-?\\s*up|lookup|finds?|found|fetch(?:es|ed)?|obtains?|obtained|gets?|got|selects?|selected|reads?|determines?|determined|locates?|located|extracts?|extracted)';
+const STEP_RETRIEVAL_SOURCES = '(?:tables?|schedules?|appendix|appendices|exhibits?)';
+
+export function stepDefinedTerms(step) {
+  const lower = new Set();
+  const normalized = new Set();
+  const add = (term) => {
+    const s = String(term ?? '').trim();
+    if (!s) return;
+    lower.add(s.toLowerCase());
+    const key = normalizeVariableKey(s);
+    if (key) normalized.add(key);
+  };
+  // Declared step references, used as queries below: a retrieval phrase
+  // only ever defines names the step itself states, so prose inside the
+  // phrase can never resolve anything by accident.
+  const queries = [...(step?.inputs ?? []), ...(step?.depends_on ?? [])]
+    .map((v) => String(v ?? '').trim())
+    .filter(Boolean);
+  const texts = [step?.instruction, step?.expression, step?.original_text];
+  for (const raw of texts) {
+    const s = String(raw ?? '');
+    if (!s) continue;
+    for (let i = 0; i < s.length; i += 1) {
+      if (s[i] !== '=') continue;
+      const prev = s[i - 1] ?? '';
+      const next = s[i + 1] ?? '';
+      if (prev === '=' || prev === '!' || prev === '<' || prev === '>' || next === '=' || next === '>') continue;
+      const m = /([A-Za-z_]\w*)\s*$/.exec(s.slice(0, i));
+      if (m) add(m[1]);
+    }
+    const pattern = new RegExp(`${STEP_RETRIEVAL_VERBS}\\s+(.+?)\\s+from\\s+(?:the\\s+)?(?:[A-Za-z0-9_-]+\\s+){0,3}?${STEP_RETRIEVAL_SOURCES}\\b`, 'gi');
+    let m;
+    while ((m = pattern.exec(s)) !== null) {
+      const ids = String(m[1] ?? '').match(/[A-Za-z_]\w*/g) ?? [];
+      if (ids.length > 0) add(ids[ids.length - 1]);
+      // Each listed item (`base rates BRprem and BRprod`) defines its own
+      // trailing variable: a declared reference resolves when it matches a
+      // trailing token run of one item, spacing-insensitive, so `T Fprem`
+      // matches `... factors T Fprem` while bare prose (`factors`) never
+      // does. Token boundaries are exact — suffix substrings do not count.
+      for (const segment of String(m[1] ?? '').split(/\s+and\s+|,/i)) {
+        const keys = (segment.match(/[A-Za-z_]\w*/g) ?? []).map((t) => normalizeVariableKey(t));
+        if (keys.length === 0) continue;
+        for (const q of queries) {
+          const qk = normalizeVariableKey(q);
+          if (!qk) continue;
+          for (let i = 0; i < keys.length; i += 1) {
+            if (keys.slice(i).join('') === qk) {
+              add(q);
+              break;
+            }
+          }
+        }
+      }
+    }
+    // Explicit same-step definitions (`Let Feeflat be the sum ...`) define
+    // exactly the named phrase, however spaced. Whole phrases only: unlike
+    // retrieval items, the phrase carries no surrounding prose to trim.
+    const letPattern = /\blet\s+(.+?)\s+be\b/gi;
+    let letMatch;
+    while ((letMatch = letPattern.exec(s)) !== null) {
+      for (const part of String(letMatch[1] ?? '').split(/\s+and\s+|,/i)) {
+        add(part.trim());
+      }
+    }
+  }
+  return { lower, normalized };
+}
+
+export function isStepDefined(name, definedHere) {
+  if (!definedHere) return false;
+  const lower = String(name ?? '').trim().toLowerCase();
+  if (definedHere.lower.has(lower)) return true;
+  const key = normalizeVariableKey(name);
+  return Boolean(key && definedHere.normalized.has(key));
+}
+
+// Stemmed word set of a label: lowercase alphanumeric tokens through the
+// shared singular/plural-insensitive form, so `Factors` meets `factor`.
+// Generic token logic, never label contents.
+function stemmedLabelWords(value) {
+  const words = String(value ?? '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  return new Set(words.map(singularKeyword));
+}
+
+// A factor mention split into its head word (the last keyword: `factor` in
+// `territory factor`) and its qualifier words (the rest). Purely numeric
+// qualifier words never count: numbers do not name concepts, so a stray
+// `2` can never match a key column.
+function factorMentionParts(name) {
+  const keywords = tableMentionKeywords(name).map((w) => singularKeyword(w));
+  const head = keywords.length > 0 ? keywords[keywords.length - 1] : '';
+  const qualifier = new Set(keywords.slice(0, -1).filter((w) => /[a-z]/.test(w)));
+  return { head, qualifier };
+}
+
+// Headers of a table: extracted headers, falling back to inferred column
+// labels when headers are absent. Verbatim source labels, never altered.
+function lookupTableHeaders(table) {
+  const headers = Array.isArray(table?.headers)
+    ? table.headers.map((h) => String(h ?? '').trim()).filter(Boolean)
+    : [];
+  if (headers.length > 0) return headers;
+  return (Array.isArray(table?.columns) ? table.columns : [])
+    .map((c) => String(c?.label ?? c?.original_label ?? '').trim())
+    .filter(Boolean);
+}
+
+// Multi-output steps join their targets (`output: "A, B"`): each part is a
+// defined term of its own. Mirrors the validator's output splitting.
+function splitOutputParts(value) {
+  return String(value ?? '').split(';')
+    .flatMap((part) => String(part ?? '').split(/,(?!\d)/))
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+// Every binding candidate for one factor use: routine inputs plus
+// preceding-step outputs (strictly before stepIndex), sharing a stemmed
+// word with the key column header. Later steps and other routines never
+// bind: a key must be evidenced before its use, in its own routine.
+function collectBindingCandidates(routine, stepIndex, keyColumn) {
+  const headerWords = stemmedLabelWords(keyColumn);
+  const out = [];
+  if (headerWords.size === 0) return out;
+  const overlaps = (label) => {
+    for (const w of stemmedLabelWords(label)) {
+      if (headerWords.has(w)) return true;
+    }
+    return false;
+  };
+  for (const raw of routine?.inputs ?? []) {
+    const s = String(raw ?? '').trim();
+    if (s && overlaps(s)) out.push({ name: s, source: 'input' });
+  }
+  const detailed = Array.isArray(routine?.steps_detailed) ? routine.steps_detailed : [];
+  for (let i = 0; i < stepIndex && i < detailed.length; i += 1) {
+    for (const part of splitOutputParts(detailed[i]?.output)) {
+      if (overlaps(part)) out.push({ name: part, source: 'step' });
+    }
+  }
+  return out;
+}
+
+// Display member for one candidate group: the member verbatim-equal to the
+// key column header when present, else the ASCII-first member. Order-free:
+// members of a group denote the same variable.
+function bindingGroupMember(members, keyColumn) {
+  const verbatim = members.find((m) => m.name === keyColumn);
+  if (verbatim) return verbatim;
+  return [...members].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))[0];
+}
+
+// Representative surface per candidate group, sorted case-insensitively
+// so ambiguity reports read identically regardless of source order.
+function namedBindingCandidates(entries, keyColumn) {
+  return entries
+    .map(([, members]) => bindingGroupMember(members, keyColumn).name)
+    .sort((a, b) => {
+      const al = a.toLowerCase();
+      const bl = b.toLowerCase();
+      if (al !== bl) return al < bl ? -1 : 1;
+      return a < b ? -1 : a > b ? 1 : 0;
+    });
+}
+
+// One binding from many candidates, or none: candidates group by
+// normalized variable, so duplicates and case variants are one candidate.
+// A lone group binds; across groups an exact header match wins when it is
+// alone; otherwise the uniquely most-evidenced (most shared words)
+// candidate wins. Anything else is ambiguous — source order never breaks
+// a tie and nothing is guessed.
+function selectUniqueBinding(candidates, keyColumn) {
+  const groups = new Map();
+  for (const c of candidates) {
+    const key = normalizeVariableKey(c.name);
+    if (!key) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(c);
+  }
+  if (groups.size === 0) return { status: 'none', candidates: [] };
+  const headerKey = normalizeVariableKey(keyColumn);
+  const headerWords = stemmedLabelWords(keyColumn);
+  const scoreOf = (members) => {
+    let n = 0;
+    for (const w of stemmedLabelWords(bindingGroupMember(members, keyColumn).name)) {
+      if (headerWords.has(w)) n += 1;
+    }
+    return n;
+  };
+  const entries = [...groups.entries()];
+  if (entries.length === 1) {
+    const winner = bindingGroupMember(entries[0][1], keyColumn);
+    return { status: 'ok', name: winner.name, source: winner.source, candidates: [] };
+  }
+  const exact = entries.filter(([key]) => key === headerKey);
+  if (exact.length === 1) {
+    const winner = bindingGroupMember(exact[0][1], keyColumn);
+    return { status: 'ok', name: winner.name, source: winner.source, candidates: [] };
+  }
+  if (exact.length > 1) return { status: 'ambiguous', candidates: namedBindingCandidates(exact, keyColumn) };
+  const scored = entries.map((entry) => ({ entry, score: scoreOf(entry[1]) }));
+  const best = Math.max(...scored.map((s) => s.score));
+  const winners = scored.filter((s) => s.score === best);
+  if (winners.length === 1) {
+    const winner = bindingGroupMember(winners[0].entry[1], keyColumn);
+    return { status: 'ok', name: winner.name, source: winner.source, candidates: [] };
+  }
+  return { status: 'ambiguous', candidates: namedBindingCandidates(entries, keyColumn) };
+}
+
+// Whether one factor use supports a parameterized lookup from its table:
+// the factor column is the unique header holding the mention's head word,
+// the key column is the unique remaining header sharing a qualifier word,
+// and the key binds to a routine input or preceding-step output. Returns
+// the identified columns and binding, or the first check that fails so
+// callers can explain exactly what needs analyst review. Generic word
+// agreement only; table contents are never read.
+export function diagnoseFactorLookup(routine, stepIndex, name, table) {
+  const headers = lookupTableHeaders(table);
+  const { head, qualifier } = factorMentionParts(name);
+  const blank = { status: '', keyColumn: '', valueColumn: '', keyCandidates: [], valueCandidates: [], binding: '', bindingSource: '', bindingCandidates: [] };
+  const valueHits = head ? headers.filter((h) => stemmedLabelWords(h).has(head)) : [];
+  if (valueHits.length === 0) return { ...blank, status: 'no-value-column' };
+  if (valueHits.length > 1) return { ...blank, status: 'ambiguous-value-column', valueCandidates: [...valueHits] };
+  const valueColumn = valueHits[0];
+  const keyHits = headers.filter((h) => h !== valueColumn && [...stemmedLabelWords(h)].some((w) => qualifier.has(w)));
+  if (keyHits.length === 0) return { ...blank, status: 'no-key-column', valueColumn };
+  if (keyHits.length > 1) {
+    return { ...blank, status: 'ambiguous-key-column', valueColumn, keyCandidates: [...keyHits] };
+  }
+  const keyColumn = keyHits[0];
+  const selection = selectUniqueBinding(collectBindingCandidates(routine, stepIndex, keyColumn), keyColumn);
+  if (selection.status === 'none') return { ...blank, status: 'no-binding', keyColumn, valueColumn };
+  if (selection.status === 'ambiguous') {
+    return { ...blank, status: 'ambiguous-binding', keyColumn, valueColumn, bindingCandidates: selection.candidates };
+  }
+  return { ...blank, status: 'ok', keyColumn, valueColumn, binding: selection.name, bindingSource: selection.source };
+}
+
+// Terms introduced without any table: literals, this routine's inputs,
+// every routine's step and routine outputs, defined constants, and this
+// routine's lookup keys. Mirrors the validator's factor-introduced check
+// so generation fires exactly where validation would flag.
+function collectProducedTerms(routines, routine) {
+  const lower = new Set();
+  const normalized = new Set();
+  const addRaw = (raw) => {
+    const l = String(raw ?? '').trim().toLowerCase();
+    if (!l) return;
+    lower.add(l);
+    const k = normalizeVariableKey(raw);
+    if (k) normalized.add(k);
+  };
+  const addSplit = (raw) => {
+    for (const part of splitOutputParts(raw)) addRaw(part);
+  };
+  for (const r of routines) {
+    for (const s of r?.steps_detailed ?? []) addSplit(s?.output);
+    for (const o of r?.outputs ?? []) addSplit(o);
+  }
+  for (const raw of routine?.inputs ?? []) addRaw(raw);
+  for (const c of definedConstantTerms(routines)) addRaw(c);
+  for (const s of routine?.steps_detailed ?? []) {
+    if (!isLookupLikeOperation(s?.operation)) continue;
+    for (const raw of s?.inputs ?? []) addRaw(raw);
+  }
+  return { lower, normalized };
+}
+
+function isProducedTerm(produced, name) {
+  if (isLiteralReference(name)) return true;
+  const lower = String(name ?? '').trim().toLowerCase();
+  if (produced.lower.has(lower)) return true;
+  const key = normalizeVariableKey(name);
+  return Boolean(key && produced.normalized.has(key));
+}
+
+// The insertion plan for one factor, or null when generation is unsafe:
+// any use naming several tables suppresses the factor (production must
+// never hide table ambiguity), all evidenced uses must agree on one table
+// and the same key/value columns, and the first evidenced use must
+// diagnose clean. Insertion anchors before that first evidenced use.
+function planFactorLookup(routine, sites, tables, offset) {
+  if (sites.some((s) => s.tables.length > 1)) return null;
+  const evidenced = sites.filter((s) => s.tables.length === 1);
+  if (evidenced.length === 0) return null;
+  const table = evidenced[0].tables[0];
+  if (!evidenced.every((s) => s.tables[0] === table)) return null;
+  const first = evidenced[0];
+  const diagnosis = diagnoseFactorLookup(routine, first.index + offset, first.name, table);
+  if (diagnosis.status !== 'ok') return null;
+  const columnsAgree = evidenced.every((s) => {
+    const d = diagnoseFactorLookup(routine, s.index + offset, s.name, table);
+    return d.keyColumn === diagnosis.keyColumn && d.valueColumn === diagnosis.valueColumn;
+  });
+  if (!columnsAgree) return null;
+  return { index: first.index + offset, name: first.name, table, binding: diagnosis.binding };
+}
+
+// The using step's own table mention resolving to the lookup table,
+// verbatim so downstream resolution and rendering agree. Falls back to
+// the table's own name when no mention resolves (unreachable through the
+// attribution gate: the mention evidenced the table).
+function tableMentionFor(step, tables, table) {
+  for (const raw of step?.depends_on ?? []) {
+    const mention = String(raw ?? '').trim();
+    if (mention && resolveTableReference(tables, mention) === table) return mention;
+  }
+  return String(table?.name ?? table?.id ?? '');
+}
+
+// Splice one parameterized lookup before its first evidenced use, keeping
+// display strings and details positionally aligned, then recase downstream
+// references to the canonical (first-seen) factor name — the same
+// producer-display rule normalization applies, so re-normalization is a
+// no-op. Instructions, evidence, and source order stay verbatim.
+function insertFactorLookup(routine, detailed, tables, anchor, key) {
+  const useStep = detailed[anchor.index] ?? {};
+  const mention = tableMentionFor(useStep, tables, anchor.table);
+  const instruction = `Look up the ${anchor.name} from ${mention} using ${anchor.binding}.`;
+  const pages = Array.isArray(useStep.source_pages) && useStep.source_pages.length > 0
+    ? [...useStep.source_pages]
+    : [...(routine?.source_pages ?? [])];
+  const generated = {
+    instruction,
+    operation: 'lookup',
+    inputs: [anchor.binding],
+    output: anchor.name,
+    depends_on: [mention],
+    evidence: String(useStep.evidence ?? useStep.instruction ?? routine?.evidence_text ?? ''),
+    source_pages: pages,
+    interpretation_status: 'inferred',
+  };
+  const display = Array.isArray(routine?.steps) ? routine.steps : null;
+  const aligned = display !== null && display.length > 0 && display.length === detailed.length;
+  detailed.splice(anchor.index, 0, generated);
+  if (aligned) display.splice(anchor.index, 0, instruction);
+  const producers = new Map([[key, anchor.name]]);
+  for (let i = anchor.index + 1; i < detailed.length; i += 1) {
+    const step = detailed[i];
+    if (!step || typeof step !== 'object') continue;
+    if (!Array.isArray(step.inputs) || step.inputs.length === 0) continue;
+    const original = [...step.inputs];
+    step.inputs = original.map((term) => producers.get(normalizeVariableKey(term)) || term);
+    if (typeof step.expression === 'string' && step.expression) {
+      step.expression = canonicalizeExpressionTerms(step.expression, original, step.operand, producers);
+    }
+  }
+}
+
+// Insert parameterized lookup assignments for table-driven factors used in
+// calculations. A factor earns a lookup only when its routine explicitly
+// references one table for it, the table's key and factor columns are
+// unambiguous, and the key binds to a routine input or preceding-step
+// output of the same routine — worked-example values from other routines
+// never bind. Explicit lookups, produced values, ambiguous tables, and
+// ambiguous columns keep their existing behavior: no step is invented and
+// validation keeps flagging the gap. Mutates the routine in place (like
+// canonicalization) and returns the number of steps inserted; re-running
+// after normalization inserts nothing further.
+export function generateParameterizedLookups(routine, tables, routines = [routine]) {
+  const detailed = Array.isArray(routine?.steps_detailed) ? routine.steps_detailed : [];
+  if (detailed.length === 0) return 0;
+  const list = Array.isArray(tables) ? tables : [];
+  const all = Array.isArray(routines) && routines.length > 0 ? routines : [routine];
+  const produced = collectProducedTerms(all, routine);
+  const sitesByFactor = new Map();
+  detailed.forEach((step, index) => {
+    if (!step || typeof step !== 'object' || isLookupLikeOperation(step.operation)) return;
+    const definedHere = stepDefinedTerms(step);
+    const seen = new Set();
+    for (const raw of step.inputs ?? []) {
+      const name = String(raw ?? '').trim();
+      if (!name || isStepDefined(name, definedHere)) continue;
+      const key = normalizeVariableKey(name);
+      if (!key || seen.has(key) || isProducedTerm(produced, name)) continue;
+      seen.add(key);
+      let group = sitesByFactor.get(key);
+      if (!group) {
+        group = { sites: [] };
+        sitesByFactor.set(key, group);
+      }
+      group.sites.push({ index, name, tables: stepInputTables(step, list, name) });
+    }
+  });
+  let generated = 0;
+  let offset = 0;
+  for (const [key, group] of sitesByFactor) {
+    const anchor = planFactorLookup(routine, group.sites, list, offset);
+    if (!anchor) continue;
+    insertFactorLookup(routine, detailed, list, anchor, key);
+    generated += 1;
+    offset += 1;
+  }
+  return generated;
+}
+
 // Base asset code shared by split parts of one logical table: the uppercase
 // hyphenated code with any trailing Part/Section qualifier stripped
 // ("TBL-PROT-CRED Part A" and "TBL-PROT-CRED Part B" share "tbl-prot-cred").

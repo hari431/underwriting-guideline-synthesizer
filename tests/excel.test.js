@@ -4,7 +4,7 @@ import { inflateRawSync } from 'node:zlib';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildWorkbookXlsx, crc32, routineSheetNames, tableSheetNames } from '../src/excel.js';
-import { createDocument, createJob, normalizeJob } from '../src/models.js';
+import { createDocument, createJob, generateParameterizedLookups, normalizeJob } from '../src/models.js';
 import { validateJob } from '../src/validate.js';
 import { loadRecording } from '../src/extract.js';
 
@@ -2762,4 +2762,45 @@ test('excel: later step subtracting the branch value traces to the chained branc
   assert.equal(bySeq.get('7.2')[2], '-');
   assert.equal(bySeq.get('7.2')[4], 'Ledger rebate');
   assert.match(bySeq.get('7.2')[6], /uses Ledger rebate from step 6\.4/);
+});
+
+test('excel: generated parameterized lookup renders as a lookup row with prior-step trace', () => {
+  // A generated lookup renders like an explicit one: `factor <-- table`
+  // with the bound key, and downstream uses trace to the prior step with
+  // no missing-keys caveat.
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'synthetic.pdf', pageCount: 2 }),
+      tables: [
+        { name: 'Schedule S. Cover Factors', sourcePages: [1], evidenceText: 'cover factor schedule', headers: ['Cover code', 'Factor'], rows: [['C1', '1.10']] },
+      ],
+      routines: [{
+        name: 'Cover Rating Procedure', kind: 'calculation_steps', sourcePages: [2], evidenceText: 'e',
+        inputs: ['Cover'],
+        steps: [
+          'Step 1 \u2014 Base amount: Select the base amount for the ledger class from Schedule B.',
+          'Step 2 \u2014 Adjusted amount: Multiply the base amount by the cover factor from Schedule S.',
+        ],
+        steps_detailed: [
+          { instruction: 'Step 1 \u2014 Base amount: Select the base amount for the ledger class from Schedule B.', operation: 'lookup', inputs: ['ledger class'], output: 'Base amount', depends_on: ['Schedule B'], evidence: 'Select the base amount for the ledger class from Schedule B.', source_pages: [2] },
+          { instruction: 'Step 2 \u2014 Adjusted amount: Multiply the base amount by the cover factor from Schedule S.', operation: 'expression', expression: 'Base amount * cover factor', inputs: ['Base amount', 'cover factor'], output: 'Adjusted amount', depends_on: ['Schedule S'], evidence: 'Multiply the base amount by the cover factor from Schedule S.', source_pages: [2] },
+        ],
+      }],
+    })
+  );
+  assert.equal(generateParameterizedLookups(job.routines[0], job.tables, job.routines), 1);
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Cover Rating Procedure'), strings);
+  const steps = sectionRows(values, 'Steps');
+  const lookupRow = steps.body.find((row) => row[1] === 'cover factor' && row[2] === '<--');
+  assert.ok(lookupRow, `missing generated lookup row: ${JSON.stringify(steps.body)}`);
+  assert.equal(lookupRow[4], 'table:Schedule S. Cover Factors (Cover)');
+  const factorRow = steps.body.find((row) => row[4] === 'cover factor');
+  assert.ok(factorRow, `missing factor use row: ${JSON.stringify(steps.body)}`);
+  assert.match(factorRow[6], /uses cover factor from step 2 \(Schedule S\. Cover Factors\)/);
+  assert.doesNotMatch(factorRow[6], /lookup keys not stated/);
+  assert.ok(steps.body.every((row) => row[2] !== 'REVIEW'), `unexpected REVIEW rows: ${JSON.stringify(steps.body)}`);
 });

@@ -1,7 +1,7 @@
 // End-to-end pipeline: ingest PDF -> extract -> normalize -> separate -> validate.
 import { extractPdfText } from './pdf-extract.js';
 import { ModelDisabledError, runExtraction } from './extract.js';
-import { createDocument, createJob, createValidationIssue, inferTableColumns, normalizeJob, tableContinuationBase, tableHasContinuationCue, tableHeaderKey, tableLogicalGroupKey, tablePagesAdjacent } from './models.js';
+import { createDocument, createJob, createValidationIssue, generateParameterizedLookups, inferTableColumns, normalizeJob, tableContinuationBase, tableHasContinuationCue, tableHeaderKey, tableLogicalGroupKey, tablePagesAdjacent } from './models.js';
 import { expandRecordTables, splitMergedTables } from './table-split.js';
 import { groupStepRoutines } from './routine-group.js';
 import { validateJob } from './validate.js';
@@ -71,6 +71,9 @@ export function buildJobFromExtraction(
   // through untouched and the grouping is flagged for review.
   const { routines: grouped, groupings } = groupStepRoutines(job.routines);
   job.routines = grouped;
+  // Parameterized lookups for table-driven factors, inserted before
+  // validation so supported lookups resolve and only genuine gaps warn.
+  for (const routine of job.routines) generateParameterizedLookups(routine, job.tables, job.routines);
   job.issues = validateJob(job);
   for (const split of splits) {
     job.issues.push(
@@ -247,6 +250,7 @@ export function applyReviewEdits(job, { tables, routines }) {
     table.columns = inferTableColumns(table);
   }
   linkLogicalTableGroups(next.tables);
+  for (const routine of next.routines) generateParameterizedLookups(routine, next.tables, next.routines);
   next.issues = validateJob(next);
   next = normalizeJob(next);
   return next;

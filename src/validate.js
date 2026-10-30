@@ -1,7 +1,7 @@
 // Deterministic validation for extracted jobs. Pure functions, no model calls.
 // Policy: structural/traceability breaks are errors; anything interpretive —
 // including unfamiliar formula syntax — is a warning flagged for review.
-import { ROUTINE_KINDS, createValidationIssue, definedConstantTerms, findTableCandidates, isBlankSentinel, isLogicalGroupReference, normalizeVariableKey, resolveRoutineReference, resolveTableReference, splitAssignmentSegment, splitHyphenSubtraction, splitTopLevel, stepInputTables, tableReferenceTerms } from './models.js';
+import { ROUTINE_KINDS, createValidationIssue, definedConstantTerms, diagnoseFactorLookup, findTableCandidates, isBlankSentinel, isLiteralReference, isLogicalGroupReference, isLookupLikeOperation, isNumericReference, isStepDefined, normalizeVariableKey, resolveRoutineReference, resolveTableReference, splitAssignmentSegment, splitHyphenSubtraction, splitTopLevel, stepDefinedTerms, stepInputTables, tableReferenceTerms } from './models.js';
 import { tableHasRecordColumn } from './table-split.js';
 
 export { ROUTINE_KINDS };
@@ -2026,22 +2026,6 @@ function buildReferenceContext(tables, routines) {
   };
 }
 
-// A stated literal value rather than a symbolic reference: plain numbers
-// plus the punctuation sources wrap them in — one leading sign (ASCII or
-// unicode minus), one leading currency symbol, thousands separators, and
-// one trailing percent (`$15,525.00`, `−$737.10`, `0.00%`). Anything else
-// (identifiers, suffixed forms like `$200k`, prose) is not a literal.
-function isLiteralReference(value) {
-  if (isNumericReference(value)) return true;
-  let s = String(value ?? '').trim().replace(/,/g, '');
-  if (!s) return false;
-  s = s.replace(/^[+\-−]/, '').trim();
-  s = s.replace(/^[$€£¥₹]\s*/, '');
-  s = s.replace(/%\s*$/, '');
-  if (!s) return false;
-  return /^(\d+(\.\d*)?|\.\d+)$/.test(s);
-}
-
 // Indexes of standalone `=` assignments (never `==`, `!=`, `<=`, `>=`, `=>`).
 function standaloneEqualsIndexes(text) {
   const s = String(text ?? '');
@@ -2058,11 +2042,6 @@ function standaloneEqualsIndexes(text) {
 
 function hasStandaloneEquals(text) {
   return standaloneEqualsIndexes(text).length > 0;
-}
-
-function isNumericReference(value) {
-  const s = String(value ?? '').trim().replace(/,/g, '');
-  return s !== '' && /^[-+]?(\d+(\.\d*)?|\.\d+)$/.test(s);
 }
 
 // True when a dependency target or step reference names something the job
@@ -2170,91 +2149,6 @@ function unresolvedStepMessage(routine, step, name, refCtx) {
   return `Step${seq} references "${name}", which matches no defined input, step output, routine output, table, column, routine, or constant; flagged as unresolved.`;
 }
 
-// Terms a step defines for itself in its own instruction or expression:
-// the target of every standalone `=` assignment and the retrieved value of
-// every `<verb> <phrase> from (the) table(s)` retrieval phrase (its last
-// identifier: `Retrieve harbor rate HarborRate from Fee Schedule ...`
-// defines HarborRate). Lookup keys (`matching PORT-01`) and surrounding
-// prose are never collected. References to these terms are step-internal,
-// never unresolved. Generic syntax, never variable names.
-const STEP_RETRIEVAL_VERBS = '(?:retrieves?|retrieved|look\\s*-?\\s*up|lookup|finds?|found|fetch(?:es|ed)?|obtains?|obtained|gets?|got|selects?|selected|reads?|determines?|determined|locates?|located|extracts?|extracted)';
-const STEP_RETRIEVAL_SOURCES = '(?:tables?|schedules?|appendix|appendices|exhibits?)';
-
-function stepDefinedTerms(step) {
-  const lower = new Set();
-  const normalized = new Set();
-  const add = (term) => {
-    const s = String(term ?? '').trim();
-    if (!s) return;
-    lower.add(s.toLowerCase());
-    const key = normalizeVariableKey(s);
-    if (key) normalized.add(key);
-  };
-  // Declared step references, used as queries below: a retrieval phrase
-  // only ever defines names the step itself states, so prose inside the
-  // phrase can never resolve anything by accident.
-  const queries = [...(step?.inputs ?? []), ...(step?.depends_on ?? [])]
-    .map((v) => String(v ?? '').trim())
-    .filter(Boolean);
-  const texts = [step?.instruction, step?.expression, step?.original_text];
-  for (const raw of texts) {
-    const s = String(raw ?? '');
-    if (!s) continue;
-    for (let i = 0; i < s.length; i += 1) {
-      if (s[i] !== '=') continue;
-      const prev = s[i - 1] ?? '';
-      const next = s[i + 1] ?? '';
-      if (prev === '=' || prev === '!' || prev === '<' || prev === '>' || next === '=' || next === '>') continue;
-      const m = /([A-Za-z_]\w*)\s*$/.exec(s.slice(0, i));
-      if (m) add(m[1]);
-    }
-    const pattern = new RegExp(`${STEP_RETRIEVAL_VERBS}\\s+(.+?)\\s+from\\s+(?:the\\s+)?(?:[A-Za-z0-9_-]+\\s+){0,3}?${STEP_RETRIEVAL_SOURCES}\\b`, 'gi');
-    let m;
-    while ((m = pattern.exec(s)) !== null) {
-      const ids = String(m[1] ?? '').match(/[A-Za-z_]\w*/g) ?? [];
-      if (ids.length > 0) add(ids[ids.length - 1]);
-      // Each listed item (`base rates BRprem and BRprod`) defines its own
-      // trailing variable: a declared reference resolves when it matches a
-      // trailing token run of one item, spacing-insensitive, so `T Fprem`
-      // matches `... factors T Fprem` while bare prose (`factors`) never
-      // does. Token boundaries are exact — suffix substrings do not count.
-      for (const segment of String(m[1] ?? '').split(/\s+and\s+|,/i)) {
-        const keys = (segment.match(/[A-Za-z_]\w*/g) ?? []).map((t) => normalizeVariableKey(t));
-        if (keys.length === 0) continue;
-        for (const q of queries) {
-          const qk = normalizeVariableKey(q);
-          if (!qk) continue;
-          for (let i = 0; i < keys.length; i += 1) {
-            if (keys.slice(i).join('') === qk) {
-              add(q);
-              break;
-            }
-          }
-        }
-      }
-    }
-    // Explicit same-step definitions (`Let Feeflat be the sum ...`) define
-    // exactly the named phrase, however spaced. Whole phrases only: unlike
-    // retrieval items, the phrase carries no surrounding prose to trim.
-    const letPattern = /\blet\s+(.+?)\s+be\b/gi;
-    let letMatch;
-    while ((letMatch = letPattern.exec(s)) !== null) {
-      for (const part of String(letMatch[1] ?? '').split(/\s+and\s+|,/i)) {
-        add(part.trim());
-      }
-    }
-  }
-  return { lower, normalized };
-}
-
-function isStepDefined(name, definedHere) {
-  if (!definedHere) return false;
-  const lower = String(name ?? '').trim().toLowerCase();
-  if (definedHere.lower.has(lower)) return true;
-  const key = normalizeVariableKey(name);
-  return Boolean(key && definedHere.normalized.has(key));
-}
-
 // Inline page citations anchored to a table mention (`from Table X (Page N)`
 // in a step): resolve the table and compare the cited page(s) against its
 // recorded source_pages. Matches stay silent; mismatches warn quoting the
@@ -2289,13 +2183,6 @@ function checkPageCitations(routine, tables, warn) {
       break;
     }
   });
-}
-
-// Lookup-flavored step operations, mirroring the lookup-key check: steps
-// that introduce values from tables rather than computing from inputs.
-function isLookupLikeOperation(op) {
-  const o = String(op ?? '').toLowerCase();
-  return o.includes('lookup') || o.includes('look-up') || o.includes('table');
 }
 
 // Lookup keys evidenced anywhere in the routine: inputs of lookup steps,
@@ -2333,13 +2220,37 @@ function factorIntroduced(routine, name, refCtx, lookupKeys) {
   return false;
 }
 
-function unresolvedFactorMessage(routine, step, name, tables) {
+function unresolvedFactorMessage(routine, step, stepIndex, name, tables) {
   const seq = step?.sequence !== undefined && step?.sequence !== '' ? ` ${step.sequence}` : '';
   const names = tables.map((t) => `"${t?.name || t?.id}"`).join(', ');
   if (tables.length > 1) {
     return `Step${seq} uses "${name}", which matches tables (${names}), with no lookup step selecting it; verify which table applies and the lookup key and selected value against the source — flagged as unresolved.`;
   }
-  return `Step${seq} uses "${name}" from Table ${names} with no lookup step selecting it (no lookup key or selected value evidenced); verify the factor selection against the source — flagged as unresolved.`;
+  return `Step${seq} uses "${name}" from Table ${names} with no lookup step selecting it (no lookup key or selected value evidenced${lookupGapClause(routine, stepIndex, name, tables[0])}); verify the factor selection against the source — flagged as unresolved.`;
+}
+
+// Why one evidenced factor use earned no parameterized lookup, naming the
+// exact gap (columns or key binding) for analyst review. Empty when the
+// use diagnoses clean: the existing message already covers that case.
+function lookupGapClause(routine, stepIndex, name, table) {
+  const d = diagnoseFactorLookup(routine, stepIndex, name, table);
+  const quoted = (list) => list.map((c) => `"${c}"`).join(', ');
+  switch (d.status) {
+    case 'no-binding':
+      return `; key column "${d.keyColumn}" and factor column "${d.valueColumn}" identified, but no routine input or preceding step provides the lookup key`;
+    case 'ambiguous-binding':
+      return `; lookup key binding is ambiguous (${quoted(d.bindingCandidates)})`;
+    case 'ambiguous-key-column':
+      return `; key column is ambiguous (${quoted(d.keyCandidates)})`;
+    case 'no-key-column':
+      return `; no key column matches "${name}"`;
+    case 'no-value-column':
+      return `; no factor column matches "${name}"`;
+    case 'ambiguous-value-column':
+      return `; factor column is ambiguous (${quoted(d.valueCandidates)})`;
+    default:
+      return '';
+  }
 }
 
 function checkStructuredDependencies(routine, warn, refCtx) {
@@ -2353,7 +2264,7 @@ function checkStructuredDependencies(routine, warn, refCtx) {
   const detailed = routine.steps_detailed ?? [];
   if (detailed.length === 0) return;
   const lookupKeys = routineLookupKeys(routine);
-  for (const step of detailed) {
+  for (const [stepIndex, step] of detailed.entries()) {
     const definedHere = stepDefinedTerms(step);
     for (const ref of (step?.inputs ?? [])) {
       const name = String(ref ?? '').trim();
@@ -2361,7 +2272,7 @@ function checkStructuredDependencies(routine, warn, refCtx) {
       if (!isLookupLikeOperation(step?.operation)) {
         const tables = stepInputTables(step, refCtx.tables, name);
         if (tables.length > 0 && !factorIntroduced(routine, name, refCtx, lookupKeys)) {
-          warn('routine', routine.id, unresolvedFactorMessage(routine, step, name, tables), step?.source_pages?.length ? step.source_pages : routine.source_pages);
+          warn('routine', routine.id, unresolvedFactorMessage(routine, step, stepIndex, name, tables), step?.source_pages?.length ? step.source_pages : routine.source_pages);
           continue;
         }
       }
