@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { assignmentTargetFromBranch, cleanStepInputValue, conditionsMutuallyExclusive, createJob, createDocument, createRatingRoutine, diagnoseFactorLookup, factorNameFromTable, findTableCandidates, generateParameterizedLookups, generatedStepSequence, generateWorkedExampleLookups, inferTableColumns, normalizeJob, resolveExplicitTableReference, resolveTableReference, resolveWorkedInputRow, splitBranchIsValue, splitSequentialConditionParts, stepInputTables } from '../src/models.js';
+import { assignmentTargetFromBranch, cleanStepInputValue, conditionsMutuallyExclusive, createJob, createDocument, createRatingRoutine, diagnoseFactorLookup, factorNameFromTable, findTableCandidates, generateParameterizedLookups, generatedStepSequence, generateWorkedExampleLookups, inferTableColumns, normalizeJob, parseSelectionReference, resolveExplicitTableReference, resolveTableReference, resolveWorkedInputRow, splitBranchIsValue, splitSequentialConditionParts, stepInputTables, verifyLookupChain } from '../src/models.js';
 
 test('normalizeJob assigns stable sequential IDs and preserves evidence', () => {
   const job = normalizeJob(
@@ -1856,4 +1856,85 @@ test('models: value-worded columns with few numeric cells stay unknown', () => {
     rows: [['High'], ['High'], ['1.5']],
   });
   assert.equal(cols[0].role ?? '', '');
+});
+
+test('models: input sanitizer preserves key-selection assignments', () => {
+  // A `key = value` selection keeps its value: stripping the right-hand
+  // side would leave a dangling `=` no reference check can resolve.
+  assert.equal(cleanStepInputValue('Territory code: SUB = 1.00'), 'Territory code SUB = 1.00');
+  assert.equal(cleanStepInputValue('Liability limit: $1,000,000 = 1.25'), 'Liability limit $1,000,000 = 1.25');
+  assert.equal(cleanStepInputValue('Base = 100'), 'Base = 100');
+  assert.equal(cleanStepInputValue('Limit = $500'), 'Limit = $500');
+});
+
+test('models: input sanitizer still strips bare values and leaves comparisons alone', () => {
+  assert.equal(cleanStepInputValue('$1,050.00'), '');
+  assert.equal(cleanStepInputValue('1.00'), '');
+  assert.equal(cleanStepInputValue('Territory: Suburban (SUB)'), 'Territory Suburban SUB');
+  assert.equal(cleanStepInputValue('a == b'), 'a == b');
+  assert.equal(cleanStepInputValue('E=850'), 'E=850');
+});
+
+test('models: selection references parse key-shaped assignments only', () => {
+  assert.deepEqual(parseSelectionReference('Territory code SUB = 1.00'), { key: 'SUB', value: '1.00' });
+  assert.deepEqual(parseSelectionReference('Liability limit $1,000,000 = 1.25'), { key: '$1,000,000', value: '1.25' });
+  assert.deepEqual(parseSelectionReference('SUB = 1.00'), { key: 'SUB', value: '1.00' });
+  assert.equal(parseSelectionReference('SUB ='), null);
+  assert.equal(parseSelectionReference('= 1.00'), null);
+  assert.equal(parseSelectionReference('no equals here'), null);
+  assert.equal(parseSelectionReference('a == b'), null);
+  assert.equal(parseSelectionReference('X=undefined_var'), null);
+  assert.equal(parseSelectionReference('E = 850'), null);
+  assert.equal(parseSelectionReference('a <= b'), null);
+  assert.equal(parseSelectionReference('a => b'), null);
+  assert.equal(parseSelectionReference('a = b = c'), null);
+  assert.equal(parseSelectionReference('sub = 1.00'), null);
+});
+
+test('models: selection chains verify against a matching lookup step', () => {
+  const tables = [
+    { name: 'Table 2. Territory Factors', headers: ['Territory code', 'Factor'], columns: [{ label: 'Territory code', role: 'key' }, { label: 'Factor', role: 'output' }], rows: [['URB', '1.20'], ['SUB', '1.00']] },
+  ];
+  const routine = {
+    name: 'R', kind: 'calculation_steps', source_pages: [2], evidence_text: 'e',
+    inputs: [], outputs: [], depends_on: [], steps: [],
+    steps_detailed: [
+      { instruction: 'Look up the territory factor from Table 2. Territory Factors using SUB.', operation: 'lookup', inputs: ['SUB'], output: 'Territory factor', depends_on: ['Table 2. Territory Factors'], evidence: 'e', source_pages: [2], stated_results: [{ output: 'Territory factor', value: '1.00' }] },
+      { instruction: 'Apply.', operation: 'expression', expression: 'Base * 1.00', inputs: ['Base', 'Territory code SUB = 1.00'], output: 'Adjusted', evidence: 'e', source_pages: [2] },
+    ],
+  };
+  assert.equal(verifyLookupChain(routine, tables, 'SUB', '1.00'), true);
+});
+
+test('models: label-keyed selection chains verify against the key column', () => {
+  const tables = [
+    { name: 'Table 4. Liability Limit Factors', headers: ['Liability limit', 'Factor'], columns: [{ label: 'Liability limit', role: 'key' }, { label: 'Factor', role: 'output' }], rows: [['$500,000', '1.00'], ['$1,000,000', '1.25']] },
+  ];
+  const routine = {
+    name: 'R', kind: 'calculation_steps', source_pages: [2], evidence_text: 'e',
+    inputs: [], outputs: [], depends_on: [], steps: [],
+    steps_detailed: [
+      { instruction: 'Look up the liability limit factor from Table 4. Liability Limit Factors using Liability limit.', operation: 'lookup', inputs: ['Liability limit'], output: 'Liability limit factor', depends_on: ['Table 4. Liability Limit Factors'], evidence: 'e', source_pages: [2], stated_results: [{ output: 'Liability limit factor', value: '1.25' }] },
+    ],
+  };
+  assert.equal(verifyLookupChain(routine, tables, '$1,000,000', '1.25'), true);
+});
+
+test('models: selection chains fail closed on missing, wrong, and ambiguous evidence', () => {
+  const tables = [
+    { name: 'Table 2. Territory Factors', headers: ['Territory code', 'Factor'], columns: [{ label: 'Territory code', role: 'key' }, { label: 'Factor', role: 'output' }], rows: [['URB', '1.20'], ['SUB', '1.00']] },
+  ];
+  const lookup = (overrides) => ({
+    instruction: 'Look up the territory factor from Table 2. Territory Factors using SUB.', operation: 'lookup', inputs: ['SUB'], output: 'Territory factor', depends_on: ['Table 2. Territory Factors'], evidence: 'e', source_pages: [2], stated_results: [{ output: 'Territory factor', value: '1.00' }],
+    ...overrides,
+  });
+  const routineWith = (steps) => ({ name: 'R', kind: 'calculation_steps', source_pages: [2], evidence_text: 'e', inputs: [], outputs: [], depends_on: [], steps: [], steps_detailed: steps });
+  assert.equal(verifyLookupChain(routineWith([]), tables, 'SUB', '1.00'), false);
+  assert.equal(verifyLookupChain(routineWith([lookup()]), tables, 'SUB', '9.99'), false);
+  const dupTables = [
+    { name: 'Table 2. Territory Factors', headers: ['Territory code', 'Factor'], columns: [{ label: 'Territory code', role: 'key' }, { label: 'Factor', role: 'output' }], rows: [['SUB', '1.00'], ['SUB', '1.20']] },
+  ];
+  assert.equal(verifyLookupChain(routineWith([lookup()]), dupTables, 'SUB', '1.00'), false);
+  assert.equal(verifyLookupChain(routineWith([lookup({ inputs: ['URB'], stated_results: [{ output: 'Territory factor', value: '1.20' }] })]), tables, 'SUB', '1.00'), false);
+  assert.equal(verifyLookupChain(routineWith([lookup({ stated_results: [] })]), tables, 'SUB', '1.00'), false);
 });

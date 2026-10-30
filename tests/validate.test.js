@@ -2227,3 +2227,92 @@ test('validate: worked example resolves its own lookup outputs in named uses', (
   assert.equal(own.length, 1, `worked example must keep only its standard note: ${msgs}`);
   assert.match(own[0].message, /preserves illustrative expected values/);
 });
+
+test('validate: verified key selections clear without warnings', () => {
+  // Latest live-extraction shape: calculation inputs state their table
+  // selections inline (`Territory code: SUB = 1.00`). Routine inputs,
+  // generated lookups, table rows, and stated values all agree, so every
+  // selection resolves and only the standard worked note remains.
+  const job = jobWith({
+    tables: [
+      { name: 'Table 2. Territory Factors', sourcePages: [1], evidenceText: 'territory factor schedule', headers: ['Territory code', 'Description', 'Factor'], rows: [['SUB', 'Suburban', '1.00'], ['URB', 'Urban core', '1.20']] },
+      { name: 'Table 4. Liability Limit Factors', sourcePages: [1], evidenceText: 'liability factor schedule', headers: ['Liability limit', 'Factor'], rows: [['$500,000', '1.00'], ['$1,000,000', '1.25']] },
+    ],
+    routines: [
+      {
+        name: 'Worked Example', kind: 'worked_example', sourcePages: [2], evidenceText: 'e',
+        inputs: ['Territory: Suburban (SUB)', 'Liability limit: $1,000,000'],
+        outputs: ['Adjusted total: $1,050.00'],
+        steps: [
+          { sequence: 1, instruction: '1. Territory adjustment: $1,050.00 * 1.00', operation: 'multiply', expression: '$1,050.00 * 1.00', inputs: ['$1,050.00', 'Territory code: SUB = 1.00'], output: '$1,050.00', cells: { step: '1. Territory adjustment', calculation: '$1,050.00 * 1.00', result: '$1,050.00' } },
+          { sequence: 2, instruction: '2. Liability adjustment: $1,050.00 * 1.25', operation: 'multiply', expression: '$1,050.00 * 1.25', inputs: ['$1,050.00', 'Liability limit: $1,000,000 = 1.25'], output: '$1,312.50', cells: { step: '2. Liability adjustment', calculation: '$1,050.00 * 1.25', result: '$1,312.50' } },
+        ],
+      },
+    ],
+  });
+  for (const t of job.tables) t.columns = inferTableColumns(t);
+  const worked = job.routines[0];
+  assert.equal(generateWorkedExampleLookups(worked, job.tables), 2);
+  const issues = validateJob(job);
+  const msgs = issues.map((i) => i.message).join(' | ');
+  const own = issues.filter((i) => i.target_id === 'R1');
+  assert.equal(own.length, 1, `worked example must keep only its standard note: ${msgs}`);
+  assert.match(own[0].message, /preserves illustrative expected values/);
+  assert.ok(!issues.some((i) => /Territory code SUB|Liability limit \$1,000,000/.test(i.message)), `selections must resolve: ${msgs}`);
+});
+
+test('validate: key selections without a lookup keep warning', () => {
+  // No routine inputs, so no lookups generate: the inline selections name
+  // table rows no step selects, and both keep warning.
+  const job = jobWith({
+    tables: [
+      { name: 'Table 2. Territory Factors', sourcePages: [1], evidenceText: 'territory factor schedule', headers: ['Territory code', 'Description', 'Factor'], rows: [['SUB', 'Suburban', '1.00'], ['URB', 'Urban core', '1.20']] },
+      { name: 'Table 4. Liability Limit Factors', sourcePages: [1], evidenceText: 'liability factor schedule', headers: ['Liability limit', 'Factor'], rows: [['$500,000', '1.00'], ['$1,000,000', '1.25']] },
+    ],
+    routines: [
+      {
+        name: 'Worked Example', kind: 'worked_example', sourcePages: [2], evidenceText: 'e',
+        inputs: [],
+        outputs: ['Adjusted total: $1,050.00'],
+        steps: [
+          { sequence: 1, instruction: '1. Territory adjustment: $1,050.00 * 1.00', operation: 'multiply', expression: '$1,050.00 * 1.00', inputs: ['$1,050.00', 'Territory code: SUB = 1.00'], output: '$1,050.00', cells: { step: '1. Territory adjustment', calculation: '$1,050.00 * 1.00', result: '$1,050.00' } },
+          { sequence: 2, instruction: '2. Liability adjustment: $1,050.00 * 1.25', operation: 'multiply', expression: '$1,050.00 * 1.25', inputs: ['$1,050.00', 'Liability limit: $1,000,000 = 1.25'], output: '$1,312.50', cells: { step: '2. Liability adjustment', calculation: '$1,050.00 * 1.25', result: '$1,312.50' } },
+        ],
+      },
+    ],
+  });
+  for (const t of job.tables) t.columns = inferTableColumns(t);
+  const worked = job.routines[0];
+  assert.equal(generateWorkedExampleLookups(worked, job.tables), 0);
+  const issues = validateJob(job);
+  const msgs = issues.map((i) => i.message).join(' | ');
+  assert.ok(issues.some((i) => /references "Territory code SUB = 1\.00"/.test(i.message)), `missing code selection must warn: ${msgs}`);
+  assert.ok(issues.some((i) => /Liability limit \$1,000,000 = 1\.25/.test(i.message)), `missing amount selection must warn: ${msgs}`);
+});
+
+test('validate: key selections matching several rows keep warning', () => {
+  // SUB names two rows, so even the explicit lookup cannot verify which
+  // row the calculation selected: the reference keeps warning.
+  const job = jobWith({
+    tables: [
+      { name: 'Table 2. Territory Factors', sourcePages: [1], evidenceText: 'territory factor schedule', headers: ['Territory code', 'Description', 'Factor'], rows: [['SUB', 'Suburban', '1.00'], ['SUB', 'Duplicate', '1.20']] },
+    ],
+    routines: [
+      {
+        name: 'Worked Example', kind: 'worked_example', sourcePages: [2], evidenceText: 'e',
+        inputs: ['Territory: Suburban (SUB)'],
+        outputs: ['Adjusted total: $1,050.00'],
+        steps: [
+          { sequence: 1, instruction: 'Look up the Territory factor from Table 2. Territory Factors using SUB.', operation: 'lookup', inputs: ['SUB'], output: 'Territory factor', depends_on: ['Table 2. Territory Factors'], evidence: 'Territory: Suburban (SUB)', source_pages: [2], stated_results: [{ output: 'Territory factor', value: '1.00' }] },
+          { sequence: 2, instruction: '2. Territory adjustment: $1,050.00 * 1.00', operation: 'multiply', expression: '$1,050.00 * 1.00', inputs: ['$1,050.00', 'Territory code: SUB = 1.00'], output: '$1,050.00', cells: { step: '2. Territory adjustment', calculation: '$1,050.00 * 1.00', result: '$1,050.00' } },
+        ],
+      },
+    ],
+  });
+  for (const t of job.tables) t.columns = inferTableColumns(t);
+  const worked = job.routines[0];
+  assert.equal(generateWorkedExampleLookups(worked, job.tables), 0);
+  const issues = validateJob(job);
+  const msgs = issues.map((i) => i.message).join(' | ');
+  assert.ok(issues.some((i) => /Territory code SUB = 1\.00/.test(i.message)), `ambiguous selection must warn: ${msgs}`);
+});

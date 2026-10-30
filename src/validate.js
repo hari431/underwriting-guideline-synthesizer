@@ -1,7 +1,7 @@
 // Deterministic validation for extracted jobs. Pure functions, no model calls.
 // Policy: structural/traceability breaks are errors; anything interpretive —
 // including unfamiliar formula syntax — is a warning flagged for review.
-import { ROUTINE_KINDS, createValidationIssue, definedConstantTerms, diagnoseFactorLookup, findTableCandidates, isBlankSentinel, isLiteralReference, isLogicalGroupReference, isLookupLikeOperation, isNumericReference, isStepDefined, normalizeRoutineKind, normalizeVariableKey, resolveExplicitTableReference, resolveRoutineReference, resolveTableReference, splitAssignmentSegment, splitHyphenSubtraction, splitTopLevel, stepDefinedTerms, stepInputTables, tableReferenceTerms } from './models.js';
+import { ROUTINE_KINDS, createValidationIssue, definedConstantTerms, diagnoseFactorLookup, findTableCandidates, isBlankSentinel, isLiteralReference, isLogicalGroupReference, isLookupLikeOperation, isNumericReference, isStepDefined, normalizeRoutineKind, normalizeVariableKey, parseSelectionReference, resolveExplicitTableReference, resolveRoutineReference, resolveTableReference, splitAssignmentSegment, splitHyphenSubtraction, splitTopLevel, stepDefinedTerms, stepInputTables, tableHasKeyCell, tableReferenceTerms, verifyLookupChain } from './models.js';
 import { tableHasRecordColumn } from './table-split.js';
 
 export { ROUTINE_KINDS };
@@ -2067,6 +2067,13 @@ function hasStandaloneEquals(text) {
 function isResolvedReference(routine, target, ctx) {
   const name = String(target ?? '').trim();
   if (!name || isLiteralReference(name)) return true;
+  // A key selection (`Territory code SUB = 1.00`) is owned by its lookup
+  // chain, never by the binding rule below: it resolves only when the
+  // same routine uniquely verifies the table, row, key, and value.
+  const selection = parseSelectionReference(name);
+  if (selection && tableHasKeyCell(ctx.tables ?? [], selection.key)) {
+    return verifyLookupChain(routine, ctx.tables ?? [], selection.key, selection.value);
+  }
   // A `variable = value` binding states its own definition: it resolves
   // when the value is a literal or itself resolves, and warns otherwise.
   const binding = splitAssignmentSegment(name);
@@ -2301,8 +2308,11 @@ function checkStructuredDependencies(routine, warn, refCtx) {
         const tables = stepInputTables(step, refCtx.tables, name, routine);
         // Multi-table attribution always warns; single-table attribution
         // defers when the reference already names recorded table structure.
+        const selRef = parseSelectionReference(name);
+        const selVerified = selRef !== null && tableHasKeyCell(refCtx.tables ?? [], selRef.key)
+          && verifyLookupChain(routine, refCtx.tables ?? [], selRef.key, selRef.value);
         if (tables.length > 0 && !factorIntroduced(routine, name, refCtx, lookupKeys)
-          && (tables.length > 1 || !isTableStructureTerm(name, refCtx))) {
+          && (tables.length > 1 || !isTableStructureTerm(name, refCtx)) && !selVerified) {
           warn('routine', routine.id, unresolvedFactorMessage(routine, step, stepIndex, name, tables), step?.source_pages?.length ? step.source_pages : routine.source_pages);
           continue;
         }

@@ -267,3 +267,33 @@ test('pipeline: discount-rule table without matching keys earns no lookup', () =
   assert.equal(worked.steps_detailed.length, 1);
   assert.ok(worked.steps_detailed.every((s) => s.operation !== 'lookup'));
 });
+
+test('pipeline: inline key selections resolve end to end', () => {
+  // Latest live-extraction shape through the full path: the sanitizer
+  // preserves `key = value` selections, generation inserts the lookups,
+  // and validation verifies each complete chain.
+  const job = buildJobFromExtraction(
+    {
+      tables: [
+        { name: 'Table 2. Territory Factors', sourcePages: [1], evidenceText: 'territory factor schedule', headers: ['Territory code', 'Description', 'Factor'], rows: [['SUB', 'Suburban', '1.00'], ['URB', 'Urban core', '1.20']] },
+      ],
+      routines: [
+        {
+          name: 'Worked Example', kind: 'worked_example', sourcePages: [2], evidenceText: 'e',
+          inputs: ['Territory: Suburban (SUB)'],
+          outputs: ['Adjusted total: $1,050.00'],
+          steps: [
+            { sequence: 1, instruction: '1. Territory adjustment: $1,050.00 * 1.00', operation: 'multiply', expression: '$1,050.00 * 1.00', inputs: ['$1,050.00', 'Territory code: SUB = 1.00'], output: '$1,050.00', cells: { step: '1. Territory adjustment', calculation: '$1,050.00 * 1.00', result: '$1,050.00' } },
+          ],
+        },
+      ],
+    },
+    { filename: 'synthetic.pdf', pageCount: 2 },
+  );
+  const worked = job.routines.find((r) => r.kind === 'worked_example');
+  assert.equal(worked.steps_detailed.length, 2);
+  assert.deepEqual(worked.steps_detailed[1].inputs, ['Territory code SUB = 1.00']);
+  const own = job.issues.filter((i) => i.target_id === worked.id);
+  assert.equal(own.length, 1, `worked example must keep only its standard note: ${job.issues.map((i) => i.message).join(' | ')}`);
+  assert.match(own[0].message, /preserves illustrative expected values/);
+});

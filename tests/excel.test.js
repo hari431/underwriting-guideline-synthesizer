@@ -2969,3 +2969,35 @@ test('excel: generated lookup rows take letter-suffixed numbers and attribution'
   assert.ok(steps.body.every((row) => row[2] !== 'REVIEW'), `unexpected REVIEW rows: ${JSON.stringify(steps.body)}`);
   assert.ok(values.some((row) => row[0] === 'Step 1b evidence' && row[1] === 'Territory: Suburban (SUB)'), 'missing Step 1b evidence row');
 });
+
+test('excel: inline key selections never leak into calculation rows', () => {
+  // Selection inputs resolve through validation, not rendering: the
+  // calculation still shows its operands and stated result only.
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'synthetic.pdf', pageCount: 2 }),
+      tables: [
+        { name: 'Table 2. Territory Factors', sourcePages: [1], evidenceText: 'territory factor schedule', headers: ['Territory code', 'Description', 'Factor'], rows: [['SUB', 'Suburban', '1.00'], ['URB', 'Urban core', '1.20']] },
+      ],
+      routines: [{
+        name: 'Worked Example', kind: 'worked_example', sourcePages: [2], evidenceText: 'e',
+        inputs: ['Territory: Suburban (SUB)'],
+        outputs: ['Adjusted total: $1,050.00'],
+        steps: [
+          { sequence: 1, instruction: '1. Territory adjustment: $1,050.00 * 1.00', operation: 'multiply', expression: '$1,050.00 * 1.00', inputs: ['$1,050.00', 'Territory code: SUB = 1.00'], output: '$1,050.00', cells: { step: '1. Territory adjustment', calculation: '$1,050.00 * 1.00', result: '$1,050.00' } },
+        ],
+      }],
+    })
+  );
+  for (const t of job.tables) t.columns = inferTableColumns(t);
+  assert.equal(generateWorkedExampleLookups(job.routines[0], job.tables), 1);
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Worked Example'), strings);
+  const steps = sectionRows(values, 'Steps');
+  assert.equal(steps.body.length, 5);
+  assert.ok(steps.body.every((row) => row[2] !== 'REVIEW'), `unexpected REVIEW rows: ${JSON.stringify(steps.body)}`);
+  assert.ok(steps.body.every((row) => row.every((cell) => !String(cell ?? '').includes('Territory code'))), `selection leaked into rows: ${JSON.stringify(steps.body)}`);
+});

@@ -2572,6 +2572,39 @@ function workedValueColumnIndex(table) {
   return hits.length === 1 ? hits[0] : -1;
 }
 
+// Every exact key-cell match for one key across all tables: only
+// key-role columns of tables carrying exactly one value column, with a
+// non-blank selected value. Shared exact-match discipline for
+// worked-input resolution and selection-chain verification - resemblance
+// never matches.
+function findTableKeyMatches(tables, key) {
+  const want = String(key ?? '').trim();
+  const out = [];
+  if (!want) return out;
+  (Array.isArray(tables) ? tables : []).forEach((table, tableIndex) => {
+    const valueIdx = workedValueColumnIndex(table);
+    if (valueIdx < 0) return;
+    const keyIdxs = workedKeyColumnIndexes(table);
+    if (keyIdxs.length === 0) return;
+    (table?.rows ?? []).forEach((row, rowIndex) => {
+      if (!Array.isArray(row)) return;
+      for (const idx of keyIdxs) {
+        const cell = String(row[idx] ?? '').trim();
+        if (cell !== want) continue;
+        const value = String(row[valueIdx] ?? '').trim();
+        if (!value) return;
+        out.push({ table, tableIndex, rowIndex, keyColumnIndex: idx, keyCell: cell, value });
+      }
+    });
+  });
+  return out;
+}
+
+function columnLabel(table, idx) {
+  const col = table?.columns?.[idx];
+  return String(col?.label ?? col?.original_label ?? table?.headers?.[idx] ?? '').trim();
+}
+
 // Resolve one worked-example input against exact table rows: every code
 // and currency key must agree on a single (table, row) and that table
 // must carry exactly one value column. Anything else - no match, several
@@ -2584,20 +2617,9 @@ export function resolveWorkedInputRow(input, tables) {
   const list = Array.isArray(tables) ? tables : [];
   const matches = [];
   for (const { key, tier } of candidates) {
-    list.forEach((table, tableIndex) => {
-      const valueIdx = workedValueColumnIndex(table);
-      if (valueIdx < 0) return;
-      const keyIdxs = workedKeyColumnIndexes(table);
-      if (keyIdxs.length === 0) return;
-      (table?.rows ?? []).forEach((row, rowIndex) => {
-        if (!Array.isArray(row)) return;
-        const hit = keyIdxs.some((idx) => String(row[idx] ?? '').trim() === key);
-        if (!hit) return;
-        const value = String(row[valueIdx] ?? '').trim();
-        if (!value) return;
-        matches.push({ table, tableIndex, rowIndex, key, tier, value });
-      });
-    });
+    for (const m of findTableKeyMatches(list, key)) {
+      matches.push({ table: m.table, tableIndex: m.tableIndex, rowIndex: m.rowIndex, key, tier, value: m.value });
+    }
   }
   const distinct = new Map();
   for (const m of matches) {
@@ -2609,6 +2631,79 @@ export function resolveWorkedInputRow(input, tables) {
   const group = distinct.values().next().value;
   const first = group.find((m) => m.tier === 'code') ?? group[0];
   return { table: first.table, tableIndex: first.tableIndex, rowIndex: first.rowIndex, key: first.key, tier: first.tier, label, value: first.value };
+}
+
+// A key-selection reference (`Territory code SUB = 1.00`): the last token
+// before a standalone `=` is the key, everything after is the selected
+// value. The key must be selection-shaped - a currency amount or an
+// uppercase code of at least two characters with a letter - so plain
+// variable bindings (`E = 850`) never parse as selections. Comparisons
+// (`==`, `!=`, `<=`, `>=`, `=>`), empty sides, and chained equals never
+// parse either. Generic punctuation and token shapes, never names.
+const SELECTION_CODE_KEY = /^(?=.*[A-Z])[A-Z0-9][A-Z0-9-]*$/;
+const SELECTION_AMOUNT_KEY = /^\$[\d,]+(\.\d+)?$/;
+
+export function parseSelectionReference(name) {
+  const s = String(name ?? '');
+  const eq = s.indexOf('=');
+  if (eq < 0) return null;
+  if (s[eq + 1] === '=' || s[eq + 1] === '>' || s[eq - 1] === '=' || s[eq - 1] === '!' || s[eq - 1] === '<' || s[eq - 1] === '>') return null;
+  const lhs = s.slice(0, eq).trim();
+  const rhs = s.slice(eq + 1).trim();
+  if (!lhs || !rhs || rhs.includes('=')) return null;
+  const key = lhs.split(/\s+/).filter(Boolean).pop();
+  if (!key || key.length < 2) return null;
+  if (!SELECTION_CODE_KEY.test(key) && !SELECTION_AMOUNT_KEY.test(key)) return null;
+  return { key, value: rhs };
+}
+
+// True when a key names any table key cell exactly. Selections own their
+// references only then: anything else stays a plain variable binding.
+export function tableHasKeyCell(tables, key) {
+  return findTableKeyMatches(tables, key).length > 0;
+}
+
+// True when a key selection names a completely and uniquely verified
+// lookup chain: the key matches exactly one row of exactly one table,
+// the row selects the stated value, and the same routine holds a lookup
+// step on that table whose key names the row (code cell or key column)
+// and whose stated result carries the value. Missing lookups, row
+// ambiguity, and value mismatches all fail closed - the reference keeps
+// warning for analyst review.
+export function verifyLookupChain(routine, tables, key, value) {
+  const list = Array.isArray(tables) ? tables : [];
+  const wantValue = String(value ?? '').trim();
+  if (!wantValue) return false;
+  const rows = new Map();
+  for (const m of findTableKeyMatches(list, key)) {
+    const id = `${m.tableIndex}:${m.rowIndex}`;
+    if (!rows.has(id)) rows.set(id, []);
+    rows.get(id).push(m);
+  }
+  if (rows.size !== 1) return false;
+  const cells = [...rows.values()][0];
+  const row = cells[0];
+  if (row.value !== wantValue) return false;
+  const labels = new Set(
+    cells.map((m) => normalizeVariableKey(columnLabel(row.table, m.keyColumnIndex))).filter(Boolean)
+  );
+  const keyCells = new Set(cells.map((m) => m.keyCell));
+  for (const step of routine?.steps_detailed ?? []) {
+    if (!step || typeof step !== 'object' || !isLookupLikeOperation(step?.operation)) continue;
+    const onTable = (step?.depends_on ?? []).some((raw) => resolveTableReference(list, raw) === row.table);
+    if (!onTable) continue;
+    const stated = (step?.stated_results ?? []).some((s) => String(s?.value ?? '').trim() === wantValue);
+    if (!stated) continue;
+    const keyOk = (step?.inputs ?? []).some((raw) => {
+      const surface = String(raw ?? '').trim();
+      if (!surface) return false;
+      if (keyCells.has(surface)) return true;
+      const nk = normalizeVariableKey(surface);
+      return Boolean(nk) && labels.has(nk);
+    });
+    if (keyOk) return true;
+  }
+  return false;
 }
 
 // Operand tokens of a step expression: top-level operator parts, trimmed.
@@ -3822,15 +3917,28 @@ export function cleanStepInputValue(raw) {
   if (!s) return '';
   s = s.replace(/\(\s*[₹$€£¥\d,.\s%+-]+\s*\)/g, ' ').replace(/\s+/g, ' ').trim();
   if (!s || isNumericFragment(s)) return '';
+  const tokens = s.split(/\s+/);
+  // Tokens flanking a bare `=` form a `key = value` selection: keep both
+  // sides so reference checks can verify the complete lookup chain instead
+  // of a dangling `=` no check can resolve.
+  const keepNeighbor = new Set();
+  tokens.forEach((tok, idx) => {
+    const bare = tok.replace(/^[:;|@,(){}"'`]+|[:;|@,(){}"'`]+$/g, '');
+    if (bare === '=') {
+      keepNeighbor.add(idx - 1);
+      keepNeighbor.add(idx + 1);
+    }
+  });
   const kept = [];
-  for (const tok of s.split(/\s+/)) {
+  for (let idx = 0; idx < tokens.length; idx += 1) {
+    const tok = tokens[idx];
     let stripped = tok.replace(/^[:;|@,(){}"'`]+|[:;|@,(){}"'`]+$/g, '');
     if (stripped && !/^[A-Za-z_][\w.-]*\[[^\[\]]+\]$/.test(stripped)) {
       stripped = stripped.replace(/^[\[\]]+|[\[\]]+$/g, '');
     }
     if (!stripped) continue;
     if (/^[₹$€£¥%‰]+$/.test(stripped)) continue;
-    if (isWorkedAmountToken(stripped)) {
+    if (isWorkedAmountToken(stripped) && !keepNeighbor.has(idx)) {
       const prev = kept.length > 0 ? String(kept[kept.length - 1]).toLowerCase() : '';
       if (prev !== 'per' && prev !== '/') continue;
     }
