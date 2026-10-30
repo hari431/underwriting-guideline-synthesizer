@@ -306,7 +306,9 @@ test('table-split: each logical table exports to its own sheet, byte-determinist
 });
 
 test('table-split: scratch recording in temp dir also separates (no fixture coupling)', async () => {
-  const dir = await fs.mkdtemp(path.join(here, '..', 'tmp', 'ratecraft-split-'));
+  const tmpParent = path.join(here, '..', 'tmp');
+  await fs.mkdir(tmpParent, { recursive: true });
+  const dir = await fs.mkdtemp(path.join(tmpParent, 'ratecraft-split-'));
   try {
     const recordingPath = path.join(dir, 'recording.json');
     await fs.writeFile(recordingPath, JSON.stringify({ tables: [mergedSideBySide()], routines: [] }));

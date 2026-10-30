@@ -141,7 +141,9 @@ test('table-normalize: ambiguous single-column text is preserved, not guessed', 
 });
 
 test('table-normalize: pipeline expands recorded single-column grids with a review notice', async () => {
-  const dir = await fs.mkdtemp(path.join(here, '..', 'tmp', 'ratecraft-normalize-'));
+  const tmpParent = path.join(here, '..', 'tmp');
+  await fs.mkdir(tmpParent, { recursive: true });
+  const dir = await fs.mkdtemp(path.join(tmpParent, 'ratecraft-normalize-'));
   try {
     const recordingPath = path.join(dir, 'recording.json');
     await fs.writeFile(recordingPath, JSON.stringify({ tables: [bandRangeTable(), tierCreditTable()], routines: [] }));

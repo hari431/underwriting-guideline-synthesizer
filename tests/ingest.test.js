@@ -256,15 +256,27 @@ test('ingest: Type1 built-in encoding parser reads cleartext and PFB programs', 
   assert.equal(parseType1BuiltInEncoding(Buffer.from('/Encoding 256 array readonly def\n', 'latin1')), null);
 });
 
-test('ingest: commercial property PDF exposes varied lookup phrasings and staged premium wording', async () => {
-  const pdfPath = 'C:\\Users\\divya\\Downloads\\underwriteiq_synthetic_commercial_property_guidelines.pdf';
-  let buf;
-  try {
-    buf = await fs.readFile(pdfPath);
-  } catch (err) {
-    assert.fail(`Commercial property test PDF is inaccessible at ${pdfPath}: ${err?.message ?? err}. Provide the file to run this regression test; not skipping.`);
-  }
-  const result = extractPdfText(buf);
+test('ingest: synthetic commercial-lines PDF exposes varied lookup phrasings and staged premium wording', () => {
+  // Deterministic in-test replacement for a former local-Downloads regression
+  // PDF: the same lookup phrasings and staged-premium wording, built with the
+  // repo's own PDF writer so the test runs on any checkout.
+  const pdf = buildPdf([
+    [
+      'Find the base rate for occupancy_class in Table A',
+      'Retrieve construction_factor from Table B using construction_code',
+      'Look up protection_factor using protection_class in Table C',
+    ],
+    [
+      'Select the territory factor for territory from Table D',
+      'raw_premium = base_rate * construction_factor',
+      'adjusted_premium = raw_premium * protection_factor',
+    ],
+    [
+      'annual_premium = adjusted_premium + policy_fee',
+      'If raw_premium is below 350, apply the minimum premium; otherwise use annual_premium.',
+    ],
+  ]);
+  const result = extractPdfText(pdf);
   assert.equal(result.pageCount, 3);
   const combined = result.pages.map((p) => p.text).join('\n');
   for (const phrase of [
