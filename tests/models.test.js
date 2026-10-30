@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { assignmentTargetFromBranch, cleanStepInputValue, conditionsMutuallyExclusive, createJob, createDocument, createRatingRoutine, diagnoseFactorLookup, findTableCandidates, generateParameterizedLookups, normalizeJob, resolveExplicitTableReference, resolveTableReference, splitBranchIsValue, splitSequentialConditionParts, stepInputTables } from '../src/models.js';
+import { assignmentTargetFromBranch, cleanStepInputValue, conditionsMutuallyExclusive, createJob, createDocument, createRatingRoutine, diagnoseFactorLookup, factorNameFromTable, findTableCandidates, generateParameterizedLookups, generatedStepSequence, generateWorkedExampleLookups, inferTableColumns, normalizeJob, resolveExplicitTableReference, resolveTableReference, resolveWorkedInputRow, splitBranchIsValue, splitSequentialConditionParts, stepInputTables } from '../src/models.js';
 
 test('normalizeJob assigns stable sequential IDs and preserves evidence', () => {
   const job = normalizeJob(
@@ -1438,4 +1438,422 @@ test('models: linked rounding operands survive repeated normalization', () => {
   assert.equal(d.operation, 'rounding');
   assert.equal(d.output, 'Final annual premium');
   assert.equal(d.operand, 'Final before rounding');
+});
+
+test('models: numeric key-worded columns classify as keys, not outputs', () => {
+  // Currency-valued lookup dimensions (liability limits, deductibles) are
+  // keys even though their cells are numeric: header wording decides.
+  const limit = inferTableColumns({
+    headers: ['Liability limit', 'Factor'],
+    columns: [],
+    rows: [['$500,000', '1.00'], ['$1,000,000', '1.25']],
+  });
+  assert.equal(limit[0].role, 'key');
+  assert.equal(limit[1].role, 'output');
+  const deductible = inferTableColumns({
+    headers: ['Collision deductible', 'Factor'],
+    columns: [],
+    rows: [['$0', '1.00'], ['$500', '0.95']],
+  });
+  assert.equal(deductible[0].role, 'key');
+  assert.equal(deductible[1].role, 'output');
+});
+
+test('models: value-worded headers keep output precedence', () => {
+  // A header naming the value itself stays an output even when it also
+  // carries a key-dimension word.
+  const cols = inferTableColumns({
+    headers: ['Territory factor', 'Limit amount'],
+    columns: [],
+    rows: [['1.00', '500'], ['1.25', '750']],
+  });
+  assert.equal(cols[0].role, 'output');
+  assert.equal(cols[1].role, 'output');
+});
+
+test('models: factor names derive mechanically from table titles', () => {
+  assert.equal(factorNameFromTable({ name: 'Table 2. Territory Factors' }), 'Territory factor');
+  assert.equal(factorNameFromTable({ name: 'Table 3. Driver Experience Factors' }), 'Driver experience factor');
+  assert.equal(factorNameFromTable({ name: 'Schedule S. Cover Factors' }), 'Cover factor');
+  assert.equal(factorNameFromTable({ name: 'Table 9. BI Liability Factors' }), 'BI liability factor');
+  assert.equal(factorNameFromTable({ name: 'Fleet discount rule' }), 'Fleet discount rule');
+  assert.equal(factorNameFromTable({ name: 'Table 2' }), '');
+  assert.equal(factorNameFromTable({}), '');
+});
+
+test('models: worked inputs resolve to exact table rows', () => {
+  const tables = [
+    { name: 'Table 2. Territory Factors', headers: ['Territory code', 'Factor'], columns: [{ label: 'Territory code', role: 'key' }, { label: 'Factor', role: 'output' }], rows: [['URB', '1.20'], ['SUB', '1.00']] },
+    { name: 'Table 4. Liability Limit Factors', headers: ['Liability limit', 'Factor'], columns: [{ label: 'Liability limit', role: 'key' }, { label: 'Factor', role: 'output' }], rows: [['$500,000', '1.00'], ['$1,000,000', '1.25']] },
+  ];
+  const code = resolveWorkedInputRow('Territory: Suburban (SUB)', tables);
+  assert.ok(code);
+  assert.equal(code.table, tables[0]);
+  assert.equal(code.tableIndex, 0);
+  assert.equal(code.rowIndex, 1);
+  assert.equal(code.key, 'SUB');
+  assert.equal(code.tier, 'code');
+  assert.equal(code.value, '1.00');
+  const amount = resolveWorkedInputRow('Liability limit: $1,000,000', tables);
+  assert.ok(amount);
+  assert.equal(amount.table, tables[1]);
+  assert.equal(amount.tableIndex, 1);
+  assert.equal(amount.rowIndex, 1);
+  assert.equal(amount.key, '$1,000,000');
+  assert.equal(amount.tier, 'amount');
+  assert.equal(amount.label, 'Liability limit');
+  assert.equal(amount.value, '1.25');
+});
+
+test('models: worked row resolution rejects near-misses and ambiguity', () => {
+  const clean = [
+    { name: 'Table 2. Territory Factors', headers: ['Territory code', 'Factor'], columns: [{ label: 'Territory code', role: 'key' }, { label: 'Factor', role: 'output' }], rows: [['URB', '1.20'], ['SUB', '1.00']] },
+  ];
+  assert.equal(resolveWorkedInputRow('Territory: Suburban (SUX)', clean), null);
+  assert.equal(resolveWorkedInputRow('Territory: Suburban (sub)', clean), null);
+  assert.equal(resolveWorkedInputRow('Policy vehicle count: 4 vehicles', clean), null);
+  assert.equal(resolveWorkedInputRow('$500', clean), null);
+  const dupRows = [
+    { name: 'Table 2. Territory Factors', headers: ['Territory code', 'Factor'], columns: [{ label: 'Territory code', role: 'key' }, { label: 'Factor', role: 'output' }], rows: [['SUB', '1.00'], ['SUB', '1.20']] },
+  ];
+  assert.equal(resolveWorkedInputRow('Territory: Suburban (SUB)', dupRows), null);
+  const dupTables = clean.concat([
+    { name: 'Table 9. Other Factors', headers: ['Code', 'Factor'], columns: [{ label: 'Code', role: 'key' }, { label: 'Factor', role: 'output' }], rows: [['SUB', '0.50']] },
+  ]);
+  assert.equal(resolveWorkedInputRow('Territory: Suburban (SUB)', dupTables), null);
+  const noValue = [
+    { name: 'Fleet discount rule', headers: ['Policy vehicle count', 'Fleet discount rate'], columns: [{ label: 'Policy vehicle count', role: 'key' }, { label: 'Fleet discount rate', role: 'key' }], rows: [['C1', '0%']] },
+  ];
+  assert.equal(resolveWorkedInputRow('Count: (C1)', noValue), null);
+});
+
+test('models: worked example generates instance lookups before their calculations', () => {
+  const tables = [
+    { name: 'Table 2. Territory Factors', headers: ['Territory code', 'Factor'], columns: [{ label: 'Territory code', role: 'key' }, { label: 'Factor', role: 'output' }], rows: [['URB', '1.20'], ['SUB', '1.00']] },
+    { name: 'Table 4. Liability Limit Factors', headers: ['Liability limit', 'Factor'], columns: [{ label: 'Liability limit', role: 'key' }, { label: 'Factor', role: 'output' }], rows: [['$500,000', '1.00'], ['$1,000,000', '1.25']] },
+  ];
+  const routine = {
+    name: 'Worked Example', kind: 'worked_example', source_pages: [2], evidence_text: 'e',
+    inputs: ['Territory: Suburban (SUB)', 'Liability limit: $1,000,000'],
+    outputs: [],
+    depends_on: ['Table 2. Territory Factors', 'Table 4. Liability Limit Factors'],
+    steps: [
+      '1. Base premium: Selected rate for LDV',
+      '2. Territory adjustment: $1,050.00 * 1.00',
+      '3. Liability adjustment: $1,050.00 * 1.25',
+    ],
+    steps_detailed: [
+      { instruction: '1. Base premium: Selected rate for LDV', operation: 'lookup', inputs: ['LDV'], output: 'Base premium', depends_on: ['Table 1. Base Annual Rate by Vehicle Class'], evidence: 'e1', source_pages: [2], stated_results: [{ output: 'Base premium', value: '$1,050.00' }] },
+      { instruction: '2. Territory adjustment: $1,050.00 * 1.00', operation: 'expression', expression: '$1,050.00 * 1.00', inputs: [], output: 'Territory adjustment', evidence: 'e2', source_pages: [2], stated_results: [{ output: 'Territory adjustment', value: '$1,050.00' }] },
+      { instruction: '3. Liability adjustment: $1,050.00 * 1.25', operation: 'expression', expression: '$1,050.00 * 1.25', inputs: [], output: 'Liability adjustment', evidence: 'e3', source_pages: [2], stated_results: [{ output: 'Liability adjustment', value: '$1,312.50' }] },
+    ],
+  };
+  assert.equal(generateWorkedExampleLookups(routine, tables), 2);
+  assert.equal(routine.steps_detailed.length, 5);
+  assert.equal(routine.steps.length, 5);
+  const sub = routine.steps_detailed[1];
+  assert.equal(sub.operation, 'lookup');
+  assert.equal(sub.instruction, 'Look up the Territory factor from Table 2. Territory Factors using SUB.');
+  assert.equal(sub.output, 'Territory factor');
+  assert.deepEqual(sub.inputs, ['SUB']);
+  assert.deepEqual(sub.depends_on, ['Table 2. Territory Factors']);
+  assert.equal(sub.evidence, 'Territory: Suburban (SUB)');
+  assert.deepEqual(sub.source_pages, [2]);
+  assert.equal(sub.interpretation_status, 'inferred');
+  assert.deepEqual(sub.stated_results, [{ output: 'Territory factor', value: '1.00' }]);
+  assert.equal(routine.steps_detailed[2].output, 'Territory adjustment');
+  const lim = routine.steps_detailed[3];
+  assert.equal(lim.instruction, 'Look up the Liability limit factor from Table 4. Liability Limit Factors using Liability limit.');
+  assert.equal(lim.output, 'Liability limit factor');
+  assert.deepEqual(lim.inputs, ['Liability limit']);
+  assert.deepEqual(lim.stated_results, [{ output: 'Liability limit factor', value: '1.25' }]);
+  assert.equal(routine.steps_detailed[4].output, 'Liability adjustment');
+  assert.equal(routine.steps[1], sub.instruction);
+  assert.equal(routine.steps[3], lim.instruction);
+});
+
+test('models: worked lookup generation leaves reusable procedures untouched', () => {
+  const tables = [
+    { name: 'Table 2. Territory Factors', headers: ['Territory code', 'Factor'], columns: [{ label: 'Territory code', role: 'key' }, { label: 'Factor', role: 'output' }], rows: [['SUB', '1.00']] },
+  ];
+  const routine = {
+    name: 'Rating Procedure', kind: 'calculation_steps', source_pages: [2], evidence_text: 'e',
+    inputs: ['Territory: Suburban (SUB)'],
+    outputs: [],
+    depends_on: [],
+    steps: ['Apply: Base * 1.00'],
+    steps_detailed: [
+      { instruction: 'Apply: Base * 1.00', operation: 'expression', expression: 'Base * 1.00', inputs: ['Base'], output: 'Adjusted', evidence: 'e', source_pages: [2] },
+    ],
+  };
+  assert.equal(generateWorkedExampleLookups(routine, tables), 0);
+  assert.equal(routine.steps_detailed.length, 1);
+});
+
+test('models: worked lookup generation never duplicates its own output', () => {
+  const tables = [
+    { name: 'Table 2. Territory Factors', headers: ['Territory code', 'Factor'], columns: [{ label: 'Territory code', role: 'key' }, { label: 'Factor', role: 'output' }], rows: [['SUB', '1.00']] },
+  ];
+  const routine = {
+    name: 'Worked Example', kind: 'worked_example', source_pages: [2], evidence_text: 'e',
+    inputs: ['Territory: Suburban (SUB)'],
+    outputs: [],
+    depends_on: [],
+    steps: ['1. Territory adjustment: $1,050.00 * 1.00'],
+    steps_detailed: [
+      { instruction: '1. Territory adjustment: $1,050.00 * 1.00', operation: 'expression', expression: '$1,050.00 * 1.00', inputs: [], output: 'Territory adjustment', evidence: 'e', source_pages: [2] },
+    ],
+  };
+  assert.equal(generateWorkedExampleLookups(routine, tables), 1);
+  assert.equal(generateWorkedExampleLookups(routine, tables), 0);
+  assert.equal(routine.steps_detailed.length, 2);
+});
+
+test('models: conflicting worked selections for one factor generate nothing', () => {
+  // Two instance selections for the same factor disagree on the row: no
+  // lookup is invented and the analyst sees the raw inputs instead.
+  const tables = [
+    { name: 'Table 2. Territory Factors', headers: ['Territory code', 'Factor'], columns: [{ label: 'Territory code', role: 'key' }, { label: 'Factor', role: 'output' }], rows: [['URB', '1.20'], ['SUB', '1.00']] },
+  ];
+  const routine = {
+    name: 'Worked Example', kind: 'worked_example', source_pages: [2], evidence_text: 'e',
+    inputs: ['Territory: Suburban (SUB)', 'Territory: Urban core (URB)'],
+    outputs: [],
+    depends_on: [],
+    steps: ['1. First: Base * 1.00', '2. Second: Base * 1.20'],
+    steps_detailed: [
+      { instruction: '1. First: Base * 1.00', operation: 'expression', expression: 'Base * 1.00', inputs: [], output: 'First', evidence: 'e1', source_pages: [2] },
+      { instruction: '2. Second: Base * 1.20', operation: 'expression', expression: 'Base * 1.20', inputs: [], output: 'Second', evidence: 'e2', source_pages: [2] },
+    ],
+  };
+  assert.equal(generateWorkedExampleLookups(routine, tables), 0);
+  assert.equal(routine.steps_detailed.length, 2);
+});
+
+test('models: worked lookup generation skips keys an explicit lookup already binds', () => {
+  const tables = [
+    { name: 'Table 1. Base Annual Rate by Vehicle Class', headers: ['Vehicle class code', 'Base annual rate per vehicle'], columns: [{ label: 'Vehicle class code', role: 'key' }, { label: 'Base annual rate per vehicle', role: 'output' }], rows: [['LDV', '$1,050.00']] },
+  ];
+  const routine = {
+    name: 'Worked Example', kind: 'worked_example', source_pages: [2], evidence_text: 'e',
+    inputs: ['Vehicle class: Light Delivery Van (LDV)'],
+    outputs: [],
+    depends_on: [],
+    steps: ['1. Base premium: Selected rate for LDV'],
+    steps_detailed: [
+      { instruction: '1. Base premium: Selected rate for LDV', operation: 'lookup', inputs: ['LDV'], output: 'Base premium', evidence: 'e1', source_pages: [2], stated_results: [{ output: 'Base premium', value: '$1,050.00' }] },
+    ],
+  };
+  assert.equal(generateWorkedExampleLookups(routine, tables), 0);
+  assert.equal(routine.steps_detailed.length, 1);
+});
+
+test('models: amount-keyed worked lookups without a label stay unresolved', () => {
+  const tables = [
+    { name: 'Table 5. Collision Deductible Factors', headers: ['Collision deductible', 'Factor'], columns: [{ label: 'Collision deductible', role: 'key' }, { label: 'Factor', role: 'output' }], rows: [['$0', '1.00'], ['$500', '0.95']] },
+  ];
+  const routine = {
+    name: 'Worked Example', kind: 'worked_example', source_pages: [2], evidence_text: 'e',
+    inputs: ['$500'],
+    outputs: [],
+    depends_on: [],
+    steps: ['1. Adjustment: Base * 0.95'],
+    steps_detailed: [
+      { instruction: '1. Adjustment: Base * 0.95', operation: 'expression', expression: 'Base * 0.95', inputs: [], output: 'Adjustment', evidence: 'e', source_pages: [2] },
+    ],
+  };
+  assert.equal(generateWorkedExampleLookups(routine, tables), 0);
+  assert.equal(routine.steps_detailed.length, 1);
+});
+
+test('models: worked lookups without a unique consumer anchor at first factor use', () => {
+  // The input-plus-row evidence still earns a lookup, but with no unique
+  // consuming calculation it anchors before the first factor use — or at
+  // the start when nothing consumes the value yet.
+  const tables = [
+    { name: 'Table 2. Territory Factors', headers: ['Territory code', 'Factor'], columns: [{ label: 'Territory code', role: 'key' }, { label: 'Factor', role: 'output' }], rows: [['SUB', '1.00']] },
+  ];
+  const shared = {
+    name: 'Worked Example', kind: 'worked_example', source_pages: [2], evidence_text: 'e',
+    inputs: ['Territory: Suburban (SUB)'],
+    outputs: [],
+    depends_on: [],
+  };
+  const multi = {
+    ...shared,
+    steps: ['1. First: Base + Fee', '2. Second: Base * 1.00', '3. Third: Base * 1.00'],
+    steps_detailed: [
+      { instruction: '1. First: Base + Fee', operation: 'expression', expression: 'Base + Fee', inputs: [], output: 'First', evidence: 'e1', source_pages: [2] },
+      { instruction: '2. Second: Base * 1.00', operation: 'expression', expression: 'Base * 1.00', inputs: [], output: 'Second', evidence: 'e2', source_pages: [2] },
+      { instruction: '3. Third: Base * 1.00', operation: 'expression', expression: 'Base * 1.00', inputs: [], output: 'Third', evidence: 'e3', source_pages: [2] },
+    ],
+  };
+  assert.equal(generateWorkedExampleLookups(multi, tables), 1);
+  assert.equal(multi.steps_detailed[1].output, 'Territory factor');
+  assert.equal(multi.steps_detailed[2].output, 'Second');
+  const none = {
+    ...shared,
+    steps: ['1. First: Base + Fee'],
+    steps_detailed: [
+      { instruction: '1. First: Base + Fee', operation: 'expression', expression: 'Base + Fee', inputs: [], output: 'First', evidence: 'e1', source_pages: [2] },
+    ],
+  };
+  assert.equal(generateWorkedExampleLookups(none, tables), 1);
+  assert.equal(none.steps_detailed[0].output, 'Territory factor');
+  assert.equal(none.steps_detailed[1].output, 'First');
+});
+
+test('models: worked example outputs never suppress procedure lookup generation', () => {
+  // A worked example illustrating the same factor must not mark the
+  // reusable procedure's factor as produced: the procedure still earns
+  // its own parameterized lookup.
+  const routine = coverRatingRoutine();
+  const worked = {
+    name: 'Worked Example', kind: 'worked_example', source_pages: [2], evidence_text: 'e',
+    inputs: ['Cover: (C1)'],
+    outputs: [],
+    steps: ['Look up the cover factor from Schedule S. Cover Factors using C1.'],
+    steps_detailed: [
+      { instruction: 'Look up the cover factor from Schedule S. Cover Factors using C1.', operation: 'lookup', inputs: ['C1'], output: 'cover factor', depends_on: ['Schedule S. Cover Factors'], evidence: 'Cover: (C1)', source_pages: [2], stated_results: [{ output: 'cover factor', value: '1.10' }] },
+    ],
+  };
+  assert.equal(generateParameterizedLookups(routine, [coverFactorTable()], [routine, worked]), 1);
+});
+
+test('models: generated step sequences suffix and bump deterministically', () => {
+  assert.equal(generatedStepSequence({ sequence: 1 }), '1b');
+  assert.equal(generatedStepSequence({ sequence: '2' }), '2b');
+  assert.equal(generatedStepSequence({ sequence: '1b' }), '1c');
+  assert.equal(generatedStepSequence({ sequence: '2z' }), '2zb');
+  assert.equal(generatedStepSequence({ sequence: 'A' }), 'Ab');
+  assert.equal(generatedStepSequence({ sequence: 'a' }), 'ab');
+  assert.equal(generatedStepSequence({}), '');
+  assert.equal(generatedStepSequence(undefined), '');
+  assert.equal(generatedStepSequence({ sequence: '' }), '');
+});
+
+test('models: generated worked lookups take letter-suffixed sequences', () => {
+  const tables = [
+    { name: 'Table 2. Territory Factors', headers: ['Territory code', 'Factor'], columns: [{ label: 'Territory code', role: 'key' }, { label: 'Factor', role: 'output' }], rows: [['URB', '1.20'], ['SUB', '1.00']] },
+    { name: 'Table 4. Liability Limit Factors', headers: ['Liability limit', 'Factor'], columns: [{ label: 'Liability limit', role: 'key' }, { label: 'Factor', role: 'output' }], rows: [['$500,000', '1.00'], ['$1,000,000', '1.25']] },
+  ];
+  const routine = {
+    name: 'Worked Example', kind: 'worked_example', source_pages: [2], evidence_text: 'e',
+    inputs: ['Territory: Suburban (SUB)', 'Liability limit: $1,000,000'],
+    outputs: [],
+    depends_on: [],
+    steps: ['1. Territory adjustment: $1,050.00 * 1.00', '2. Liability adjustment: $1,050.00 * 1.25'],
+    steps_detailed: [
+      { sequence: 1, instruction: '1. Territory adjustment: $1,050.00 * 1.00', operation: 'expression', expression: '$1,050.00 * 1.00', inputs: [], output: 'Territory adjustment', evidence: 'e1', source_pages: [2] },
+      { sequence: 2, instruction: '2. Liability adjustment: $1,050.00 * 1.25', operation: 'expression', expression: '$1,050.00 * 1.25', inputs: [], output: 'Liability adjustment', evidence: 'e2', source_pages: [2] },
+    ],
+  };
+  assert.equal(generateWorkedExampleLookups(routine, tables), 2);
+  // SUB lookup anchors at the start with no preceding step: no sequence,
+  // keeping positional numbering.
+  assert.equal(routine.steps_detailed[0].sequence, undefined);
+  assert.equal(routine.steps_detailed[0].output, 'Territory factor');
+  // Liability lookup follows source step 1: letter-suffixed, never
+  // colliding with source step 2.
+  assert.equal(routine.steps_detailed[2].sequence, '1b');
+  assert.equal(routine.steps_detailed[2].output, 'Liability limit factor');
+  assert.equal(routine.steps_detailed[3].sequence, 2);
+});
+
+test('models: adjacent generated lookups bump the letter suffix', () => {
+  // Both values are consumed by the same calculation, so both lookups
+  // anchor together: 1b then 1c.
+  const tables = [
+    { name: 'Table 2. Territory Factors', headers: ['Territory code', 'Factor'], columns: [{ label: 'Territory code', role: 'key' }, { label: 'Factor', role: 'output' }], rows: [['SUB', '1.00']] },
+    { name: 'Table 4. Liability Limit Factors', headers: ['Liability limit', 'Factor'], columns: [{ label: 'Liability limit', role: 'key' }, { label: 'Factor', role: 'output' }], rows: [['$1,000,000', '1.25']] },
+  ];
+  const routine = {
+    name: 'Worked Example', kind: 'worked_example', source_pages: [2], evidence_text: 'e',
+    inputs: ['Territory: Suburban (SUB)', 'Liability limit: $1,000,000'],
+    outputs: [],
+    depends_on: [],
+    steps: ['1. First: Base + Fee', '2. Second: 1.00 + 1.25'],
+    steps_detailed: [
+      { sequence: 1, instruction: '1. First: Base + Fee', operation: 'expression', expression: 'Base + Fee', inputs: [], output: 'First', evidence: 'e1', source_pages: [2] },
+      { sequence: 2, instruction: '2. Second: 1.00 + 1.25', operation: 'expression', expression: '1.00 + 1.25', inputs: [], output: 'Second', evidence: 'e2', source_pages: [2] },
+    ],
+  };
+  assert.equal(generateWorkedExampleLookups(routine, tables), 2);
+  assert.equal(routine.steps_detailed[1].sequence, '1b');
+  assert.equal(routine.steps_detailed[1].output, 'Territory factor');
+  assert.equal(routine.steps_detailed[2].sequence, '1c');
+  assert.equal(routine.steps_detailed[2].output, 'Liability limit factor');
+  assert.equal(routine.steps_detailed[3].sequence, 2);
+});
+
+test('models: generated parameterized lookups take letter-suffixed sequences', () => {
+  const routine = coverRatingRoutine();
+  routine.steps_detailed[0].sequence = 1;
+  routine.steps_detailed[1].sequence = 2;
+  routine.steps_detailed[2].sequence = 3;
+  assert.equal(generateParameterizedLookups(routine, [coverFactorTable()]), 1);
+  assert.equal(routine.steps_detailed[1].sequence, '1b');
+  assert.equal(routine.steps_detailed[2].sequence, 2);
+});
+
+test('models: generated lookup sequences survive renormalization', () => {
+  const job = normalizeJob(createJob({
+    document: createDocument({ filename: 'g.pdf', pageCount: 2 }),
+    tables: [
+      { name: 'Table 2. Territory Factors', sourcePages: [1], evidenceText: 'territory factor schedule', headers: ['Territory code', 'Description', 'Factor'], rows: [['SUB', 'Suburban', '1.00'], ['URB', 'Urban core', '1.20']] },
+    ],
+    routines: [{
+      name: 'Worked Example', kind: 'worked_example', sourcePages: [2], evidenceText: 'e',
+      inputs: ['Territory: Suburban (SUB)'],
+      outputs: ['Adjusted total: $1,050.00'],
+      steps: [
+        { sequence: 1, instruction: '1. Base: $500.00 * 2.00', operation: 'multiply', expression: '$500.00 * 2.00', inputs: ['$500.00', '2.00'], output: '$1,000.00', cells: { step: '1. Base', calculation: '$500.00 * 2.00', result: '$1,000.00' } },
+        { sequence: 2, instruction: '2. Territory adjustment: $1,050.00 * 1.00', operation: 'multiply', expression: '$1,050.00 * 1.00', inputs: ['$1,050.00', '1.00'], output: '$1,050.00', cells: { step: '2. Territory adjustment', calculation: '$1,050.00 * 1.00', result: '$1,050.00' } },
+      ],
+    }],
+  }));
+  for (const t of job.tables) t.columns = inferTableColumns(t);
+  const worked = job.routines[0];
+  assert.equal(generateWorkedExampleLookups(worked, job.tables), 1);
+  assert.equal(worked.steps_detailed[1].sequence, '1b');
+  const again = normalizeJob(job);
+  const reworked = again.routines[0];
+  assert.equal(reworked.steps_detailed.length, 3);
+  assert.equal(reworked.steps.length, 3);
+  assert.equal(reworked.steps_detailed[1].operation, 'lookup');
+  assert.equal(reworked.steps_detailed[1].sequence, '1b');
+  assert.equal(reworked.steps_detailed[1].output, 'Territory factor');
+  assert.equal(reworked.steps[1], reworked.steps_detailed[1].instruction);
+  assert.equal(generateWorkedExampleLookups(reworked, again.tables), 0);
+});
+
+test('models: mixed value-worded columns with half numeric cells stay outputs', () => {
+  // Annotation cells (scope notes, exclusions) never flip a rate column
+  // into a key: at least half numeric keeps the value wording's verdict.
+  const cols = inferTableColumns({
+    headers: ['Policy vehicle count', 'Fleet discount rate'],
+    columns: [],
+    rows: [['1 to 2', '0%'], ['3 to 10', '5%'], ['More than 10', 'Outside the scope of this guide']],
+  });
+  assert.equal(cols[0].role, 'key');
+  assert.equal(cols[1].role, 'output');
+});
+
+test('models: key wording still beats value wording on mixed columns', () => {
+  // 'Rate code' is identifying despite the value word and the numeric cell.
+  const cols = inferTableColumns({
+    headers: ['Rate code'],
+    columns: [],
+    rows: [['R1'], ['5']],
+  });
+  assert.equal(cols[0].role, 'key');
+});
+
+test('models: value-worded columns with few numeric cells stay unknown', () => {
+  const cols = inferTableColumns({
+    headers: ['Factor'],
+    columns: [],
+    rows: [['High'], ['High'], ['1.5']],
+  });
+  assert.equal(cols[0].role ?? '', '');
 });

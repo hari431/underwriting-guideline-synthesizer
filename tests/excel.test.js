@@ -4,7 +4,7 @@ import { inflateRawSync } from 'node:zlib';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildWorkbookXlsx, crc32, routineSheetNames, tableSheetNames } from '../src/excel.js';
-import { createDocument, createJob, generateParameterizedLookups, normalizeJob } from '../src/models.js';
+import { createDocument, createJob, generateParameterizedLookups, generateWorkedExampleLookups, inferTableColumns, normalizeJob } from '../src/models.js';
 import { validateJob } from '../src/validate.js';
 import { loadRecording } from '../src/extract.js';
 
@@ -2894,4 +2894,78 @@ test('excel: rounding row shows the linked preceding output as operand', () => {
   assert.ok(roundRow, `missing rounding row: ${JSON.stringify(steps.body)}`);
   assert.equal(roundRow[4], 'Final before rounding');
   assert.ok(steps.body.every((row) => row[2] !== 'REVIEW'), `unexpected REVIEW rows: ${JSON.stringify(steps.body)}`);
+});
+
+test('excel: generated worked lookups render lookup and assigned-factor rows', () => {
+  // The Worked Example chain reads Input -> lookup -> assigned factor ->
+  // calculation: the lookup row names the table and key, and the stated
+  // row carries the selected factor into the calculation below.
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'synthetic.pdf', pageCount: 2 }),
+      tables: [
+        { name: 'Table 2. Territory Factors', sourcePages: [1], evidenceText: 'territory factor schedule', headers: ['Territory code', 'Description', 'Factor'], rows: [['SUB', 'Suburban', '1.00'], ['URB', 'Urban core', '1.20']] },
+      ],
+      routines: [{
+        name: 'Worked Example', kind: 'worked_example', sourcePages: [2], evidenceText: 'e',
+        inputs: ['Territory: Suburban (SUB)'],
+        outputs: ['Adjusted total: $1,050.00'],
+        steps: [
+          { sequence: 1, instruction: '1. Territory adjustment: $1,050.00 * 1.00', operation: 'multiply', expression: '$1,050.00 * 1.00', inputs: ['$1,050.00', '1.00'], output: '$1,050.00', cells: { step: '1. Territory adjustment', calculation: '$1,050.00 * 1.00', result: '$1,050.00' } },
+        ],
+      }],
+    })
+  );
+  for (const t of job.tables) t.columns = inferTableColumns(t);
+  assert.equal(generateWorkedExampleLookups(job.routines[0], job.tables), 1);
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Worked Example'), strings);
+  const steps = sectionRows(values, 'Steps');
+  const lookupRow = steps.body.find((row) => row[1] === 'Territory factor' && row[2] === '<--');
+  assert.ok(lookupRow, `missing generated lookup row: ${JSON.stringify(steps.body)}`);
+  assert.equal(lookupRow[4], 'table:Table 2. Territory Factors (SUB)');
+  const statedRow = steps.body.find((row) => row[1] === 'Territory factor' && row[2] === '=');
+  assert.ok(statedRow, `missing assigned-factor row: ${JSON.stringify(steps.body)}`);
+  assert.equal(statedRow[4], '1.00');
+  assert.ok(steps.body.every((row) => row[2] !== 'REVIEW'), `unexpected REVIEW rows: ${JSON.stringify(steps.body)}`);
+});
+
+test('excel: generated lookup rows take letter-suffixed numbers and attribution', () => {
+  // The lookup inserted between source steps 1 and 2 numbers as 1b and
+  // attributes to (source step 1b): no collisions, no misattribution.
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'synthetic.pdf', pageCount: 2 }),
+      tables: [
+        { name: 'Table 2. Territory Factors', sourcePages: [1], evidenceText: 'territory factor schedule', headers: ['Territory code', 'Description', 'Factor'], rows: [['SUB', 'Suburban', '1.00'], ['URB', 'Urban core', '1.20']] },
+      ],
+      routines: [{
+        name: 'Worked Example', kind: 'worked_example', sourcePages: [2], evidenceText: 'e',
+        inputs: ['Territory: Suburban (SUB)'],
+        outputs: ['Adjusted total: $1,050.00'],
+        steps: [
+          { sequence: 1, instruction: '1. Base: $500.00 * 2.00', operation: 'multiply', expression: '$500.00 * 2.00', inputs: ['$500.00', '2.00'], output: '$1,000.00', cells: { step: '1. Base', calculation: '$500.00 * 2.00', result: '$1,000.00' } },
+          { sequence: 2, instruction: '2. Territory adjustment: $1,050.00 * 1.00', operation: 'multiply', expression: '$1,050.00 * 1.00', inputs: ['$1,050.00', '1.00'], output: '$1,050.00', cells: { step: '2. Territory adjustment', calculation: '$1,050.00 * 1.00', result: '$1,050.00' } },
+        ],
+      }],
+    })
+  );
+  for (const t of job.tables) t.columns = inferTableColumns(t);
+  assert.equal(generateWorkedExampleLookups(job.routines[0], job.tables), 1);
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Worked Example'), strings);
+  const steps = sectionRows(values, 'Steps');
+  const lookupRows = steps.body.filter((row) => row[1] === 'Territory factor');
+  assert.deepEqual(lookupRows.map((row) => row[0]), ['1b.1', '1b.2']);
+  assert.match(lookupRows[1][6], /\(source step 1b\)/);
+  const seqs = steps.body.map((row) => row[0]);
+  assert.equal(new Set(seqs).size, seqs.length, `duplicate step numbers: ${JSON.stringify(seqs)}`);
+  assert.ok(steps.body.every((row) => row[2] !== 'REVIEW'), `unexpected REVIEW rows: ${JSON.stringify(steps.body)}`);
+  assert.ok(values.some((row) => row[0] === 'Step 1b evidence' && row[1] === 'Territory: Suburban (SUB)'), 'missing Step 1b evidence row');
 });

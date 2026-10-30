@@ -206,3 +206,64 @@ test('pipeline: live-extraction shape without step dependencies warns with attri
   assert.ok(job.issues.some((i) => /Step 3 uses "Driver experience factor" from Table "Table 3\. Driver Experience Factors"/.test(i.message)), `driver must warn: ${msgs}`);
   assert.equal(job.routines[0].steps_detailed.length, 2);
 });
+
+test('pipeline: worked example gains instance lookups end to end', () => {
+  // Raw tables carry no columns: the pipeline infers roles, then the
+  // worked input resolves to its exact row and earns a lookup step.
+  const job = buildJobFromExtraction(
+    {
+      tables: [
+        { name: 'Table 2. Territory Factors', sourcePages: [1], evidenceText: 'territory factor schedule', headers: ['Territory code', 'Description', 'Factor'], rows: [['SUB', 'Suburban', '1.00'], ['URB', 'Urban core', '1.20']] },
+      ],
+      routines: [
+        {
+          name: 'Worked Example', kind: 'worked_example', sourcePages: [2], evidenceText: 'e',
+          inputs: ['Territory: Suburban (SUB)'],
+          outputs: ['Adjusted total: $1,050.00'],
+          steps: [
+            { sequence: 1, instruction: '1. Territory adjustment: $1,050.00 * 1.00', operation: 'multiply', expression: '$1,050.00 * 1.00', inputs: ['$1,050.00', '1.00'], output: '$1,050.00', cells: { step: '1. Territory adjustment', calculation: '$1,050.00 * 1.00', result: '$1,050.00' } },
+          ],
+        },
+      ],
+    },
+    { filename: 'synthetic.pdf', pageCount: 2 },
+  );
+  assert.equal(job.tables[0].columns[0].role, 'key');
+  assert.equal(job.tables[0].columns[2].role, 'output');
+  const worked = job.routines.find((r) => r.kind === 'worked_example');
+  assert.equal(worked.steps_detailed.length, 2);
+  assert.equal(worked.steps.length, 2);
+  const lookup = worked.steps_detailed[0];
+  assert.equal(lookup.operation, 'lookup');
+  assert.equal(lookup.output, 'Territory factor');
+  assert.deepEqual(lookup.inputs, ['SUB']);
+  assert.deepEqual(lookup.stated_results, [{ output: 'Territory factor', value: '1.00' }]);
+  assert.equal(worked.steps_detailed[1].output, 'Territory adjustment');
+});
+
+test('pipeline: discount-rule table without matching keys earns no lookup', () => {
+  // The discount rate column now classifies as the value column, but with
+  // no exact key match the worked input still earns no lookup step.
+  const job = buildJobFromExtraction(
+    {
+      tables: [
+        { name: 'Fleet discount rule', sourcePages: [1], evidenceText: 'fleet discount rule', headers: ['Policy vehicle count', 'Fleet discount rate'], rows: [['1 to 2', '0%'], ['3 to 10', '5%'], ['More than 10', 'Outside the scope of this guide']] },
+      ],
+      routines: [
+        {
+          name: 'Worked Example', kind: 'worked_example', sourcePages: [2], evidenceText: 'e',
+          inputs: ['Policy vehicle count: 4 vehicles'],
+          outputs: ['Discount: $56.109375'],
+          steps: [
+            { sequence: 6, instruction: '6. Fleet discount: $1,122.1875 * 5%', operation: 'multiply', expression: '$1,122.1875 * 5%', inputs: ['$1,122.1875', '5%'], output: '$56.109375', cells: { step: '6. Fleet discount', calculation: '$1,122.1875 * 5%', result: '$56.109375' } },
+          ],
+        },
+      ],
+    },
+    { filename: 'synthetic.pdf', pageCount: 2 },
+  );
+  assert.equal(job.tables[0].columns[1].role, 'output');
+  const worked = job.routines.find((r) => r.kind === 'worked_example');
+  assert.equal(worked.steps_detailed.length, 1);
+  assert.ok(worked.steps_detailed.every((s) => s.operation !== 'lookup'));
+});

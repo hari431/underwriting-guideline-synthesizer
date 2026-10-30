@@ -2329,9 +2329,12 @@ export function diagnoseFactorLookup(routine, stepIndex, name, table) {
 }
 
 // Terms introduced without any table: literals, this routine's inputs,
-// every routine's step and routine outputs, defined constants, and this
-// routine's lookup keys. Mirrors the validator's factor-introduced check
-// so generation fires exactly where validation would flag.
+// non-worked routines' step and routine outputs (plus this routine's own
+// outputs whatever its kind), defined constants, and this routine's
+// lookup keys. Worked examples illustrate instances, never definitions,
+// so their outputs never introduce another routine's factors. Mirrors the
+// validator's factor-introduced check so generation fires exactly where
+// validation would flag.
 function collectProducedTerms(routines, routine) {
   const lower = new Set();
   const normalized = new Set();
@@ -2346,6 +2349,7 @@ function collectProducedTerms(routines, routine) {
     for (const part of splitOutputParts(raw)) addRaw(part);
   };
   for (const r of routines) {
+    if (r !== routine && normalizeRoutineKind(r?.kind) === 'worked_example') continue;
     for (const s of r?.steps_detailed ?? []) addSplit(s?.output);
     for (const o of r?.outputs ?? []) addSplit(o);
   }
@@ -2400,6 +2404,21 @@ function tableMentionFor(step, tables, table) {
   return String(table?.name ?? table?.id ?? '');
 }
 
+// A generated step's sequence derives from the preceding step: source
+// number plus a letter suffix ("1b" after step 1), bumping the suffix
+// when generated steps stand adjacent ("1b" then "1c"). Empty when the
+// preceding step carries no sequence, preserving positional numbering.
+export function generatedStepSequence(preceding) {
+  const s = String(preceding?.sequence ?? '').trim();
+  if (!s) return '';
+  const m = /^(.*\d)([a-z])$/.exec(s);
+  if (m) {
+    const next = m[2] < 'z' ? String.fromCharCode(m[2].charCodeAt(0) + 1) : m[2] + 'b';
+    return m[1] + next;
+  }
+  return s + 'b';
+}
+
 // Splice one parameterized lookup before its first evidenced use, keeping
 // display strings and details positionally aligned, then recase downstream
 // references to the canonical (first-seen) factor name — the same
@@ -2422,6 +2441,8 @@ function insertFactorLookup(routine, detailed, tables, anchor, key) {
     source_pages: pages,
     interpretation_status: 'inferred',
   };
+  const precedingSequence = generatedStepSequence(detailed[anchor.index - 1]);
+  if (precedingSequence) generated.sequence = precedingSequence;
   const display = Array.isArray(routine?.steps) ? routine.steps : null;
   const aligned = display !== null && display.length > 0 && display.length === detailed.length;
   detailed.splice(anchor.index, 0, generated);
@@ -2486,6 +2507,239 @@ export function generateParameterizedLookups(routine, tables, routines = [routin
   return generated;
 }
 
+// Worked-example instance keys: the label before the first colon plus every
+// parenthesized uppercase code (`(SUB)`, `(EXP-3)`) and currency amount
+// (`$1,000,000`) in the input. Bare numbers and lowercase glosses are not
+// keys - matching them would guess across unrelated columns.
+function parseWorkedInputKeys(input) {
+  const raw = String(input ?? '');
+  const label = raw.includes(':') ? raw.slice(0, raw.indexOf(':')).trim() : '';
+  const codes = [];
+  for (const m of raw.matchAll(/\(([A-Z0-9][A-Z0-9-]*)\)/g)) {
+    if (!codes.includes(m[1])) codes.push(m[1]);
+  }
+  const amounts = [];
+  for (const m of raw.matchAll(/\$[\d,]+(?:\.\d+)?/g)) {
+    if (!amounts.includes(m[0])) amounts.push(m[0]);
+  }
+  return { label, codes, amounts };
+}
+
+// A lookup output name derived mechanically from the table title: the
+// table-reference prefix is stripped, the head word is singularized and
+// lowercased, and qualifier words take sentence case with all-caps
+// acronyms preserved ("Table 3. Driver Experience Factors" becomes
+// "Driver experience factor"; "BI Liability" stays "BI liability").
+// Empty when no clean
+// name remains, so generation skips instead of inventing one.
+const WORKED_TABLE_PREFIX = /^(table|schedule|appendix|exhibit)\s+\S+\s*[:.\-]?\s*/i;
+
+export function factorNameFromTable(table) {
+  const name = String(table?.name ?? '').trim();
+  const remainder = name.replace(WORKED_TABLE_PREFIX, '').trim();
+  if (!remainder || remainder.includes(':')) return '';
+  const words = remainder.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return '';
+  for (const w of words) {
+    const bare = w.replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, '');
+    if (/^(table|schedule|appendix|exhibit)$/i.test(bare)) return '';
+  }
+  const lowerUnlessAcronym = (w) => (/[A-Z]/.test(w) && !/[a-z]/.test(w) ? w : w.toLowerCase());
+  const quals = words.slice(0, -1).map((w, idx) => (idx === 0 ? w : lowerUnlessAcronym(w)));
+  const head = lowerUnlessAcronym(singularKeyword(words[words.length - 1]));
+  if (!head) return '';
+  return [...quals, head].join(' ');
+}
+
+// Key-ish and value-ish column roles, mirroring the validator band-group
+// and missing-value vocabularies: wording the source or inference marked
+// as identifying input or selectable output.
+const WORKED_KEY_ROLE = /\b(key|lookup|input)\b/i;
+const WORKED_VALUE_ROLE = /\b(output|value|result)\b/i;
+
+function workedKeyColumnIndexes(table) {
+  return (table?.columns ?? [])
+    .map((col, idx) => (WORKED_KEY_ROLE.test(String(col?.role ?? '')) ? idx : -1))
+    .filter((idx) => idx >= 0);
+}
+
+// The single value column of a table, or -1 when the table names zero or
+// several: a row match means nothing without exactly one selectable value.
+function workedValueColumnIndex(table) {
+  const hits = (table?.columns ?? [])
+    .map((col, idx) => (WORKED_VALUE_ROLE.test(String(col?.role ?? '')) ? idx : -1))
+    .filter((idx) => idx >= 0);
+  return hits.length === 1 ? hits[0] : -1;
+}
+
+// Resolve one worked-example input against exact table rows: every code
+// and currency key must agree on a single (table, row) and that table
+// must carry exactly one value column. Anything else - no match, several
+// rows, several tables, no value column - returns null so the caller
+// skips instead of inferring from a similar-looking column.
+export function resolveWorkedInputRow(input, tables) {
+  const { label, codes, amounts } = parseWorkedInputKeys(input);
+  const candidates = [...codes.map((key) => ({ key, tier: 'code' })), ...amounts.map((key) => ({ key, tier: 'amount' }))];
+  if (candidates.length === 0) return null;
+  const list = Array.isArray(tables) ? tables : [];
+  const matches = [];
+  for (const { key, tier } of candidates) {
+    list.forEach((table, tableIndex) => {
+      const valueIdx = workedValueColumnIndex(table);
+      if (valueIdx < 0) return;
+      const keyIdxs = workedKeyColumnIndexes(table);
+      if (keyIdxs.length === 0) return;
+      (table?.rows ?? []).forEach((row, rowIndex) => {
+        if (!Array.isArray(row)) return;
+        const hit = keyIdxs.some((idx) => String(row[idx] ?? '').trim() === key);
+        if (!hit) return;
+        const value = String(row[valueIdx] ?? '').trim();
+        if (!value) return;
+        matches.push({ table, tableIndex, rowIndex, key, tier, value });
+      });
+    });
+  }
+  const distinct = new Map();
+  for (const m of matches) {
+    const id = `${m.tableIndex}:${m.rowIndex}`;
+    if (!distinct.has(id)) distinct.set(id, []);
+    distinct.get(id).push(m);
+  }
+  if (distinct.size !== 1) return null;
+  const group = distinct.values().next().value;
+  const first = group.find((m) => m.tier === 'code') ?? group[0];
+  return { table: first.table, tableIndex: first.tableIndex, rowIndex: first.rowIndex, key: first.key, tier: first.tier, label, value: first.value };
+}
+
+// Operand tokens of a step expression: top-level operator parts, trimmed.
+// A calculation consumes a factor value only when one of its own operand
+// tokens equals that value exactly - substring resemblance never counts.
+function expressionOperandTokens(step) {
+  const expression = String(step?.expression ?? '').trim();
+  if (!expression) return [];
+  const split = splitTopLevelOperators(expression);
+  if (!split) return [expression];
+  return split.parts.map((part) => String(part ?? '').trim()).filter(Boolean);
+}
+
+function workedValueConsumers(detailed, value) {
+  const hits = [];
+  (detailed ?? []).forEach((step, index) => {
+    if (!step || typeof step !== 'object' || isLookupLikeOperation(step?.operation)) return;
+    if (expressionOperandTokens(step).includes(value)) hits.push(index);
+  });
+  return hits;
+}
+
+// Splice one worked-example lookup before its anchor, keeping display
+// strings and details positionally aligned. The evidence is the routine
+// input that resolved to the row; the stated result is the value that
+// row selects - both verbatim, nothing derived.
+function insertWorkedLookup(routine, detailed, anchor) {
+  const mention = String(anchor.table?.name ?? anchor.table?.id ?? '');
+  const instruction = `Look up the ${anchor.name} from ${mention} using ${anchor.key}.`;
+  const generated = {
+    instruction,
+    operation: 'lookup',
+    inputs: [anchor.key],
+    output: anchor.name,
+    depends_on: [mention],
+    evidence: anchor.input,
+    source_pages: [...(routine?.source_pages ?? [])],
+    interpretation_status: 'inferred',
+    stated_results: [{ output: anchor.name, value: anchor.value }],
+  };
+  const precedingSequence = generatedStepSequence(detailed[anchor.index - 1]);
+  if (precedingSequence) generated.sequence = precedingSequence;
+  const display = Array.isArray(routine?.steps) ? routine.steps : null;
+  const aligned = display !== null && display.length > 0 && display.length === detailed.length;
+  detailed.splice(anchor.index, 0, generated);
+  if (aligned) display.splice(anchor.index, 0, instruction);
+}
+
+// Insert instance lookup assignments for worked-example inputs that
+// resolve to exact table rows. Each lookup selects the value its input
+// row carries and anchors before the calculation consuming that value,
+// giving Input -> lookup -> assigned factor -> calculation. Generation
+// fires only for worked examples (reusable procedures keep their
+// missing-key warnings), only on a globally unique (table, row) match,
+// and never twice for the same factor: already-produced names,
+// already-bound keys, and already-selected (table, value) pairs all
+// suppress. Conflicting inputs for one factor suppress the whole group -
+// no order tie-break, no guess. Mutates the routine in place and returns
+// the number of steps inserted; re-running after normalization inserts
+// nothing further.
+export function generateWorkedExampleLookups(routine, tables) {
+  if (normalizeRoutineKind(routine?.kind) !== 'worked_example') return 0;
+  const detailed = Array.isArray(routine?.steps_detailed) ? routine.steps_detailed : [];
+  if (detailed.length === 0) return 0;
+  const list = Array.isArray(tables) ? tables : [];
+  if (list.length === 0) return 0;
+  const produced = collectProducedTerms([routine], routine);
+  const boundKeys = new Set();
+  const selected = [];
+  for (const step of detailed) {
+    if (!step || typeof step !== 'object' || !isLookupLikeOperation(step?.operation)) continue;
+    for (const raw of step?.inputs ?? []) {
+      const key = normalizeVariableKey(raw);
+      if (key) boundKeys.add(key);
+    }
+    for (const stated of step?.stated_results ?? []) {
+      const value = String(stated?.value ?? '').trim();
+      if (!value) continue;
+      for (const raw of step?.depends_on ?? []) {
+        const table = resolveTableReference(list, raw);
+        if (table) selected.push({ table, value });
+      }
+    }
+  }
+  const planned = [];
+  for (const raw of routine?.inputs ?? []) {
+    const input = String(raw ?? '').trim();
+    if (!input) continue;
+    const match = resolveWorkedInputRow(input, list);
+    if (!match) continue;
+    const name = factorNameFromTable(match.table);
+    if (!name || isProducedTerm(produced, name)) continue;
+    if (boundKeys.has(normalizeVariableKey(match.key))) continue;
+    if (selected.some((s) => s.table === match.table && s.value === match.value)) continue;
+    const key = match.tier === 'code' ? match.key : match.label;
+    if (!key) continue;
+    planned.push({ input, table: match.table, tableIndex: match.tableIndex, rowIndex: match.rowIndex, name, key, value: match.value });
+  }
+  if (planned.length === 0) return 0;
+  const groups = new Map();
+  for (const cand of planned) {
+    const gkey = normalizeVariableKey(cand.name);
+    if (!groups.has(gkey)) groups.set(gkey, []);
+    groups.get(gkey).push(cand);
+  }
+  const agreed = [];
+  for (const group of groups.values()) {
+    const rows = new Set(group.map((c) => `${c.tableIndex}:${c.rowIndex}`));
+    if (rows.size !== 1) continue;
+    agreed.push(group[0]);
+  }
+  if (agreed.length === 0) return 0;
+  const values = new Set(agreed.map((c) => c.value));
+  const useIndexes = new Set();
+  for (const value of values) {
+    for (const idx of workedValueConsumers(detailed, value)) useIndexes.add(idx);
+  }
+  const firstUse = useIndexes.size > 0 ? Math.min(...useIndexes) : 0;
+  const anchors = agreed
+    .map((cand, order) => {
+      const consumers = workedValueConsumers(detailed, cand.value);
+      return { ...cand, order, index: consumers.length === 1 ? consumers[0] : firstUse };
+    })
+    .sort((a, b) => (a.index - b.index) || (a.order - b.order));
+  let offset = 0;
+  for (const anchor of anchors) {
+    insertWorkedLookup(routine, detailed, { ...anchor, index: anchor.index + offset });
+    offset += 1;
+  }
+  return anchors.length;
+}
 // Base asset code shared by split parts of one logical table: the uppercase
 // hyphenated code with any trailing Part/Section qualifier stripped
 // ("TBL-PROT-CRED Part A" and "TBL-PROT-CRED Part B" share "tbl-prot-cred").
@@ -2575,9 +2829,12 @@ export function isLogicalGroupReference(tables, mention) {
 // Generic column role hints from header wording. Rating-domain key/value/note
 // families, never specific table or column names. Value patterns decide when
 // headers are silent; headers decide when values are ambiguous (numeric codes
-// stay keys via "code", numeric factors stay outputs via "factor").
+// stay keys via "code", numeric factors stay outputs via "factor",
+// currency-valued limits and deductibles stay keys via key wording, and
+// value-worded columns with at least half numeric cells stay outputs
+// despite annotation cells such as scope notes).
 const COLUMN_KEY_TERMS = /\b(code|codes|id|ids|key|keys|category|categories|type|types|class|classes|zone|zones|territory|territories|band|bands|tier|tiers|group|groups|grade|grades|schedule|schedules|limit|limits|deductible|deductibles|peril|perils|occupancy|construction|hazard|industry|description)\b/i;
-const COLUMN_VALUE_TERMS = /\b(rate|rates|factor|factors|premium|premiums|cost|costs|price|prices|amount|amounts|charge|charges|fee|fees|modifier|modifiers|multiplier|multipliers|loading|loadings|surcharge|surcharges|credit|credits|debit|debits|relativity|relativities|ratio|ratios|percent|percentage|value|values|result|results|loss|losses|limit|limits)\b/i;
+const COLUMN_VALUE_TERMS = /\b(rate|rates|factor|factors|premium|premiums|cost|costs|price|prices|amount|amounts|charge|charges|fee|fees|modifier|modifiers|multiplier|multipliers|loading|loadings|surcharge|surcharges|credit|credits|debit|debits|relativity|relativities|ratio|ratios|percent|percentage|value|values|result|results|loss|losses)\b/i;
 const COLUMN_NOTE_TERMS = /\b(note|notes|constraint|constraints|requirement|requirements|comment|comments|evidence|footnote|footnotes|instruction|instructions|remark|remarks|condition|conditions|eligibility|audit|certification|documentation|warranty|warranties)\b/i;
 
 function columnCells(table, idx) {
@@ -2638,7 +2895,8 @@ function inferColumnRole(header, cells) {
   const allNumeric = nonBlank.every(isColumnNumericValue);
   if (h && COLUMN_VALUE_TERMS.test(h) && allNumeric) return 'output';
   if (h && /\b(code|codes|id|ids|key|keys)\b/i.test(h)) return 'key';
-  if (h && COLUMN_KEY_TERMS.test(h) && !allNumeric) return 'key';
+  if (h && COLUMN_KEY_TERMS.test(h)) return 'key';
+  if (h && COLUMN_VALUE_TERMS.test(h) && nonBlank.filter(isColumnNumericValue).length * 2 >= nonBlank.length) return 'output';
   if (nonBlank.every(isCodeLikeValue)) return 'key';
   const unique = new Set(nonBlank.map((c) => String(c ?? '').trim().toLowerCase()));
   if (unique.size === nonBlank.length && nonBlank.length >= 2 && !allNumeric) return 'key';
@@ -4456,7 +4714,7 @@ const STRUCTURAL_KIND_WORDS = new Set([
   'contradictions', 'contradictory', 'matrix', 'scale', 'scales',
 ]);
 
-function normalizeRoutineKind(kind, evidence = {}) {
+export function normalizeRoutineKind(kind, evidence = {}) {
   const raw = String(kind ?? 'formula');
   const key = raw.trim().toLowerCase().replace(/[\s-]+/g, '_');
   if (ROUTINE_KINDS.includes(key)) return key;

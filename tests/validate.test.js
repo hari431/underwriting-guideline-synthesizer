@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createDocument, createJob, generateParameterizedLookups, normalizeJob } from '../src/models.js';
+import { createDocument, createJob, generateParameterizedLookups, generateWorkedExampleLookups, inferTableColumns, normalizeJob } from '../src/models.js';
 import { classifyFormula, evaluateNumericExpression, validateJob } from '../src/validate.js';
 
 function jobWith(overrides) {
@@ -2115,4 +2115,115 @@ test('validate: missing dependencies keep the generic unresolved warning', () =>
   const msgs = issues.map((i) => i.message).join(' | ');
   const hit = issues.find((i) => /Step 1 references "territory factor", which matches no defined input/.test(i.message));
   assert.ok(hit, `unattributed factor must keep the generic warning: ${msgs}`);
+});
+
+test('validate: worked lookups resolve while the procedure keeps missing-key warnings', () => {
+  // Generating Worked Example instance lookups must not silence the
+  // reusable procedure's missing-key warnings; the generated steps
+  // themselves carry full evidence and stay silent.
+  const job = jobWith({
+    tables: [
+      { name: 'Table 2. Territory Tallage Factors', sourcePages: [1], evidenceText: 'territory factor schedule', headers: ['Territory code', 'Description', 'Factor'], rows: [['SUB', 'Suburban', '1.00'], ['URB', 'Urban core', '1.20']] },
+    ],
+    routines: [
+      {
+        name: 'Ledger Tally Procedure', kind: 'calculation_steps', sourcePages: [2], evidenceText: 'e',
+        inputs: ['Base tallage'],
+        steps: [
+          { sequence: 1, instruction: 'Step 1 - Zone scaling: Multiply the base tallage by the territory factor from Table 2.', operation: 'expression', expression: 'Base tallage * territory factor', inputs: ['Base tallage', 'territory factor'], output: 'Zone scaling', depends_on: ['Table 2'] },
+        ],
+      },
+      {
+        name: 'Worked Example', kind: 'worked_example', sourcePages: [2], evidenceText: 'e',
+        inputs: ['Territory: Suburban (SUB)'],
+        outputs: ['Adjusted total: $1,050.00'],
+        steps: [
+          { sequence: 1, instruction: '1. Territory adjustment: $1,050.00 * 1.00', operation: 'multiply', expression: '$1,050.00 * 1.00', inputs: ['$1,050.00', '1.00'], output: '$1,050.00', cells: { step: '1. Territory adjustment', calculation: '$1,050.00 * 1.00', result: '$1,050.00' } },
+        ],
+      },
+    ],
+  });
+  for (const t of job.tables) t.columns = inferTableColumns(t);
+  const worked = job.routines.find((r) => r.kind === 'worked_example');
+  assert.equal(generateWorkedExampleLookups(worked, job.tables), 1);
+  const issues = validateJob(job);
+  const msgs = issues.map((i) => i.message).join(' | ');
+  const proc = issues.filter((i) => i.target_id === 'R1');
+  assert.equal(proc.length, 1, `procedure must keep exactly its factor warning: ${msgs}`);
+  assert.match(proc[0].message, /Step 1 uses "territory factor" from Table "Table 2\. Territory Tallage Factors"/);
+  assert.match(proc[0].message, /no lookup step selecting it/);
+  const r2Issues = issues.filter((i) => i.target_id === 'R2');
+  assert.equal(r2Issues.length, 1, `worked example must keep only its standard note: ${msgs}`);
+  assert.match(r2Issues[0].message, /preserves illustrative expected values/);
+});
+
+test('validate: procedure keeps its factor warning when a worked example selects the same factor', () => {
+  // The worked example's instance lookup ('Territory factor' for SUB) must
+  // not count as introducing the reusable procedure's factor: the procedure
+  // keeps its missing-key warning until its own inputs are established.
+  const job = jobWith({
+    tables: [
+      { name: 'Table 2. Territory Factors', sourcePages: [1], evidenceText: 'territory factor schedule', headers: ['Territory code', 'Description', 'Factor'], rows: [['SUB', 'Suburban', '1.00'], ['URB', 'Urban core', '1.20']] },
+    ],
+    routines: [
+      {
+        name: 'Ledger Tally Procedure', kind: 'calculation_steps', sourcePages: [2], evidenceText: 'e',
+        inputs: ['Base tallage'],
+        steps: [
+          { sequence: 1, instruction: 'Step 1 - Zone scaling: Multiply the base tallage by the territory factor from Table 2.', operation: 'expression', expression: 'Base tallage * territory factor', inputs: ['Base tallage', 'territory factor'], output: 'Zone scaling', depends_on: ['Table 2'] },
+        ],
+      },
+      {
+        name: 'Worked Example', kind: 'worked_example', sourcePages: [2], evidenceText: 'e',
+        inputs: ['Territory: Suburban (SUB)'],
+        outputs: ['Adjusted total: $1,050.00'],
+        steps: [
+          { sequence: 1, instruction: '1. Territory adjustment: $1,050.00 * 1.00', operation: 'multiply', expression: '$1,050.00 * 1.00', inputs: ['$1,050.00', '1.00'], output: '$1,050.00', cells: { step: '1. Territory adjustment', calculation: '$1,050.00 * 1.00', result: '$1,050.00' } },
+        ],
+      },
+    ],
+  });
+  for (const t of job.tables) t.columns = inferTableColumns(t);
+  const worked = job.routines.find((r) => r.kind === 'worked_example');
+  assert.equal(generateWorkedExampleLookups(worked, job.tables), 1);
+  assert.equal(worked.steps_detailed[0].output, 'Territory factor');
+  const issues = validateJob(job);
+  const msgs = issues.map((i) => i.message).join(' | ');
+  const proc = issues.filter((i) => i.target_id === 'R1');
+  assert.equal(proc.length, 1, `procedure must keep exactly its factor warning: ${msgs}`);
+  assert.match(proc[0].message, /Step 1 uses "territory factor" from Table "Table 2\. Territory Factors"/);
+  assert.match(proc[0].message, /no lookup step selecting it/);
+  const r2Issues = issues.filter((i) => i.target_id === 'R2');
+  assert.equal(r2Issues.length, 1, `worked example must keep only its standard note: ${msgs}`);
+  assert.match(r2Issues[0].message, /preserves illustrative expected values/);
+});
+
+test('validate: worked example resolves its own lookup outputs in named uses', () => {
+  // Same-routine introduction still holds for worked examples: a worked
+  // calculation naming the factor its own lookup selected stays silent.
+  const job = jobWith({
+    tables: [
+      { name: 'Table 2. Territory Factors', sourcePages: [1], evidenceText: 'territory factor schedule', headers: ['Territory code', 'Description', 'Factor'], rows: [['SUB', 'Suburban', '1.00'], ['URB', 'Urban core', '1.20']] },
+    ],
+    routines: [
+      {
+        name: 'Worked Example', kind: 'worked_example', sourcePages: [2], evidenceText: 'e',
+        inputs: ['Territory: Suburban (SUB)'],
+        outputs: ['Adjusted total: $1,050.00'],
+        dependsOn: ['Table 2. Territory Factors'],
+        steps: [
+          { sequence: 1, instruction: '1. Territory adjustment: $1,050.00 * 1.00', operation: 'multiply', expression: '$1,050.00 * 1.00', inputs: ['$1,050.00', '1.00'], output: '$1,050.00', cells: { step: '1. Territory adjustment', calculation: '$1,050.00 * 1.00', result: '$1,050.00' } },
+          { sequence: 2, instruction: '2. Check: Territory factor * 2', operation: 'expression', expression: 'Territory factor * 2', inputs: ['Territory factor'], output: 'Check' },
+        ],
+      },
+    ],
+  });
+  for (const t of job.tables) t.columns = inferTableColumns(t);
+  const worked = job.routines[0];
+  assert.equal(generateWorkedExampleLookups(worked, job.tables), 1);
+  const issues = validateJob(job);
+  const msgs = issues.map((i) => i.message).join(' | ');
+  const own = issues.filter((i) => i.target_id === 'R1');
+  assert.equal(own.length, 1, `worked example must keep only its standard note: ${msgs}`);
+  assert.match(own[0].message, /preserves illustrative expected values/);
 });

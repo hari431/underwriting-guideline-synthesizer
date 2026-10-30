@@ -1,7 +1,7 @@
 // Deterministic validation for extracted jobs. Pure functions, no model calls.
 // Policy: structural/traceability breaks are errors; anything interpretive —
 // including unfamiliar formula syntax — is a warning flagged for review.
-import { ROUTINE_KINDS, createValidationIssue, definedConstantTerms, diagnoseFactorLookup, findTableCandidates, isBlankSentinel, isLiteralReference, isLogicalGroupReference, isLookupLikeOperation, isNumericReference, isStepDefined, normalizeVariableKey, resolveExplicitTableReference, resolveRoutineReference, resolveTableReference, splitAssignmentSegment, splitHyphenSubtraction, splitTopLevel, stepDefinedTerms, stepInputTables, tableReferenceTerms } from './models.js';
+import { ROUTINE_KINDS, createValidationIssue, definedConstantTerms, diagnoseFactorLookup, findTableCandidates, isBlankSentinel, isLiteralReference, isLogicalGroupReference, isLookupLikeOperation, isNumericReference, isStepDefined, normalizeRoutineKind, normalizeVariableKey, resolveExplicitTableReference, resolveRoutineReference, resolveTableReference, splitAssignmentSegment, splitHyphenSubtraction, splitTopLevel, stepDefinedTerms, stepInputTables, tableReferenceTerms } from './models.js';
 import { tableHasRecordColumn } from './table-split.js';
 
 export { ROUTINE_KINDS };
@@ -2002,11 +2002,19 @@ function buildReferenceContext(tables, routines) {
   const tableTerms = tableReferenceTerms(tables);
   const routineOutputs = lowered((routines ?? []).flatMap((r) => (r.outputs ?? []).flatMap(outputParts)));
   const stepOutputs = lowered((routines ?? []).flatMap((r) => (r.steps_detailed ?? []).flatMap((s) => outputParts(s?.output))));
+  const nonWorked = (routines ?? []).filter((r) => normalizeRoutineKind(r?.kind) !== 'worked_example');
+  const nonWorkedStepOutputs = lowered(nonWorked.flatMap((r) => (r.steps_detailed ?? []).flatMap((s) => outputParts(s?.output))));
+  const nonWorkedRoutineOutputs = lowered(nonWorked.flatMap((r) => (r.outputs ?? []).flatMap(outputParts)));
   const constants = definedConstantTerms(routines);
   const ownInputs = new Map();
   for (const r of routines ?? []) {
     const terms = lowered(r.inputs ?? []);
     ownInputs.set(r, { lower: terms, normalized: normalized(terms) });
+  }
+  const ownOutputs = new Map();
+  for (const r of routines ?? []) {
+    const terms = lowered([...(r.outputs ?? []).flatMap(outputParts), ...(r.steps_detailed ?? []).flatMap((s) => outputParts(s?.output))]);
+    ownOutputs.set(r, { lower: terms, normalized: normalized(terms) });
   }
   return {
     tables: tables ?? [],
@@ -2020,6 +2028,11 @@ function buildReferenceContext(tables, routines) {
     normalizedRoutineOutputs: normalized(routineOutputs),
     stepOutputs,
     normalizedStepOutputs: normalized(stepOutputs),
+    nonWorkedRoutineOutputs,
+    normalizedNonWorkedRoutineOutputs: normalized(nonWorkedRoutineOutputs),
+    nonWorkedStepOutputs,
+    normalizedNonWorkedStepOutputs: normalized(nonWorkedStepOutputs),
+    ownOutputs,
     constants,
     normalizedConstants: normalized(constants),
     ownInputs,
@@ -2204,17 +2217,21 @@ function routineLookupKeys(routine) {
 }
 
 // True when a step input is introduced without any table: a literal, a
-// declared routine input, a step or routine output, a defined constant, or
-// an evidenced lookup key. Table-term and table-name matches never count:
-// a factor value must be introduced, not merely name-adjacent to a table.
+// declared routine input, an output of the same routine or of a non-worked
+// routine, a defined constant, or an evidenced lookup key. Worked-example
+// outputs never introduce another routine's factors: an illustration is
+// not a definition. Table-term and table-name matches never count: a
+// factor value must be introduced, not merely name-adjacent to a table.
 function factorIntroduced(routine, name, refCtx, lookupKeys) {
   if (isLiteralReference(name)) return true;
   const lower = String(name ?? '').trim().toLowerCase();
   const key = normalizeVariableKey(name);
   const own = refCtx.ownInputs.get(routine);
   if (own?.lower.has(lower) || (key && own?.normalized.has(key))) return true;
-  if (refCtx.stepOutputs.has(lower) || (key && refCtx.normalizedStepOutputs.has(key))) return true;
-  if (refCtx.routineOutputs.has(lower) || (key && refCtx.normalizedRoutineOutputs.has(key))) return true;
+  const ownOut = refCtx.ownOutputs.get(routine);
+  if (ownOut?.lower.has(lower) || (key && ownOut?.normalized.has(key))) return true;
+  if (refCtx.nonWorkedStepOutputs.has(lower) || (key && refCtx.normalizedNonWorkedStepOutputs.has(key))) return true;
+  if (refCtx.nonWorkedRoutineOutputs.has(lower) || (key && refCtx.normalizedNonWorkedRoutineOutputs.has(key))) return true;
   if (refCtx.constants.has(lower) || (key && refCtx.normalizedConstants.has(key))) return true;
   if (lookupKeys.lower.has(lower) || (key && lookupKeys.normalized.has(key))) return true;
   return false;
