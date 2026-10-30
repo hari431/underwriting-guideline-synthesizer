@@ -1,4 +1,4 @@
-# RateCraft — AI-Powered Underwriting Extraction Engine (hackathon demo)
+# RateCraft — AI-Powered Underwriting Extraction Engine
 
 Transform complex underwriting guideline PDFs into structured, traceable rating requirements for analyst review.
 
@@ -69,7 +69,7 @@ Then open http://localhost:3000 and click **Load sample guideline (offline)**. `
 npm test
 ```
 
-Runs the full offline `node --test` suite (models, ingest, extraction routing, validation, Excel builder, pipeline, server, fixtures, and UI workflow/review/export checks). No model or API calls.
+Runs the full offline `node --test` suite: all 24 test files covering models, ingest, extraction routing, validation, Excel builder, pipeline, server, fixtures, dotenv and config, table/routine processing helpers, every UI suite (workflow, review/export, theme, spinner, sidebar, home polish, loaded-document polish, sticky export), and README copy checks. No model or API calls.
 
 ## Meta model setup (disabled by default)
 
