@@ -1,7 +1,7 @@
 // Deterministic validation for extracted jobs. Pure functions, no model calls.
 // Policy: structural/traceability breaks are errors; anything interpretive —
 // including unfamiliar formula syntax — is a warning flagged for review.
-import { ROUTINE_KINDS, createValidationIssue, definedConstantTerms, findTableCandidates, isBlankSentinel, isLogicalGroupReference, normalizeVariableKey, resolveRoutineReference, resolveTableReference, splitAssignmentSegment, splitHyphenSubtraction, splitTopLevel, tableReferenceTerms } from './models.js';
+import { ROUTINE_KINDS, createValidationIssue, definedConstantTerms, findTableCandidates, isBlankSentinel, isLogicalGroupReference, normalizeVariableKey, resolveRoutineReference, resolveTableReference, splitAssignmentSegment, splitHyphenSubtraction, splitTopLevel, stepInputTables, tableReferenceTerms } from './models.js';
 import { tableHasRecordColumn } from './table-split.js';
 
 export { ROUTINE_KINDS };
@@ -2291,6 +2291,57 @@ function checkPageCitations(routine, tables, warn) {
   });
 }
 
+// Lookup-flavored step operations, mirroring the lookup-key check: steps
+// that introduce values from tables rather than computing from inputs.
+function isLookupLikeOperation(op) {
+  const o = String(op ?? '').toLowerCase();
+  return o.includes('lookup') || o.includes('look-up') || o.includes('table');
+}
+
+// Lookup keys evidenced anywhere in the routine: inputs of lookup steps,
+// which enter as external selections rather than computed values.
+function routineLookupKeys(routine) {
+  const lower = new Set();
+  const normalized = new Set();
+  for (const step of routine?.steps_detailed ?? []) {
+    if (!isLookupLikeOperation(step?.operation)) continue;
+    for (const raw of step?.inputs ?? []) {
+      const s = String(raw ?? '').trim();
+      if (!s) continue;
+      lower.add(s.toLowerCase());
+      const key = normalizeVariableKey(s);
+      if (key) normalized.add(key);
+    }
+  }
+  return { lower, normalized };
+}
+
+// True when a step input is introduced without any table: a literal, a
+// declared routine input, a step or routine output, a defined constant, or
+// an evidenced lookup key. Table-term and table-name matches never count:
+// a factor value must be introduced, not merely name-adjacent to a table.
+function factorIntroduced(routine, name, refCtx, lookupKeys) {
+  if (isLiteralReference(name)) return true;
+  const lower = String(name ?? '').trim().toLowerCase();
+  const key = normalizeVariableKey(name);
+  const own = refCtx.ownInputs.get(routine);
+  if (own?.lower.has(lower) || (key && own?.normalized.has(key))) return true;
+  if (refCtx.stepOutputs.has(lower) || (key && refCtx.normalizedStepOutputs.has(key))) return true;
+  if (refCtx.routineOutputs.has(lower) || (key && refCtx.normalizedRoutineOutputs.has(key))) return true;
+  if (refCtx.constants.has(lower) || (key && refCtx.normalizedConstants.has(key))) return true;
+  if (lookupKeys.lower.has(lower) || (key && lookupKeys.normalized.has(key))) return true;
+  return false;
+}
+
+function unresolvedFactorMessage(routine, step, name, tables) {
+  const seq = step?.sequence !== undefined && step?.sequence !== '' ? ` ${step.sequence}` : '';
+  const names = tables.map((t) => `"${t?.name || t?.id}"`).join(', ');
+  if (tables.length > 1) {
+    return `Step${seq} uses "${name}", which matches tables (${names}), with no lookup step selecting it; verify which table applies and the lookup key and selected value against the source — flagged as unresolved.`;
+  }
+  return `Step${seq} uses "${name}" from Table ${names} with no lookup step selecting it (no lookup key or selected value evidenced); verify the factor selection against the source — flagged as unresolved.`;
+}
+
 function checkStructuredDependencies(routine, warn, refCtx) {
   const deps = routine.dependencies ?? [];
   for (const dep of deps) {
@@ -2301,10 +2352,23 @@ function checkStructuredDependencies(routine, warn, refCtx) {
   }
   const detailed = routine.steps_detailed ?? [];
   if (detailed.length === 0) return;
+  const lookupKeys = routineLookupKeys(routine);
   for (const step of detailed) {
     const definedHere = stepDefinedTerms(step);
-    const refs = [...(step?.inputs ?? []), ...(step?.depends_on ?? [])];
-    for (const ref of refs) {
+    for (const ref of (step?.inputs ?? [])) {
+      const name = String(ref ?? '').trim();
+      if (!name || isStepDefined(name, definedHere)) continue;
+      if (!isLookupLikeOperation(step?.operation)) {
+        const tables = stepInputTables(step, refCtx.tables, name);
+        if (tables.length > 0 && !factorIntroduced(routine, name, refCtx, lookupKeys)) {
+          warn('routine', routine.id, unresolvedFactorMessage(routine, step, name, tables), step?.source_pages?.length ? step.source_pages : routine.source_pages);
+          continue;
+        }
+      }
+      if (isResolvedReference(routine, name, refCtx)) continue;
+      warn('routine', routine.id, unresolvedStepMessage(routine, step, name, refCtx), step?.source_pages?.length ? step.source_pages : routine.source_pages);
+    }
+    for (const ref of (step?.depends_on ?? [])) {
       const name = String(ref ?? '').trim();
       if (!name || isStepDefined(name, definedHere) || isResolvedReference(routine, name, refCtx)) continue;
       warn('routine', routine.id, unresolvedStepMessage(routine, step, name, refCtx), step?.source_pages?.length ? step.source_pages : routine.source_pages);

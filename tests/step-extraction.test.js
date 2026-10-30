@@ -727,7 +727,32 @@ test('steps: table lookup renders one invocation operand row', () => {
   assert.equal(steps.body.length, 1);
   assert.deepEqual(steps.body[0].slice(0, 6), ['1', 'ledger_rate', '<--', '', 'table:Schedule L (ledger_class)', '']);
 });
-
+test('steps: explicit lookup renders table, keys, variable, and stated value with downstream trace', () => {
+  // A fully evidenced lookup step represents its table, keys, variable,
+  // and stated value in order, and a later calculation referencing the
+  // variable traces back to the lookup row.
+  const job = layoutJob(
+    [
+      { sequence: 1, instruction: '1. Base tallage Selected tallage for LXV', expression: 'Selected tallage for LXV', output: '$800.00', depends_on: ['Table L'], cells: { step: '1. Base tallage', calculation: 'Selected tallage for LXV', result: '$800.00' } },
+      { sequence: 2, instruction: 'Step 2 — Zone scaling: Multiply the base tallage by the tally factor.', operation: 'expression', expression: 'Base tallage * tally factor', inputs: ['Base tallage', 'tally factor'], output: 'Zone scaling' },
+    ],
+    [{
+      name: 'Table L. Ledger Tallages', sourcePages: [1], evidenceText: 'ledger tallage schedule',
+      headers: ['Ledger class', 'Base tallage'], rows: [['A', '800']],
+    }]
+  );
+  const det = job.routines[0].steps_detailed[0];
+  assert.equal(det.operation, 'lookup');
+  assert.equal(det.output, 'Base tallage');
+  assert.deepEqual(det.inputs, ['LXV']);
+  assert.deepEqual(det.stated_results, [{ output: 'Base tallage', value: '$800.00' }]);
+  const steps = sectionRows(routineSheetValues(job, 'LX — Ledger Fee Calc'), 'Steps');
+  assert.deepEqual(steps.body.map((row) => row[0]), ['1.1', '1.2', '2.1', '2.2']);
+  assert.deepEqual(steps.body[0].slice(0, 6), ['1.1', 'Base tallage', '<--', '', 'table:Table L. Ledger Tallages (LXV)', '']);
+  assert.deepEqual(steps.body[1].slice(0, 6), ['1.2', 'Base tallage', '=', '', '$800.00', '']);
+  assert.match(steps.body[2][6], /uses Base tallage from step 1\.1/);
+  assert.ok(steps.body.every((row) => row.length === 7 && row[6] !== ''));
+});
 test('steps: condition renders IF branch rows with single operands', () => {
   const job = layoutJob(['If ledger_class is Tier 2, set ledger_rate to high_rate, otherwise set ledger_rate to low_rate.']);
   const steps = sectionRows(routineSheetValues(job, 'LX — Ledger Fee Calc'), 'Steps');
@@ -1607,6 +1632,32 @@ test('steps: downstream inputs reuse the producing step display name', () => {
   assert.deepEqual(second.depends_on, ['Table Z']);
   assert.equal(r.steps[1], 'Step 2 — Zone scaling: Multiply the base tallage by the zone factor from Table Z.');
 });
+test('steps: branch value references reuse the producing step display name', () => {
+  // `Pre-rebate tallage` is produced by step 5; the conditional branch
+  // value `5% of the pre-rebate tallage` reuses that exact display name
+  // while conditions, percentages, and the valueless branch stay verbatim.
+  const r = ledgerRoutine([
+    'Step 5 — Pre-rebate tallage: Multiply the adjusted tallage by the tally factor.',
+    'Step 6 — Ledger rebate: If the policy covers 3 to 10 ledgers, the rebate is 5% of the pre-rebate tallage. If the policy covers 1 or 2 ledgers, the rebate is 0%.',
+  ]);
+  const [fifth, sixth] = r.steps_detailed;
+  assert.equal(fifth.output, 'Pre-rebate tallage');
+  assert.equal(fifth.expression, 'adjusted tallage * tally factor');
+  assert.equal(sixth.output, 'Ledger rebate');
+  assert.equal(sixth.expression, 'If the policy covers 3 to 10 ledgers, the rebate is 5% of the Pre-rebate tallage. If the policy covers 1 or 2 ledgers, the rebate is 0%');
+});
+
+test('steps: branch values with trailing prose keep their source wording', () => {
+  // The partitive tail carries extra prose, so it names no evidenced
+  // producer: the branch value stays verbatim even with step 5 present.
+  const r = ledgerRoutine([
+    'Step 5 — Pre-rebate tallage: Multiply the adjusted tallage by the tally factor.',
+    'Step 6 — Ledger rebate: If the policy covers 3 to 10 ledgers, the rebate is 5% of the pre-rebate tallage capped at $50.',
+  ]);
+  const det = r.steps_detailed[1];
+  assert.equal(det.output, 'Ledger rebate');
+  assert.equal(det.expression, 'If the policy covers 3 to 10 ledgers, the rebate is 5% of the pre-rebate tallage capped at $50');
+});
 
 test('steps: conditional branches without a stated value keep no output', () => {
   const r = ledgerRoutine([
@@ -1815,5 +1866,116 @@ test('steps: label-colon worked steps render arithmetic rows without REVIEW', ()
   assert.deepEqual(steps.body[4].slice(0, 6), ['7.2', '', '-', '', '$56.109375', '']);
   assert.deepEqual(steps.body[6].slice(0, 6), ['8.1', 'Final tallage', '<--', '', 'RoundHalfUp($1,066.078125, 2)', '']);
   assert.deepEqual(steps.body[7].slice(0, 6), ['8.2', 'Final tallage', '=', '', '$1,066.08', '']);
+  assert.ok(steps.body.every((row) => row.length === 7 && row[6] !== ''));
+});
+// ---------- merged grid-label worked-calculation regressions ----------
+// Live extractions sometimes merge the row label and calculation into one
+// instruction (`2. Zone scaling $1,050.00 × 1.00`) with the calculation
+// also stated in `expression` and the stated result in `output`. The
+// extractor's own `cells.step` segmentation names the label — but only when
+// the instruction opens with that segment and the remainder restates the
+// expression. Anything less (no cells, disagreeing cells, prose) stays
+// unlabeled for analyst review instead of gaining an invented output.
+
+test('steps: merged grid-label arithmetic promotes with cells-step label and stated result', () => {
+  const r = explicitLedgerRoutine([
+    { sequence: 2, instruction: '2. Tally scaling $1,050.00 × 1.00', expression: '$1,050.00 × 1.00', output: '$1,050.00', cells: { step: '2. Tally scaling', calculation: '$1,050.00 × 1.00', result: '$1,050.00' } },
+  ]);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, 'expression');
+  assert.equal(det.expression, '$1,050.00 × 1.00');
+  assert.equal(det.output, 'Tally scaling');
+  assert.deepEqual(det.stated_results, [{ output: 'Tally scaling', value: '$1,050.00' }]);
+  assert.equal(det.interpretation_status, 'inferred');
+});
+
+test('steps: merged grid-label past-tense lookup promotes with key and stated value', () => {
+  const r = explicitLedgerRoutine([
+    { sequence: 1, instruction: '1. Base tallage Selected tallage for LXV', expression: 'Selected tallage for LXV', output: '$800.00', cells: { step: '1. Base tallage', calculation: 'Selected tallage for LXV', result: '$800.00' } },
+  ]);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, 'lookup');
+  assert.equal(det.output, 'Base tallage');
+  assert.deepEqual(det.inputs, ['LXV']);
+  assert.deepEqual(det.stated_results, [{ output: 'Base tallage', value: '$800.00' }]);
+});
+
+test('steps: merged instruction without cells gains no invented label', () => {
+  const r = explicitLedgerRoutine([
+    { sequence: 2, instruction: '2. Tally scaling $1,050.00 × 1.00', expression: '$1,050.00 × 1.00', output: '$1,050.00' },
+  ]);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, 'expression');
+  assert.equal(det.output, undefined);
+  assert.equal(det.stated_results, undefined);
+});
+
+test('steps: merged instruction with a disagreeing cells step stays unlabeled', () => {
+  const r = explicitLedgerRoutine([
+    { sequence: 2, instruction: '2. Tally scaling $1,050.00 × 1.00', expression: '$1,050.00 × 1.00', output: '$1,050.00', cells: { step: '2. Other label', calculation: '$1,050.00 × 1.00', result: '$1,050.00' } },
+  ]);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, 'expression');
+  assert.equal(det.output, undefined);
+  assert.equal(det.stated_results, undefined);
+});
+
+test('steps: merged instruction whose remainder is not the expression stays unlabeled', () => {
+  const r = explicitLedgerRoutine([
+    { sequence: 2, instruction: '2. Tally scaling $1,050.00 × 1.00', expression: '$2,000.00 × 1.00', output: '$1,050.00', cells: { step: '2. Tally scaling', calculation: '$1,050.00 × 1.00', result: '$1,050.00' } },
+  ]);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, 'expression');
+  assert.equal(det.output, undefined);
+  assert.equal(det.stated_results, undefined);
+});
+
+test('steps: prose merged with a calculation gains no invented label', () => {
+  const r = explicitLedgerRoutine([
+    { sequence: 2, instruction: 'Review the tallage $1,050.00 × 1.00', expression: '$1,050.00 × 1.00', output: '$1,050.00' },
+  ]);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, 'expression');
+  assert.equal(det.output, undefined);
+  assert.equal(det.stated_results, undefined);
+});
+
+test('steps: prose cells step grants no label to a merged instruction', () => {
+  const r = explicitLedgerRoutine([
+    { sequence: 2, instruction: '2. Review the tallage for the period $1,050.00 × 1.00', expression: '$1,050.00 × 1.00', output: '$1,050.00', cells: { step: '2. Review the tallage for the period', calculation: '$1,050.00 × 1.00', result: '$1,050.00' } },
+  ]);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, 'expression');
+  assert.equal(det.output, undefined);
+  assert.equal(det.stated_results, undefined);
+});
+
+test('steps: merged grid-label worked steps render arithmetic rows without REVIEW', () => {
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'ledger-guideline.pdf', pageCount: 2 }),
+      routines: [{
+        name: 'LX — Worked Tallage Case',
+        kind: 'worked_example',
+        sourcePages: [2],
+        evidenceText: 'synthetic worked illustration with expected values',
+        steps: [
+          { sequence: 2, instruction: '2. Zone scaling $1,050.00 × 1.00', expression: '$1,050.00 × 1.00', output: '$1,050.00', cells: { step: '2. Zone scaling', calculation: '$1,050.00 × 1.00', result: '$1,050.00' } },
+          { sequence: 8, instruction: '8. Final tallage RoundHalfUp($1,066.078125, 2)', expression: 'RoundHalfUp($1,066.078125, 2)', output: '$1,066.08', cells: { step: '8. Final tallage', calculation: 'RoundHalfUp($1,066.078125, 2)', result: '$1,066.08' } },
+        ],
+        notes: 'Expected values preserved verbatim: $1,050.00, $1,066.08.',
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  const steps = sectionRows(routineSheetValues(job, 'LX — Worked Tallage Case'), 'Steps');
+  const opIndex = steps.header.indexOf('Op');
+  assert.ok(steps.body.every((row) => row[opIndex] !== 'REVIEW'), `unexpected REVIEW rows: ${JSON.stringify(steps.body)}`);
+  assert.deepEqual(steps.body.map((row) => row[0]), ['2.1', '2.2', '2.3', '8.1', '8.2']);
+  assert.deepEqual(steps.body[0].slice(0, 6), ['2.1', 'Zone scaling', '<--', '', '$1,050.00', '']);
+  assert.deepEqual(steps.body[1].slice(0, 6), ['2.2', '', '×', '', '1.00', '']);
+  assert.deepEqual(steps.body[2].slice(0, 6), ['2.3', 'Zone scaling', '=', '', '$1,050.00', '']);
+  assert.deepEqual(steps.body[3].slice(0, 6), ['8.1', 'Final tallage', '<--', '', 'RoundHalfUp($1,066.078125, 2)', '']);
+  assert.deepEqual(steps.body[4].slice(0, 6), ['8.2', 'Final tallage', '=', '', '$1,066.08', '']);
   assert.ok(steps.body.every((row) => row.length === 7 && row[6] !== ''));
 });

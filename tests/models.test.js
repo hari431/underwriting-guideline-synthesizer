@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { assignmentTargetFromBranch, cleanStepInputValue, conditionsMutuallyExclusive, createJob, createDocument, findTableCandidates, normalizeJob, resolveTableReference, splitBranchIsValue, splitSequentialConditionParts } from '../src/models.js';
+import { assignmentTargetFromBranch, cleanStepInputValue, conditionsMutuallyExclusive, createJob, createDocument, findTableCandidates, normalizeJob, resolveTableReference, splitBranchIsValue, splitSequentialConditionParts, stepInputTables } from '../src/models.js';
 
 test('normalizeJob assigns stable sequential IDs and preserves evidence', () => {
   const job = normalizeJob(
@@ -794,4 +794,20 @@ test('models: mutual exclusivity needs disjoint coverage of one measure', () => 
   assert.equal(conditionsMutuallyExclusive('the ledger is coastal', 'the ledger is inland'), false);
   assert.equal(conditionsMutuallyExclusive('the policy covers 5 vehicles', 'the policy covers 6 to 10 vehicles'), true);
   assert.equal(conditionsMutuallyExclusive('the policy covers 3 to 10 vehicles', 'the policy covers 3 to 10 vehicles'), false);
+});
+test('models: stepInputTables attributes inputs to step-named tables', () => {
+  // Shared contract behind factor warnings and trace comments: an input
+  // using a table the step names attributes to that table — unless the
+  // input names the table itself, no table resolves, or none is named.
+  const tables = [
+    { name: 'Table 2. Territory Tallage Factors' },
+    { name: 'Table 3. Driver Experience Factors' },
+  ];
+  const names = (step, input) => stepInputTables(step, tables, input).map((t) => t.name);
+  assert.deepEqual(names({ depends_on: ['Table 2'] }, 'territory factor'), ['Table 2. Territory Tallage Factors']);
+  assert.deepEqual(names({ depends_on: ['Table 2', 'Table 3'] }, 'factor'), ['Table 2. Territory Tallage Factors', 'Table 3. Driver Experience Factors']);
+  assert.deepEqual(names({ depends_on: ['Table 2'] }, 'Table 2'), []);
+  assert.deepEqual(names({ depends_on: ['Table 99'] }, 'territory factor'), []);
+  assert.deepEqual(names({}, 'territory factor'), []);
+  assert.deepEqual(names({ depends_on: ['Table 2'] }, ''), []);
 });

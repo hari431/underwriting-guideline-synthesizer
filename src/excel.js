@@ -17,7 +17,7 @@
 // Cover and the summaries link each asset name to its detail worksheet.
 // Fixed ZIP timestamps keep builds byte-deterministic.
 import { deflateRawSync } from 'node:zlib';
-import { assignmentTargetFromBranch, cleanStepInputValue, cleanStepOutputValue, conditionsMutuallyExclusive, extractCellCodeTokens, normalizeVariableKey, parseAssignmentOperands, resolveTableReference, sanitizeExplicitStep, splitAssignmentSegment, splitBranchIsValue, splitHyphenSubtraction, splitSequentialConditionParts, splitTopLevel, tableCellCodes, tableReferenceTerms } from './models.js';
+import { assignmentTargetFromBranch, cleanStepInputValue, cleanStepOutputValue, conditionsMutuallyExclusive, extractCellCodeTokens, normalizeVariableKey, parseAssignmentOperands, resolveTableReference, sanitizeExplicitStep, splitAssignmentSegment, splitBranchIsValue, splitHyphenSubtraction, splitSequentialConditionParts, splitTopLevel, stepInputTables, tableCellCodes, tableReferenceTerms } from './models.js';
 
 // ---------- CRC32 + minimal ZIP writer ----------
 
@@ -597,7 +597,7 @@ function resolveInputSources(routine, routines, tables) {
 // Rating-routine sheets pass { lookupPrefix: false }: the table reference
 // already lives in the Operand column, so only the unresolved-table flag
 // and the uses-from traceability survive here.
-function stepComment(step, routine, routines, tables, tableTerms, priorOutputs, { lookupPrefix = true } = {}) {
+function stepComment(step, routine, routines, tables, tableTerms, priorOutputs, { lookupPrefix = true, attributeTableFactors = false, lookupKeys = null } = {}) {
   const det = step.det ?? null;
   const output = step.output || '';
   const parts = [];
@@ -650,8 +650,15 @@ function stepComment(step, routine, routines, tables, tableTerms, priorOutputs, 
       parts.push(`uses ${variable} from ${producers[0].name ?? producers[0].id ?? ''}`);
     } else if (producers.length > 1) {
       parts.push(`uses ${variable} from multiple routines (${producers.map((s) => String(s?.name ?? s?.id ?? '')).join('; ')}) — verify`);
-    } else if (routineTerms.has(varKey) || normalizedTableTerms.has(varKey)) {
-      continue;
+    } else {
+      const factorTables = (attributeTableFactors && !isLookupOperation(det?.operation) && !isConditionOperation(det?.operation) && !routineTerms.has(varKey) && !(lookupKeys instanceof Set && lookupKeys.has(varKey)))
+        ? stepInputTables(det, tables, variable)
+        : [];
+      if (factorTables.length > 0) {
+        parts.push(`uses ${variable} from ${factorTables.map((t) => String(t?.name ?? t?.id ?? '')).join('; ')} (lookup keys not stated — verify)`);
+      } else if (routineTerms.has(varKey) || normalizedTableTerms.has(varKey)) {
+        continue;
+      }
     }
   }
   return [...parts, ...flags].join('; ');
@@ -2050,6 +2057,7 @@ function expandOneRatingEntryInner(entry) {
           kind: idx === 0 ? 'arithmetic-first' : 'arithmetic-cont',
           commentInputs: isIdentifierOperand(row.operand) ? [row.operand.replace(/^[+-]/, '')] : [],
           rhs,
+          det,
         }));
       }
       if (expanded && expanded.length === 1) {
@@ -2059,6 +2067,7 @@ function expandOneRatingEntryInner(entry) {
           kind: expanded[0].open || expanded[0].close ? 'arithmetic-first' : 'assignment',
           commentInputs: isIdentifierOperand(expanded[0].operand) ? [expanded[0].operand.replace(/^[+-]/, '')] : [],
           rhs,
+          det,
         }];
       }
       const phrases = splitPhraseOperands(rhs);
@@ -2073,6 +2082,7 @@ function expandOneRatingEntryInner(entry) {
           kind: idx === 0 ? 'arithmetic-first' : 'arithmetic-cont',
           commentInputs: isIdentifierOperand(operand) ? [operand.replace(/^[+-]/, '')] : [],
           rhs,
+          det,
         }));
       }
       if (bareExpressionLexemes(rhs).length > 0) {
@@ -2125,6 +2135,7 @@ function expandOneRatingEntryInner(entry) {
         kind: idx === 0 ? 'arithmetic-first' : 'arithmetic-cont',
         commentInputs: isIdentifierOperand(row.operand) ? [row.operand.replace(/^[+-]/, '')] : [],
         rhs: entry.operand,
+        det,
       }));
     }
     if (expanded && expanded.length === 1) {
@@ -2134,6 +2145,7 @@ function expandOneRatingEntryInner(entry) {
         kind: expanded[0].open || expanded[0].close ? 'arithmetic-first' : 'assignment',
         commentInputs: isIdentifierOperand(expanded[0].operand) ? [expanded[0].operand.replace(/^[+-]/, '')] : [],
         rhs: entry.operand,
+        det,
       }];
     }
   }
@@ -2386,14 +2398,23 @@ function ratingRoutineSheetRows(r, routineIssues, ctx = {}) {
     });
     const tableTerms = tableReferenceTerms(tables);
     const priorOutputs = new Map();
+    const routineLookupKeys = new Set();
+    for (const d of r?.steps_detailed ?? []) {
+      const lookupOp = String(d?.operation ?? '').toLowerCase();
+      if (!lookupOp.includes('lookup') && !lookupOp.includes('look-up') && !lookupOp.includes('table')) continue;
+      for (const raw of d?.inputs ?? []) {
+        const lookupKey = normalizeVariableKey(raw);
+        if (lookupKey) routineLookupKeys.add(lookupKey);
+      }
+    }
     for (const spec of expanded) {
       const needsReview = spec.kind === 'unparsed';
       const traceDet = (spec.kind === 'lookup' || spec.kind === 'rounding')
         ? (spec.det ?? { inputs: spec.commentInputs ?? [] })
-        : { inputs: spec.commentInputs ?? [], output: spec.output };
+        : { inputs: spec.commentInputs ?? [], output: spec.output, operation: spec.det?.operation, depends_on: spec.det?.depends_on };
       const traced = stepComment(
         { det: traceDet, output: spec.output },
-        r, routines, tables, tableTerms, priorOutputs, { lookupPrefix: false }
+        r, routines, tables, tableTerms, priorOutputs, { lookupPrefix: false, attributeTableFactors: true, lookupKeys: routineLookupKeys }
       );
       const comment = needsReview ? unparsedReviewComment(spec) : (traced || fallbackRatingComment(spec, tables));
       const op = needsReview ? UNPARSED_OP_MARK : spec.op;

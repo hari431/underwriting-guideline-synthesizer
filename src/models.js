@@ -1656,6 +1656,25 @@ function tryParsePastTenseLookup(expr) {
   return { inputs: [key] };
 }
 
+// A grid-row step whose instruction merges the row label and calculation
+// (`2. Territory adjustment $1,050.00 × 1.00`) with the calculation also
+// stated in `expression`: the extractor's own `cells.step` segmentation
+// names the label, confirmed when the instruction opens with that segment
+// and the remainder restates the expression. Returns the label or ''.
+// Without that agreement the merge is ambiguous and stays unlabeled.
+function explicitMergedGridLabel(out) {
+  const cells = out?.cells && typeof out.cells === 'object' ? out.cells : null;
+  const segKey = cells ? Object.keys(cells).find((k) => String(k ?? '').trim().toLowerCase() === 'step') : undefined;
+  const seg = segKey ? String(cells[segKey] ?? '').trim() : '';
+  if (!seg) return '';
+  const inst = String(out?.instruction ?? '').trim();
+  const expr = String(out?.expression ?? '').trim();
+  if (!inst || !expr || !inst.startsWith(seg)) return '';
+  const rest = inst.slice(seg.length).trim().replace(/^[:.;\-–—]+\s*/, '').replace(/[.;]+\s*$/, '').trim();
+  const norm = (s) => String(s ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+  if (!rest || norm(rest) !== norm(expr.replace(/[.;]+\s*$/, ''))) return '';
+  return stepLabelForOutput(seg);
+}
 // Promote an explicit model-provided expression that states its own
 // calculation but carries no operation: bare arithmetic (`$1,050.00 × 1.00`),
 // call-form evaluations (`RoundHalfUp(...)`), and past-tense lookup
@@ -1668,7 +1687,7 @@ function promoteExplicitStepExpression(out) {
   if (!out || out.operation) return;
   const expr = String(out.expression ?? '').trim();
   if (!expr) return;
-  const label = stepLabelForOutput(out.instruction);
+  const label = explicitMergedGridLabel(out) || stepLabelForOutput(out.instruction);
   // An assignment inside the expression names its own target (`Rloaded =
   // ...` computes Rloaded): it beats the instruction label, which may be
   // an imperative phrase (`Compute base loaded rate`) rather than a name.
@@ -1884,6 +1903,41 @@ export function findTableCandidates(tables, mention) {
 export function resolveTableReference(tables, mention) {
   const candidates = findTableCandidates(tables, mention);
   return candidates.length === 1 ? candidates[0] : null;
+}
+
+// Tables a step input draws on: the step's own `depends_on` mentions that
+// resolve to tables and whose terms the input matches — excluding inputs
+// that name a table itself (equal to or a word-boundary prefix of the table
+// name), which are references rather than values drawn from the table.
+// Returns the matched tables ([] when none). Generic name matching, never
+// table contents. Shared by validation (unproduced-factor warnings) and the
+// workbook (factor trace comments) so both agree on the same attribution.
+export function stepInputTables(step, tables, name) {
+  const raw = String(name ?? '').trim();
+  if (!raw) return [];
+  const mentions = [...(step?.depends_on ?? [])].map((m) => String(m ?? '').trim()).filter(Boolean);
+  if (mentions.length === 0) return [];
+  const list = Array.isArray(tables) ? tables : [];
+  const resolved = [];
+  for (const m of mentions) {
+    const t = resolveTableReference(list, m);
+    if (t && !resolved.includes(t)) resolved.push(t);
+  }
+  if (resolved.length === 0) return [];
+  return findTableCandidates(resolved, raw).filter((t) => !namesTableItself(t, raw));
+}
+
+// True when a reference names the table itself rather than a value within
+// it: equal to or a word-boundary prefix of one of the table's match names
+// (`Table 2` for `Table 2. Territory Factors`), so table-name references
+// never read as factor usages.
+function namesTableItself(table, raw) {
+  const mention = normalizeTableText(raw);
+  if (!mention) return false;
+  return tableMatchNames(table).some((n) => {
+    const norm = normalizeTableText(n);
+    return norm === mention || isWordBoundaryPrefix(norm, mention);
+  });
 }
 
 // Base asset code shared by split parts of one logical table: the uppercase
@@ -2585,6 +2639,10 @@ function canonicalizeStepReferences(detailed) {
         if (inPlace) det.output = display;
       }
     }
+    const stepOp = String(det.operation ?? '').toLowerCase();
+    if ((stepOp === 'condition' || stepOp === 'conditional' || stepOp === 'if') && typeof det.expression === 'string' && det.expression) {
+      det.expression = canonicalizeBranchValueRefs(det.expression, producers);
+    }
     const output = String(det.output ?? '').trim();
     const operation = String(det.operation ?? '').trim();
     if (output && operation && normalizeVariableKey(output)) {
@@ -2605,13 +2663,71 @@ function canonicalizeExpressionTerms(expression, inputs, operand, producers) {
   for (const term of terms) {
     const display = producers.get(normalizeVariableKey(term));
     if (!display) continue;
-    const words = String(term ?? '').trim().split(/\s+/).filter(Boolean);
-    if (words.length === 0) continue;
-    const pattern = words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+');
+    const pattern = termPattern(term);
+    if (!pattern) continue;
     const key = pattern.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
     out = out.replace(new RegExp(`(?<![A-Za-z0-9_-])${pattern}(?![A-Za-z0-9_-])`, 'gi'), () => display);
+  }
+  return out;
+}
+
+// A whole-phrase pattern for one reference term: words joined by flexible
+// whitespace, regex-escaped, or null when the term holds no words. Shared
+// by input-term and branch-value recasing.
+function termPattern(term) {
+  const words = String(term ?? '').trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return null;
+  return words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+');
+}
+
+// Literal first-occurrence replacement (never regex, never `$`-substituted).
+function replaceFirst(haystack, needle, replacement) {
+  const s = String(haystack ?? '');
+  const n = String(needle ?? '');
+  if (!n) return s;
+  const i = s.indexOf(n);
+  return i < 0 ? s : s.slice(0, i) + String(replacement ?? '') + s.slice(i + n.length);
+}
+
+// The referenced phrase of a partitive branch value (`5% of the X` → `X`),
+// or '' unless the value leads with an amount followed by `of` and a
+// trailing phrase. Generic partitive shape, never contents.
+function partitiveTail(value) {
+  const m = /^\s*\S+(?:\s+\S+)*?\s+of\s+(.+?)\s*$/i.exec(String(value ?? ''));
+  if (!m) return '';
+  return String(m[1] ?? '').replace(/^(the|a|an)\s+/i, '').trim();
+}
+
+// Recase partitive branch-value references in a conditional step expression
+// to producer display names: each stated-value branch whose `of`-tail names
+// a produced variable takes the producer's exact display name, spliced back
+// through the branch substring so conditions, percentages, and order stay
+// verbatim. Tails naming nothing produced pass through untouched.
+function canonicalizeBranchValueRefs(expression, producers) {
+  let out = String(expression ?? '');
+  if (!out || producers.size === 0) return out;
+  const parts = splitSequentialConditionParts(out) ?? [out];
+  for (const part of parts) {
+    const parsed = parseConditionalBranches(part);
+    if (!parsed) continue;
+    for (const branch of [parsed.true_branch, parsed.false_branch]) {
+      if (!branch) continue;
+      const stated = splitBranchIsValue(branch);
+      if (!stated) continue;
+      const tail = partitiveTail(stated.value);
+      if (!tail) continue;
+      const display = producers.get(normalizeVariableKey(tail));
+      if (!display || display === tail) continue;
+      const pattern = termPattern(tail);
+      if (!pattern) continue;
+      const newValue = stated.value.replace(new RegExp(`(?<![A-Za-z0-9_-])${pattern}(?![A-Za-z0-9_-])`, 'i'), () => display);
+      if (newValue === stated.value) continue;
+      const newBranch = replaceFirst(branch, stated.value, newValue);
+      if (newBranch === branch) continue;
+      out = replaceFirst(out, branch, newBranch);
+    }
   }
   return out;
 }

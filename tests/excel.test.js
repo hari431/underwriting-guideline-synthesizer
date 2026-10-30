@@ -2452,6 +2452,107 @@ test('excel: sequential chain with a stated ELSE stays split with the ELSE intac
   assert.ok(operands.includes('0%'));
   assert.ok(steps.body.every((row) => row.length === 7 && row[6] !== ''));
 });
+
+test('excel: chained branch values reuse the producing step display name', () => {
+  // Step 5 produces `Pre-rebate tallage`; the merged chain percent-of
+  // branch reuses that display name in its operand while the valueless
+  // branch and both conditions stay verbatim.
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'synthetic.pdf', pageCount: 1 }),
+      routines: [{
+        name: 'Ledger Tally Procedure', kind: 'calculation_steps', sourcePages: [1],
+        evidenceText: 'synthetic tally procedure with a produced tallage and rebate chain',
+        steps: [
+          { sequence: 5, instruction: 'Step 5 — Pre-rebate tallage: Multiply the adjusted tallage by the tally factor.' },
+          { sequence: 6, instruction: 'Step 6 — Ledger rebate: If the policy covers 3 to 10 ledgers, the rebate is 5% of the pre-rebate tallage. If the policy covers 1 or 2 ledgers, the rebate is 0%.' },
+        ],
+      }],
+    })
+  );
+  assert.equal(job.routines[0].steps_detailed[0].output, 'Pre-rebate tallage');
+  assert.equal(job.routines[0].steps_detailed[1].output, 'Ledger rebate');
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Ledger Tally Procedure'), strings);
+  const steps = sectionRows(values, 'Steps');
+  const opIndex = steps.header.indexOf('Op');
+  assert.ok(steps.body.every((row) => row[opIndex] !== 'REVIEW'), `unexpected REVIEW rows: ${JSON.stringify(steps.body)}`);
+  const chain = steps.body.filter((row) => String(row[0] ?? '').startsWith('6.'));
+  assert.deepEqual(chain.map((row) => row[1]), ['IF', 'Ledger rebate', 'ELSEIF', 'Ledger rebate', 'ENDIF']);
+  const operands = chain.map((row) => row[4]);
+  assert.ok(operands.includes('the policy covers 3 to 10 ledgers'));
+  assert.ok(operands.includes('the policy covers 1 or 2 ledgers'));
+  assert.ok(operands.includes('5% of the Pre-rebate tallage'));
+  assert.ok(operands.includes('0%'));
+  assert.ok(steps.body.every((row) => row.length === 7 && row[6] !== ''));
+});
+
+test('excel: factor without a producing lookup traces to its table with a keys caveat', () => {
+  // Step 2 uses `territory factor` and names Table 2, but no lookup step
+  // selects it: the using row traces the evidenced table and flags the
+  // missing lookup keys instead of falling back silently.
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'synthetic.pdf', pageCount: 2 }),
+      tables: [
+        { name: 'Table 1. Base Tallages by Ledger Class', sourcePages: [1], evidenceText: 'base tallage schedule', headers: ['Ledger class', 'Base tallage'], rows: [['A', '800']] },
+        { name: 'Table 2. Territory Tallage Factors', sourcePages: [1], evidenceText: 'territory factor schedule', headers: ['Territory code', 'Description', 'Factor'], rows: [['SUB', 'Suburban', '1.00']] },
+      ],
+      routines: [{
+        name: 'Ledger Tally Procedure', kind: 'calculation_steps', sourcePages: [2], evidenceText: 'e',
+        steps: [
+          'Step 1 — Base tallage: Select the base tallage for the ledger class from Table 1.',
+          { sequence: 2, instruction: 'Step 2 — Zone scaling: Multiply the base tallage by the territory factor from Table 2.', operation: 'expression', expression: 'Base tallage * territory factor', inputs: ['Base tallage', 'territory factor'], output: 'Zone scaling', depends_on: ['Table 2'] },
+        ],
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Ledger Tally Procedure'), strings);
+  const steps = sectionRows(values, 'Steps');
+  const factorRow = steps.body.find((row) => row[4] === 'territory factor');
+  assert.ok(factorRow, `missing factor row: ${JSON.stringify(steps.body)}`);
+  assert.match(factorRow[6], /uses territory factor from Table 2\. Territory Tallage Factors \(lookup keys not stated — verify\)/);
+});
+
+test('excel: lookup-produced factor traces to its lookup step', () => {
+  // The same factor selected by an explicit lookup step traces to that
+  // lookup with no keys caveat.
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'synthetic.pdf', pageCount: 2 }),
+      tables: [
+        { name: 'Table 1. Base Tallages by Ledger Class', sourcePages: [1], evidenceText: 'base tallage schedule', headers: ['Ledger class', 'Base tallage'], rows: [['A', '800']] },
+        { name: 'Table 2. Territory Tallage Factors', sourcePages: [1], evidenceText: 'territory factor schedule', headers: ['Territory code', 'Description', 'Factor'], rows: [['SUB', 'Suburban', '1.00']] },
+      ],
+      routines: [{
+        name: 'Ledger Tally Procedure', kind: 'calculation_steps', sourcePages: [2], evidenceText: 'e',
+        steps: [
+          'Step 1 — Base tallage: Select the base tallage for the ledger class from Table 1.',
+          { sequence: 2, instruction: 'Step 2 — Territory factor: Look up the territory factor for the territory code from Table 2.', operation: 'lookup', inputs: ['territory code'], output: 'territory factor', depends_on: ['Table 2'] },
+          { sequence: 3, instruction: 'Step 3 — Zone scaling: Multiply the base tallage by the territory factor from Table 2.', operation: 'expression', expression: 'Base tallage * territory factor', inputs: ['Base tallage', 'territory factor'], output: 'Zone scaling', depends_on: ['Table 2'] },
+        ],
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Ledger Tally Procedure'), strings);
+  const steps = sectionRows(values, 'Steps');
+  const factorRow = steps.body.find((row) => row[4] === 'territory factor');
+  assert.ok(factorRow, `missing factor row: ${JSON.stringify(steps.body)}`);
+  assert.match(factorRow[6], /uses territory factor from step 2/);
+  assert.doesNotMatch(factorRow[6], /lookup keys not stated/);
+});
+
 test('excel: rounding row keeps its stated target in the operand', () => {
   const job = normalizeJob(
     createJob({

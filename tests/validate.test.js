@@ -1737,7 +1737,7 @@ test('validate: RoundHalfUp call form evaluates like round_half_up', () => {
   assert.equal(evaluateNumericExpression('RoundHalfUp(2.5, 0)'), 3);
 });
 
-test('validate: inflected factor references resolve; unresolved, ambiguous, and fallback warnings stay', () => {
+test('validate: inflected factor refs name their table yet stay unresolved without a lookup', () => {
   const factorEvidence = 'Factors are unitless multipliers applied per vehicle';
   const job = jobWith({
     tables: [
@@ -1760,12 +1760,139 @@ test('validate: inflected factor references resolve; unresolved, ambiguous, and 
   });
   const issues = validateJob(job);
   const msgs = issues.map((i) => i.message).join(' | ');
-  assert.ok(!issues.some((i) => /"territory factor"/.test(i.message)), `inflected factor ref must resolve: ${msgs}`);
-  assert.ok(!issues.some((i) => /"driver experience factor"/.test(i.message)), `inflected factor ref must resolve: ${msgs}`);
+  // Table-name matching (exact or singular/plural-insensitive) identifies
+  // the candidate table, but a factor value used in a calculation must be
+  // introduced by an explicit lookup step: with none present, each factor
+  // is retained as unresolved with its table named.
+  const territory = issues.find((i) => /Step uses "territory factor" from Table "Table 2\. Territory Factors"/.test(i.message));
+  assert.ok(territory, `unproduced factor must warn with its table: ${msgs}`);
+  assert.match(territory.message, /no lookup step selecting it/);
+  assert.match(territory.message, /flagged as unresolved/);
+  const driver = issues.find((i) => /Step uses "driver experience factor" from Table "Table 3\. Driver Experience Factors"/.test(i.message));
+  assert.ok(driver, `unproduced factor must warn with its table: ${msgs}`);
+  assert.match(driver.message, /no lookup step selecting it/);
+  assert.match(driver.message, /flagged as unresolved/);
   assert.ok(issues.some((i) => /"hull factor"/.test(i.message) && /flagged as unresolved/.test(i.message)), `genuine gap must warn: ${msgs}`);
   const north = issues.find((i) => /"north factor"/.test(i.message));
   assert.ok(north, `ambiguous ref must warn: ${msgs}`);
   assert.match(north.message, /matches multiple tables/);
   assert.match(north.message, /North Factors/);
   assert.ok(issues.some((i) => /no explicit fallback/.test(i.message)), `genuine missing fallback must still warn: ${msgs}`);
+});
+
+test('validate: factor from a named table without a producing lookup stays unresolved', () => {
+  // Step 2 uses `territory factor` for a calculation and names Table 2,
+  // but no lookup step selects it: the table is evidenced, the lookup is
+  // not, so the reference is retained as unresolved for analyst review
+  // instead of silently resolving by table-name match.
+  const job = jobWith({
+    tables: [
+      { name: 'Table 1. Base Tallages by Ledger Class', sourcePages: [1], evidenceText: 'base tallage schedule', headers: ['Ledger class', 'Base tallage'], rows: [['A', '800']] },
+      { name: 'Table 2. Territory Tallage Factors', sourcePages: [1], evidenceText: 'territory factor schedule', headers: ['Territory code', 'Description', 'Factor'], rows: [['SUB', 'Suburban', '1.00']] },
+    ],
+    routines: [{
+      name: 'Ledger Tally Procedure', kind: 'calculation_steps', sourcePages: [2], evidenceText: 'e',
+      steps: [
+        'Step 1 — Base tallage: Select the base tallage for the ledger class from Table 1.',
+        { sequence: 2, instruction: 'Step 2 — Zone scaling: Multiply the base tallage by the territory factor from Table 2.', operation: 'expression', expression: 'Base tallage * territory factor', inputs: ['Base tallage', 'territory factor'], output: 'Zone scaling', depends_on: ['Table 2'] },
+      ],
+    }],
+  });
+  const issues = validateJob(job);
+  const msgs = issues.map((i) => i.message).join(' | ');
+  const hit = issues.find((i) => /Step 2 uses "territory factor" from Table "Table 2\. Territory Tallage Factors"/.test(i.message));
+  assert.ok(hit, `unproduced factor must warn with its table: ${msgs}`);
+  assert.match(hit.message, /no lookup step selecting it/);
+  assert.match(hit.message, /no lookup key or selected value evidenced/);
+  assert.match(hit.message, /flagged as unresolved/);
+  assert.ok(!issues.some((i) => /"ledger class"/.test(i.message)), `lookup keys must stay silent: ${msgs}`);
+  assert.ok(!issues.some((i) => /"Base tallage"/.test(i.message)), `produced values must stay silent: ${msgs}`);
+});
+
+test('validate: lookup-produced factor resolves without warning', () => {
+  // The same factor selected by an explicit lookup step is introduced:
+  // downstream calculations referencing the lookup output stay silent.
+  const job = jobWith({
+    tables: [
+      { name: 'Table 1. Base Tallages by Ledger Class', sourcePages: [1], evidenceText: 'base tallage schedule', headers: ['Ledger class', 'Base tallage'], rows: [['A', '800']] },
+      { name: 'Table 2. Territory Tallage Factors', sourcePages: [1], evidenceText: 'territory factor schedule', headers: ['Territory code', 'Description', 'Factor'], rows: [['SUB', 'Suburban', '1.00']] },
+    ],
+    routines: [{
+      name: 'Ledger Tally Procedure', kind: 'calculation_steps', sourcePages: [2], evidenceText: 'e',
+      steps: [
+        'Step 1 — Base tallage: Select the base tallage for the ledger class from Table 1.',
+        { sequence: 2, instruction: 'Step 2 — Territory factor: Look up the territory factor for the territory code from Table 2.', operation: 'lookup', inputs: ['territory code'], output: 'territory factor', depends_on: ['Table 2'] },
+        { sequence: 3, instruction: 'Step 3 — Zone scaling: Multiply the base tallage by the territory factor from Table 2.', operation: 'expression', expression: 'Base tallage * territory factor', inputs: ['Base tallage', 'territory factor'], output: 'Zone scaling', depends_on: ['Table 2'] },
+      ],
+    }],
+  });
+  const issues = validateJob(job);
+  const msgs = issues.map((i) => i.message).join(' | ');
+  assert.ok(!issues.some((i) => /"territory factor"/.test(i.message)), `introduced factor must stay silent: ${msgs}`);
+});
+
+test('validate: factor naming no resolvable table keeps the generic unresolved warning', () => {
+  // No table evidence at all: the reference keeps the generic unresolved
+  // wording rather than the table-attributed factor message.
+  const job = jobWith({
+    tables: [
+      { name: 'Table 1. Base Tallages by Ledger Class', sourcePages: [1], evidenceText: 'base tallage schedule', headers: ['Ledger class', 'Base tallage'], rows: [['A', '800']] },
+    ],
+    routines: [{
+      name: 'Ledger Tally Procedure', kind: 'calculation_steps', sourcePages: [2], evidenceText: 'e',
+      steps: [
+        'Step 1 — Base tallage: Select the base tallage for the ledger class from Table 1.',
+        { sequence: 2, instruction: 'Step 2 — Zone scaling: Multiply the base tallage by the Bermuda triangle factor.', operation: 'expression', expression: 'Base tallage * Bermuda triangle factor', inputs: ['Base tallage', 'Bermuda triangle factor'], output: 'Zone scaling', depends_on: ['Table 99'] },
+      ],
+    }],
+  });
+  const issues = validateJob(job);
+  const msgs = issues.map((i) => i.message).join(' | ');
+  assert.ok(issues.some((i) => /Step 2 references "Bermuda triangle factor", which matches no defined input/.test(i.message) && /flagged as unresolved/.test(i.message)), `tableless factor must warn generically: ${msgs}`);
+  assert.ok(!issues.some((i) => /uses "Bermuda triangle factor" from Table/.test(i.message)), `no table must mean no factor message: ${msgs}`);
+});
+
+test('validate: downstream reuse of an evidenced lookup key stays silent', () => {
+  // `ledger class` is step 1's lookup key; reusing it downstream with the
+  // same table named is not an unproduced factor.
+  const job = jobWith({
+    tables: [
+      { name: 'Table L. Ledger Class Tallages', sourcePages: [1], evidenceText: 'ledger class schedule', headers: ['Ledger class', 'Base tallage'], rows: [['A', '800']] },
+    ],
+    routines: [{
+      name: 'Ledger Tally Procedure', kind: 'calculation_steps', sourcePages: [2], evidenceText: 'e',
+      steps: [
+        { sequence: 1, instruction: 'Step 1 — Base tallage: Select the base tallage for the ledger class from Table L.', operation: 'lookup', inputs: ['ledger class'], output: 'Base tallage', depends_on: ['Table L'] },
+        { sequence: 2, instruction: 'Step 2 — Tally check: Add the ledger class weight to the base tallage.', operation: 'expression', expression: 'Base tallage + ledger class', inputs: ['Base tallage', 'ledger class'], output: 'Tally check', depends_on: ['Table L'] },
+      ],
+    }],
+  });
+  const issues = validateJob(job);
+  const msgs = issues.map((i) => i.message).join(' | ');
+  assert.ok(!issues.some((i) => /"ledger class"/.test(i.message)), `reused lookup key must stay silent: ${msgs}`);
+});
+
+test('validate: factor matching several named tables names each as unresolved', () => {
+  // `factor` matches both named tables and no lookup selects it: the
+  // warning names every candidate table instead of choosing one.
+  const job = jobWith({
+    tables: [
+      { name: 'Table 1. Base Tallages by Ledger Class', sourcePages: [1], evidenceText: 'base tallage schedule', headers: ['Ledger class', 'Base tallage'], rows: [['A', '800']] },
+      { name: 'Table 2. Territory Tallage Factors', sourcePages: [1], evidenceText: 'territory factor schedule', headers: ['Territory code', 'Description', 'Factor'], rows: [['SUB', 'Suburban', '1.00']] },
+      { name: 'Table 3. Driver Experience Factors', sourcePages: [1], evidenceText: 'driver factor schedule', headers: ['Experience band', 'Definition', 'Factor'], rows: [['EXP-3', 'Experienced', '0.90']] },
+    ],
+    routines: [{
+      name: 'Ledger Tally Procedure', kind: 'calculation_steps', sourcePages: [2], evidenceText: 'e',
+      steps: [
+        'Step 1 — Base tallage: Select the base tallage for the ledger class from Table 1.',
+        { sequence: 2, instruction: 'Step 2 — Zone scaling: Multiply the base tallage by the factor.', operation: 'expression', expression: 'Base tallage * factor', inputs: ['Base tallage', 'factor'], output: 'Zone scaling', depends_on: ['Table 2', 'Table 3'] },
+      ],
+    }],
+  });
+  const issues = validateJob(job);
+  const msgs = issues.map((i) => i.message).join(' | ');
+  const hit = issues.find((i) => /Step 2 uses "factor", which matches tables \("Table 2\. Territory Tallage Factors", "Table 3\. Driver Experience Factors"\)/.test(i.message));
+  assert.ok(hit, `multi-table factor must name each table: ${msgs}`);
+  assert.match(hit.message, /no lookup step selecting it/);
+  assert.match(hit.message, /flagged as unresolved/);
 });
