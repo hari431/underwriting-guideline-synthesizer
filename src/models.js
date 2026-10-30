@@ -297,6 +297,7 @@ export function createRatingRoutine({
       resolveStepBackrefs(finalDetailed);
     }
   }
+  linkRoundingOperands(finalDetailed);
   canonicalizeStepReferences(finalDetailed);
   return {
     id: id ?? routine_id ?? null,
@@ -726,6 +727,52 @@ function enrichRoundingTarget(out) {
   out.operand = parsed.operand;
   if (!String(out.output ?? '').trim() && parsed.output) out.output = parsed.output;
   if ((!out.inputs || out.inputs.length === 0) && parsed.inputs) out.inputs = parsed.inputs;
+}
+
+// First call argument of a call-form expression (`RoundHalfUp(x, 2)` → x):
+// the value the call operates on. Generic call syntax, never function names.
+function firstCallArgument(expr) {
+  const s = String(expr ?? '').trim();
+  const open = s.indexOf('(');
+  const close = s.lastIndexOf(')');
+  if (open <= 0 || close !== s.length - 1 || close <= open) return '';
+  if (!/^[A-Za-z_]\w*$/.test(s.slice(0, open).trim())) return '';
+  const args = splitTopLevelComma(s.slice(open + 1, close)).map((a) => String(a ?? '').trim()).filter(Boolean);
+  return args.length > 0 ? args[0] : '';
+}
+
+// Link a rounding step's missing operand to the preceding output whose
+// stated value exactly equals the call argument (`RoundHalfUp($1,066.08)`
+// after a step stating $1,066.08): the operand names the rounded value's
+// producer. Unique value match only — ambiguity or no match leaves the
+// operand blank for review. Same routine, preceding steps only; wording
+// operands filled earlier always win.
+function linkRoundingOperands(detailed) {
+  const list = Array.isArray(detailed) ? detailed : [];
+  for (let index = 0; index < list.length; index += 1) {
+    const det = list[index];
+    if (!det || typeof det !== 'object') continue;
+    if (String(det.operation ?? '').toLowerCase() !== 'rounding') continue;
+    if (String(det.operand ?? '').trim()) continue;
+    const arg = firstCallArgument(det.expression);
+    if (!arg) continue;
+    let match = null;
+    let ambiguous = false;
+    for (let i = 0; i < index; i += 1) {
+      const prev = list[i];
+      if (!prev || typeof prev !== 'object') continue;
+      const stated = Array.isArray(prev.stated_results) ? prev.stated_results : [];
+      if (!stated.some((s) => String(s?.value ?? '').trim() === arg)) continue;
+      const name = String(prev.output ?? '').trim();
+      if (!name) continue;
+      if (match !== null) {
+        ambiguous = true;
+        break;
+      }
+      match = name;
+    }
+    if (match !== null && !ambiguous) det.operand = match;
+  }
 }
 
 function normalizeStepLists({ steps, steps_detailed }) {
@@ -1676,17 +1723,19 @@ function explicitMergedGridLabel(out) {
   return stepLabelForOutput(seg);
 }
 // Promote an explicit model-provided expression that states its own
-// calculation but carries no operation: bare arithmetic (`$1,050.00 × 1.00`),
-// call-form evaluations (`RoundHalfUp(...)`), and past-tense lookup
-// statements (`Selected tallage for LXV`). The step label becomes the output
-// variable and a bare worked amount becomes a stated result — both
-// preserved, never dropped or invented. Prose without such evidence stays
+// calculation: bare arithmetic (`$1,050.00 × 1.00`), call-form evaluations
+// (`RoundHalfUp(...)`), and past-tense lookup statements (`Selected tallage
+// for LXV). The step label becomes the output variable and a bare worked
+// amount becomes a stated result — both preserved, never dropped or
+// invented. A model-provided operation stands as stated; only its worked
+// values are adopted, never re-derived. Prose without such evidence stays
 // unparsed. Runs before instruction-word derivation so explicit structure
 // beats re-derivation.
 function promoteExplicitStepExpression(out) {
-  if (!out || out.operation) return;
+  if (!out) return;
   const expr = String(out.expression ?? '').trim();
   if (!expr) return;
+  const modelOp = String(out.operation ?? '').trim();
   const label = explicitMergedGridLabel(out) || stepLabelForOutput(out.instruction);
   // An assignment inside the expression names its own target (`Rloaded =
   // ...` computes Rloaded): it beats the instruction label, which may be
@@ -1710,11 +1759,28 @@ function promoteExplicitStepExpression(out) {
     else delete out.output;
   };
   if (hasArithmeticEvidence(expr) || isCallFormExpression(expr)) {
-    out.operation = 'expression';
-    adoptOutput();
-    if (!out.interpretation_status) out.interpretation_status = 'inferred';
+    if (!modelOp) {
+      out.operation = 'expression';
+      adoptOutput();
+      if (!out.interpretation_status) out.interpretation_status = 'inferred';
+    } else if (String(out.output ?? '').trim() !== '') {
+      // The model-provided operation stands (sanitization canonicalizes it
+      // later), but its worked output still needs a label target and stated
+      // result before sanitization strips bare amounts. Steps without any
+      // output keep the old behavior: nothing is adopted from thin air.
+      // The inferred mark records actual derivation only, so fully
+      // evidenced steps keep no status either way.
+      const beforeOutput = out.output;
+      const beforeStated = Array.isArray(out.stated_results) ? out.stated_results.length : 0;
+      adoptOutput();
+      const afterStated = Array.isArray(out.stated_results) ? out.stated_results.length : 0;
+      if ((out.output !== beforeOutput || afterStated !== beforeStated) && !out.interpretation_status) {
+        out.interpretation_status = 'inferred';
+      }
+    }
     return;
   }
+  if (modelOp) return;
   const lookup = tryParsePastTenseLookup(expr);
   if (lookup) {
     out.operation = 'lookup';

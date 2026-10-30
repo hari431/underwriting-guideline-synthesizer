@@ -2834,3 +2834,64 @@ test('excel: factor without step mentions traces to its table through routine fa
   assert.ok(factorRow, `missing factor row: ${JSON.stringify(steps.body)}`);
   assert.match(factorRow[6], /uses Territory factor from Table 2\. Territory Factors \(lookup keys not stated \u2014 verify\)/);
 });
+
+test('excel: op-bearing worked steps render calculations with stated results', () => {
+  // Latest live-extraction shape: explicit model operations with literal
+  // worked values. Each step renders its output, operands, and stated
+  // result — never REVIEW.
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'synthetic.pdf', pageCount: 1 }),
+      tables: [],
+      routines: [{
+        name: 'Worked Example', kind: 'worked_example', sourcePages: [1], evidenceText: 'e',
+        steps: [
+          { sequence: 2, instruction: '2. Territory adjustment: $1,050.00 \u00d7 1.00', operation: 'multiply', expression: '$1,050.00 \u00d7 1.00', inputs: ['$1,050.00', '1.00'], output: '$1,050.00', cells: { step: '2. Territory adjustment', calculation: '$1,050.00 \u00d7 1.00', result: '$1,050.00' } },
+          { sequence: 7, instruction: '7. Final before rounding: $1,122.1875 - $56.109375', operation: 'subtract', expression: '$1,122.1875 - $56.109375', inputs: ['$1,122.1875', '$56.109375'], output: '$1,066.078125', cells: { step: '7. Final before rounding', calculation: '$1,122.1875 - $56.109375', result: '$1,066.078125' } },
+        ],
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Worked Example'), strings);
+  const steps = sectionRows(values, 'Steps');
+  assert.ok(steps.body.length > 0, 'missing Steps section');
+  assert.ok(steps.body.every((row) => row[2] !== 'REVIEW'), `unexpected REVIEW rows: ${JSON.stringify(steps.body)}`);
+  const stated = steps.body.filter((row) => row[2] === '=');
+  assert.deepEqual(stated.map((row) => [row[1], row[4]]), [['Territory adjustment', '$1,050.00'], ['Final before rounding', '$1,066.078125']]);
+  const operands = new Set(steps.body.map((row) => row[4]));
+  for (const want of ['$1,050.00', '1.00', '$1,122.1875', '$56.109375']) {
+    assert.ok(operands.has(want), `missing operand ${want}: ${JSON.stringify(steps.body)}`);
+  }
+});
+
+test('excel: rounding row shows the linked preceding output as operand', () => {
+  // The rounding call names a value a preceding step states: the R row
+  // carries that step's output as its operand instead of a blank cell.
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'synthetic.pdf', pageCount: 1 }),
+      tables: [],
+      routines: [{
+        name: 'Worked Example', kind: 'worked_example', sourcePages: [1], evidenceText: 'e',
+        steps: [
+          { sequence: 7, instruction: '7. Final before rounding: $1,122.1875 - $56.109375', operation: 'subtract', expression: '$1,122.1875 - $56.109375', inputs: ['$1,122.1875', '$56.109375'], output: '$1,066.078125', cells: { step: '7. Final before rounding', calculation: '$1,122.1875 - $56.109375', result: '$1,066.078125' } },
+          { sequence: 8, instruction: '8. Final annual premium: RoundHalfUp($1,066.078125, 2)', operation: 'round', expression: 'RoundHalfUp($1,066.078125, 2)', inputs: ['$1,066.078125'], output: '$1,066.08', cells: { step: '8. Final annual premium', calculation: 'RoundHalfUp($1,066.078125, 2)', result: '$1,066.08' } },
+        ],
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Worked Example'), strings);
+  const steps = sectionRows(values, 'Steps');
+  const roundRow = steps.body.find((row) => row[1] === 'Final annual premium' && row[2] === 'R');
+  assert.ok(roundRow, `missing rounding row: ${JSON.stringify(steps.body)}`);
+  assert.equal(roundRow[4], 'Final before rounding');
+  assert.ok(steps.body.every((row) => row[2] !== 'REVIEW'), `unexpected REVIEW rows: ${JSON.stringify(steps.body)}`);
+});

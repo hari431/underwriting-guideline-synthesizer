@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { assignmentTargetFromBranch, cleanStepInputValue, conditionsMutuallyExclusive, createJob, createDocument, diagnoseFactorLookup, findTableCandidates, generateParameterizedLookups, normalizeJob, resolveExplicitTableReference, resolveTableReference, splitBranchIsValue, splitSequentialConditionParts, stepInputTables } from '../src/models.js';
+import { assignmentTargetFromBranch, cleanStepInputValue, conditionsMutuallyExclusive, createJob, createDocument, createRatingRoutine, diagnoseFactorLookup, findTableCandidates, generateParameterizedLookups, normalizeJob, resolveExplicitTableReference, resolveTableReference, splitBranchIsValue, splitSequentialConditionParts, stepInputTables } from '../src/models.js';
 
 test('normalizeJob assigns stable sequential IDs and preserves evidence', () => {
   const job = normalizeJob(
@@ -1253,4 +1253,189 @@ test('models: lookup generation stays silent for fallback attribution without a 
   const before = JSON.stringify(routine);
   assert.equal(generateParameterizedLookups(routine, [table]), 0);
   assert.equal(JSON.stringify(routine), before);
+});
+
+// ---------- operation-bearing worked-example steps ----------
+
+function opBearingWorkedStep(operation, instruction, expression, output) {
+  return {
+    sequence: 2, instruction, operation, expression,
+    inputs: ['$1,050.00', '1.00'], output,
+    cells: { step: '2. Territory adjustment', calculation: '$1,050.00 \u00d7 1.00', result: '$1,050.00' },
+  };
+}
+
+function normalizeWorkedStep(step) {
+  const routine = createRatingRoutine({ name: 'Worked', kind: 'worked_example', sourcePages: [1], evidenceText: 'e', steps: [step] });
+  return routine.steps_detailed[0];
+}
+
+test('models: op-bearing worked multiply preserves label output and stated result', () => {
+  // Model-provided operation with literal worked values: the operation
+  // canonicalizes, the label becomes the output, and the bare amount is
+  // kept as a stated result instead of being stripped.
+  const d = normalizeWorkedStep(opBearingWorkedStep('multiply', '2. Territory adjustment: $1,050.00 \u00d7 1.00', '$1,050.00 \u00d7 1.00', '$1,050.00'));
+  assert.equal(d.operation, 'expression');
+  assert.equal(d.output, 'Territory adjustment');
+  assert.equal(d.inputs, undefined);
+  assert.deepEqual(d.stated_results, [{ output: 'Territory adjustment', value: '$1,050.00' }]);
+  assert.equal(d.expression, '$1,050.00 \u00d7 1.00');
+});
+
+test('models: op-bearing worked subtract and round preserve values and verbs', () => {
+  const sub = normalizeWorkedStep(opBearingWorkedStep('subtract', '7. Final before rounding: $1,122.1875 - $56.109375', '$1,122.1875 - $56.109375', '$1,066.078125'));
+  assert.equal(sub.operation, 'expression');
+  assert.equal(sub.output, 'Final before rounding');
+  assert.deepEqual(sub.stated_results, [{ output: 'Final before rounding', value: '$1,066.078125' }]);
+  const rnd = normalizeWorkedStep({ sequence: 8, instruction: '8. Final annual premium: RoundHalfUp($1,066.078125, 2)', operation: 'round', expression: 'RoundHalfUp($1,066.078125, 2)', inputs: ['$1,066.078125'], output: '$1,066.08', cells: { step: '8. Final annual premium', calculation: 'RoundHalfUp($1,066.078125, 2)', result: '$1,066.08' } });
+  assert.equal(rnd.operation, 'rounding');
+  assert.equal(rnd.output, 'Final annual premium');
+  assert.deepEqual(rnd.stated_results, [{ output: 'Final annual premium', value: '$1,066.08' }]);
+});
+
+test('models: op-bearing named outputs pass through without invented stated results', () => {
+  // Ordinary rating-routine shape: model operation plus a named output
+  // stays exactly as evidenced — nothing adopted, nothing invented.
+  const d = normalizeWorkedStep({ sequence: 2, instruction: 'Step 2 \u2014 Territory adjustment: Multiply the base premium by the territory factor.', operation: 'multiply', expression: 'base premium \u00d7 territory factor', inputs: ['base premium', 'territory factor'], output: 'Step 2 result' });
+  assert.equal(d.operation, 'expression');
+  assert.equal(d.output, 'Step 2 result');
+  assert.deepEqual(d.inputs, ['base premium', 'territory factor']);
+  assert.equal(d.stated_results, undefined);
+});
+
+test('models: op-absent and op-present worked steps converge on the same values', () => {
+  // The operation source must not decide value preservation: the same
+  // worked evidence keeps the same output and stated result either way.
+  const withOp = normalizeWorkedStep(opBearingWorkedStep('multiply', '2. Territory adjustment: $1,050.00 \u00d7 1.00', '$1,050.00 \u00d7 1.00', '$1,050.00'));
+  const bare = { ...opBearingWorkedStep('multiply', '2. Territory adjustment: $1,050.00 \u00d7 1.00', '$1,050.00 \u00d7 1.00', '$1,050.00') };
+  delete bare.operation;
+  const withoutOp = normalizeWorkedStep(bare);
+  assert.equal(withOp.output, withoutOp.output);
+  assert.deepEqual(withOp.stated_results, withoutOp.stated_results);
+  assert.equal(withOp.expression, withoutOp.expression);
+});
+
+test('models: op-bearing steps without an output stay bare', () => {
+  // Positive control: an incomplete calculation (operation and
+  // expression but no amount evidencing the output slot) adopts nothing.
+  const d = normalizeWorkedStep({ sequence: 2, instruction: '2. Territory adjustment', operation: 'multiply', expression: '$1,050.00 \u00d7 1.00', cells: { step: '2. Territory adjustment', calculation: '$1,050.00 \u00d7 1.00', result: '' } });
+  assert.equal(d.operation, 'expression');
+  assert.equal(d.output, undefined);
+  assert.equal(d.stated_results, undefined);
+});
+
+test('models: op-bearing worked values without a label stay unadopted', () => {
+  // Positive control: a bare amount with no label evidence to adopt must
+  // not invent a target; sanitization still removes the literal.
+  const d = normalizeWorkedStep({ sequence: 2, operation: 'multiply', expression: '$5.00 \u00d7 2', inputs: ['$5.00', '2'], output: '$10.00' });
+  assert.equal(d.output, undefined);
+  assert.equal(d.stated_results, undefined);
+});
+
+test('models: contradicted model operations demote without adopting values', () => {
+  // Positive control: an operation the evidence contradicts (multiply
+  // over a selection statement) demotes as before and gains no adopted
+  // output — ambiguity stays visible instead of rendering clean.
+  const d = normalizeWorkedStep({ sequence: 1, instruction: '1. Base premium: Selected rate for LDV', operation: 'multiply', expression: 'Selected rate for LDV', inputs: ['Vehicle class'], output: '$1,050.00', cells: { step: '1. Base premium', calculation: 'Selected rate for LDV', result: '$1,050.00' } });
+  assert.equal(d.operation, undefined);
+  assert.equal(d.output, undefined);
+  assert.equal(d.stated_results, undefined);
+});
+
+test('models: op-bearing worked values survive repeated normalization', () => {
+  const job = normalizeJob(createJob({
+    document: createDocument({ filename: 'g.pdf', pageCount: 1 }),
+    tables: [],
+    routines: [{ name: 'Worked', kind: 'worked_example', sourcePages: [1], evidenceText: 'e', steps: [opBearingWorkedStep('multiply', '2. Territory adjustment: $1,050.00 \u00d7 1.00', '$1,050.00 \u00d7 1.00', '$1,050.00')] }],
+  }));
+  const twice = normalizeJob(job);
+  const d = twice.routines[0].steps_detailed[0];
+  assert.equal(d.output, 'Territory adjustment');
+  assert.deepEqual(d.stated_results, [{ output: 'Territory adjustment', value: '$1,050.00' }]);
+  assert.equal(twice.routines[0].steps.length, twice.routines[0].steps_detailed.length);
+});
+
+// ---------- rounding operand linking ----------
+
+function roundingWorkedRoutine() {
+  return {
+    name: 'Worked', kind: 'worked_example', sourcePages: [1], evidenceText: 'e',
+    steps: [
+      { sequence: 7, instruction: '7. Final before rounding: $1,122.1875 - $56.109375', operation: 'subtract', expression: '$1,122.1875 - $56.109375', inputs: ['$1,122.1875', '$56.109375'], output: '$1,066.078125', cells: { step: '7. Final before rounding', calculation: '$1,122.1875 - $56.109375', result: '$1,066.078125' } },
+      { sequence: 8, instruction: '8. Final annual premium: RoundHalfUp($1,066.078125, 2)', operation: 'round', expression: 'RoundHalfUp($1,066.078125, 2)', inputs: ['$1,066.078125'], output: '$1,066.08', cells: { step: '8. Final annual premium', calculation: 'RoundHalfUp($1,066.078125, 2)', result: '$1,066.08' } },
+    ],
+  };
+}
+
+test('models: rounding operand links to the preceding stated value', () => {
+  // The call argument exactly equals the preceding step's stated value,
+  // so the operand names that step's output; the rounding result stays.
+  const routine = createRatingRoutine(roundingWorkedRoutine());
+  const d = routine.steps_detailed[1];
+  assert.equal(d.operation, 'rounding');
+  assert.equal(d.output, 'Final annual premium');
+  assert.equal(d.operand, 'Final before rounding');
+});
+
+test('models: rounding operand requires a unique stated-value match', () => {
+  // Two preceding steps state the same value: no operand is guessed, but
+  // the rounding output and stated result are still preserved.
+  const routine = createRatingRoutine({
+    name: 'Worked', kind: 'worked_example', sourcePages: [1], evidenceText: 'e',
+    steps: [
+      { sequence: 6, instruction: '6. First tally: $25.00 \u00d7 2', operation: 'multiply', expression: '$25.00 \u00d7 2', inputs: ['$25.00', '2'], output: '$50.00', cells: { step: '6. First tally', calculation: '$25.00 \u00d7 2', result: '$50.00' } },
+      { sequence: 7, instruction: '7. Second tally: $10.00 \u00d7 5', operation: 'multiply', expression: '$10.00 \u00d7 5', inputs: ['$10.00', '5'], output: '$50.00', cells: { step: '7. Second tally', calculation: '$10.00 \u00d7 5', result: '$50.00' } },
+      { sequence: 8, instruction: '8. Rounded tally: RoundHalfUp($50.00, 2)', operation: 'round', expression: 'RoundHalfUp($50.00, 2)', inputs: ['$50.00'], output: '$50.00', cells: { step: '8. Rounded tally', calculation: 'RoundHalfUp($50.00, 2)', result: '$50.00' } },
+    ],
+  });
+  const d = routine.steps_detailed[2];
+  assert.equal(d.operation, 'rounding');
+  assert.equal(d.output, 'Rounded tally');
+  assert.equal(d.operand, undefined);
+});
+
+test('models: rounding without a matching stated value stays targetless', () => {
+  const again = createRatingRoutine({
+    name: 'Worked', kind: 'worked_example', sourcePages: [1], evidenceText: 'e',
+    steps: [
+      { sequence: 7, instruction: '7. Final before rounding: $1,122.1875 - $56.109375', operation: 'subtract', expression: '$1,122.1875 - $56.109375', inputs: ['$1,122.1875', '$56.109375'], output: '$1,066.078125', cells: { step: '7. Final before rounding', calculation: '$1,122.1875 - $56.109375', result: '$1,066.078125' } },
+      { sequence: 8, instruction: '8. Final annual premium: RoundHalfUp($9.99, 2)', operation: 'round', expression: 'RoundHalfUp($9.99, 2)', inputs: ['$9.99'], output: '$9.99', cells: { step: '8. Final annual premium', calculation: 'RoundHalfUp($9.99, 2)', result: '$9.99' } },
+    ],
+  });
+  assert.equal(again.steps_detailed[1].operand, undefined);
+});
+
+test('models: explicit rounding operands are never overwritten', () => {
+  const raw = roundingWorkedRoutine();
+  raw.steps[1].operand = 'Final premium';
+  const routine = createRatingRoutine(raw);
+  assert.equal(routine.steps_detailed[1].operand, 'Final premium');
+});
+
+test('models: rounding operand linking needs a call-form expression', () => {
+  // A rounding operation over prose states no callable value: no operand
+  // is linked even with preceding stated values present.
+  const routine = createRatingRoutine({
+    name: 'Worked', kind: 'worked_example', sourcePages: [1], evidenceText: 'e',
+    steps: [
+      { sequence: 7, instruction: '7. Final before rounding: $1,122.1875 - $56.109375', operation: 'subtract', expression: '$1,122.1875 - $56.109375', inputs: ['$1,122.1875', '$56.109375'], output: '$1,066.078125', cells: { step: '7. Final before rounding', calculation: '$1,122.1875 - $56.109375', result: '$1,066.078125' } },
+      { sequence: 8, instruction: '8. Final annual premium', operation: 'round', expression: 'the rounded total', output: 'Final annual premium' },
+    ],
+  });
+  const d = routine.steps_detailed[1];
+  assert.equal(d.operation, 'rounding');
+  assert.equal(d.operand, undefined);
+});
+
+test('models: linked rounding operands survive repeated normalization', () => {
+  const job = normalizeJob(createJob({
+    document: createDocument({ filename: 'g.pdf', pageCount: 1 }),
+    tables: [],
+    routines: [roundingWorkedRoutine()],
+  }));
+  const twice = normalizeJob(job);
+  const d = twice.routines[0].steps_detailed[1];
+  assert.equal(d.operation, 'rounding');
+  assert.equal(d.output, 'Final annual premium');
+  assert.equal(d.operand, 'Final before rounding');
 });
