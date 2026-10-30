@@ -1,7 +1,7 @@
 // Deterministic validation for extracted jobs. Pure functions, no model calls.
 // Policy: structural/traceability breaks are errors; anything interpretive —
 // including unfamiliar formula syntax — is a warning flagged for review.
-import { ROUTINE_KINDS, createValidationIssue, definedConstantTerms, diagnoseFactorLookup, findTableCandidates, isBlankSentinel, isLiteralReference, isLogicalGroupReference, isLookupLikeOperation, isNumericReference, isStepDefined, normalizeVariableKey, resolveRoutineReference, resolveTableReference, splitAssignmentSegment, splitHyphenSubtraction, splitTopLevel, stepDefinedTerms, stepInputTables, tableReferenceTerms } from './models.js';
+import { ROUTINE_KINDS, createValidationIssue, definedConstantTerms, diagnoseFactorLookup, findTableCandidates, isBlankSentinel, isLiteralReference, isLogicalGroupReference, isLookupLikeOperation, isNumericReference, isStepDefined, normalizeVariableKey, resolveExplicitTableReference, resolveRoutineReference, resolveTableReference, splitAssignmentSegment, splitHyphenSubtraction, splitTopLevel, stepDefinedTerms, stepInputTables, tableReferenceTerms } from './models.js';
 import { tableHasRecordColumn } from './table-split.js';
 
 export { ROUTINE_KINDS };
@@ -2083,7 +2083,7 @@ function isResolvedReference(routine, target, ctx) {
     if (ctx.normalizedTableTerms.has(key)) return true;
     if (ctx.normalizedConstants.has(key)) return true;
   }
-  if (resolveTableReference(ctx.tables, name)) return true;
+  if (resolveExplicitTableReference(ctx.tables, name)) return true;
   const candidates = findTableCandidates(ctx.tables ?? [], name);
   if (candidates.length > 1 && isLogicalGroupReference(candidates, name)
     && routineUsesMultipleGroupParts(routine, candidates)) return true;
@@ -2220,6 +2220,17 @@ function factorIntroduced(routine, name, refCtx, lookupKeys) {
   return false;
 }
 
+// True when a reference already names recorded table structure: a table
+// id/name/alias, a column header or label, or a code or symbol cell. Such
+// references belong to the generic path, which resolves them; the factor
+// check only owns value mentions drawn from a table.
+function isTableStructureTerm(name, refCtx) {
+  const lower = String(name ?? '').trim().toLowerCase();
+  if (refCtx.tableTerms.has(lower)) return true;
+  const key = normalizeVariableKey(name);
+  return Boolean(key && refCtx.normalizedTableTerms.has(key));
+}
+
 function unresolvedFactorMessage(routine, step, stepIndex, name, tables) {
   const seq = step?.sequence !== undefined && step?.sequence !== '' ? ` ${step.sequence}` : '';
   const names = tables.map((t) => `"${t?.name || t?.id}"`).join(', ');
@@ -2270,8 +2281,11 @@ function checkStructuredDependencies(routine, warn, refCtx) {
       const name = String(ref ?? '').trim();
       if (!name || isStepDefined(name, definedHere)) continue;
       if (!isLookupLikeOperation(step?.operation)) {
-        const tables = stepInputTables(step, refCtx.tables, name);
-        if (tables.length > 0 && !factorIntroduced(routine, name, refCtx, lookupKeys)) {
+        const tables = stepInputTables(step, refCtx.tables, name, routine);
+        // Multi-table attribution always warns; single-table attribution
+        // defers when the reference already names recorded table structure.
+        if (tables.length > 0 && !factorIntroduced(routine, name, refCtx, lookupKeys)
+          && (tables.length > 1 || !isTableStructureTerm(name, refCtx))) {
           warn('routine', routine.id, unresolvedFactorMessage(routine, step, stepIndex, name, tables), step?.source_pages?.length ? step.source_pages : routine.source_pages);
           continue;
         }

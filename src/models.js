@@ -1905,17 +1905,61 @@ export function resolveTableReference(tables, mention) {
   return candidates.length === 1 ? candidates[0] : null;
 }
 
-// Tables a step input draws on: the step's own `depends_on` mentions that
-// resolve to tables and whose terms the input matches — excluding inputs
+// Table mentions evidenced at routine level: declared dependencies plus
+// structured dependency targets. Generic plumbing, never contents.
+function routineDependencyMentions(routine) {
+  const deps = Array.isArray(routine?.dependencies) ? routine.dependencies.map((d) => d?.target) : [];
+  return [...(routine?.depends_on ?? []), ...deps].map((m) => String(m ?? '').trim()).filter(Boolean);
+}
+
+// Words marking an explicit table mention. Generic document vocabulary,
+// never table contents.
+const TABLE_REFERENCE_WORDS = /\b(table|tables|schedule|schedules|appendix|appendices|exhibit|exhibits)\b/i;
+
+// Resolve a mention to the table it explicitly references: an exact
+// recorded id/name/alias, a unique word-boundary prefix in either
+// direction ("Table 2", "Table 2 continued"), or a mention carrying an
+// explicit table word ("base property table") that matches one table.
+// Bare value mentions ("territory factor") never resolve through mere
+// word overlap with a table title. Returns the table or null.
+export function resolveExplicitTableReference(tables, mention) {
+  const raw = String(mention ?? '').trim();
+  const list = Array.isArray(tables) ? tables : [];
+  if (!raw || list.length === 0) return null;
+  const key = raw.toLowerCase();
+  const keyNorm = normalizeTableText(raw);
+  const exact = list.filter((t) =>
+    String(t?.id ?? '').trim().toLowerCase() === key
+    || tableMatchNames(t).some((n) => n.toLowerCase() === key || normalizeTableText(n) === keyNorm));
+  if (exact.length === 1) return exact[0];
+  if (exact.length > 1) return null;
+  const prefix = list.filter((t) => tableMatchNames(t).some((n) => {
+    const nameNorm = normalizeTableText(n);
+    if (!nameNorm || !keyNorm || nameNorm === keyNorm) return false;
+    return isWordBoundaryPrefix(nameNorm, keyNorm) || isWordBoundaryPrefix(keyNorm, nameNorm);
+  }));
+  if (prefix.length === 1) return prefix[0];
+  if (prefix.length > 1) return null;
+  if (!TABLE_REFERENCE_WORDS.test(raw)) return null;
+  const fuzzy = findTableCandidates(list, raw);
+  return fuzzy.length === 1 ? fuzzy[0] : null;
+}
+
+// Tables a step input draws on: the step's own `depends_on` mentions (or
+// the routine's when the step states none) that resolve to tables and
+// whose terms the input matches — excluding inputs
 // that name a table itself (equal to or a word-boundary prefix of the table
 // name), which are references rather than values drawn from the table.
 // Returns the matched tables ([] when none). Generic name matching, never
 // table contents. Shared by validation (unproduced-factor warnings) and the
 // workbook (factor trace comments) so both agree on the same attribution.
-export function stepInputTables(step, tables, name) {
+export function stepInputTables(step, tables, name, routine = null) {
   const raw = String(name ?? '').trim();
   if (!raw) return [];
-  const mentions = [...(step?.depends_on ?? [])].map((m) => String(m ?? '').trim()).filter(Boolean);
+  const stepMentions = [...(step?.depends_on ?? [])].map((m) => String(m ?? '').trim()).filter(Boolean);
+  // Fallback evidence when the step states no table: the routine's own
+  // dependencies. Attribution only — never a lookup or an assignment.
+  const mentions = stepMentions.length > 0 ? stepMentions : routineDependencyMentions(routine);
   if (mentions.length === 0) return [];
   const list = Array.isArray(tables) ? tables : [];
   const resolved = [];
@@ -2361,7 +2405,7 @@ export function generateParameterizedLookups(routine, tables, routines = [routin
         group = { sites: [] };
         sitesByFactor.set(key, group);
       }
-      group.sites.push({ index, name, tables: stepInputTables(step, list, name) });
+      group.sites.push({ index, name, tables: stepInputTables(step, list, name, routine) });
     }
   });
   let generated = 0;

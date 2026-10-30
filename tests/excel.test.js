@@ -2804,3 +2804,33 @@ test('excel: generated parameterized lookup renders as a lookup row with prior-s
   assert.doesNotMatch(factorRow[6], /lookup keys not stated/);
   assert.ok(steps.body.every((row) => row[2] !== 'REVIEW'), `unexpected REVIEW rows: ${JSON.stringify(steps.body)}`);
 });
+
+test('excel: factor without step mentions traces to its table through routine fallback', () => {
+  // Latest live-extraction shape: no step-level depends_on, routine names
+  // the tables. The using row traces the evidenced table with the keys
+  // caveat instead of dropping the trace silently.
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'synthetic.pdf', pageCount: 2 }),
+      tables: [
+        { name: 'Table 2. Territory Factors', sourcePages: [1], evidenceText: 'territory factor schedule', headers: ['Territory code', 'Description', 'Factor'], rows: [['SUB', 'Suburban', '1.00']] },
+      ],
+      routines: [{
+        name: 'Rating Procedure', kind: 'calculation_steps', sourcePages: [2], evidenceText: 'e',
+        dependsOn: ['Table 2. Territory Factors'],
+        steps: [
+          { sequence: 2, instruction: 'Step 2 \u2014 Zone scaling: Multiply the base tallage by the territory factor from Table 2.', operation: 'expression', expression: 'Base tallage * Territory factor', inputs: ['Base tallage', 'Territory factor'], output: 'Zone scaling' },
+        ],
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Rating Procedure'), strings);
+  const steps = sectionRows(values, 'Steps');
+  const factorRow = steps.body.find((row) => row[4] === 'Territory factor');
+  assert.ok(factorRow, `missing factor row: ${JSON.stringify(steps.body)}`);
+  assert.match(factorRow[6], /uses Territory factor from Table 2\. Territory Factors \(lookup keys not stated \u2014 verify\)/);
+});

@@ -651,8 +651,9 @@ function stepComment(step, routine, routines, tables, tableTerms, priorOutputs, 
     } else if (producers.length > 1) {
       parts.push(`uses ${variable} from multiple routines (${producers.map((s) => String(s?.name ?? s?.id ?? '')).join('; ')}) — verify`);
     } else {
-      const factorTables = (attributeTableFactors && !isLookupOperation(det?.operation) && !isConditionOperation(det?.operation) && !routineTerms.has(varKey) && !(lookupKeys instanceof Set && lookupKeys.has(varKey)))
-        ? stepInputTables(det, tables, variable)
+      // Recorded table structure (columns, labels, codes) resolves through the generic path below, never as a factor trace.
+      const factorTables = (attributeTableFactors && !isLookupOperation(det?.operation) && !isConditionOperation(det?.operation) && !routineTerms.has(varKey) && !normalizedTableTerms.has(varKey) && !(lookupKeys instanceof Set && lookupKeys.has(varKey)))
+        ? stepInputTables(det, tables, variable, routine)
         : [];
       if (factorTables.length > 0) {
         parts.push(`uses ${variable} from ${factorTables.map((t) => String(t?.name ?? t?.id ?? '')).join('; ')} (lookup keys not stated — verify)`);

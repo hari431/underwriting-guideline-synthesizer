@@ -2000,3 +2000,119 @@ test('validate: unresolved factor warning names ambiguous binding candidates', (
   assert.match(messages[0], /lookup key binding is ambiguous \("Cover", "Cover region"\)/);
   assert.match(messages[0], /flagged as unresolved/);
 });
+
+test('validate: factors attribute through routine dependencies when steps state none', () => {
+  // Latest live-extraction shape: routine-level dependencies present,
+  // step-level absent, capitalized factor inputs. Each factor attributes
+  // to its unique table and warns unresolved with its diagnosis.
+  const job = jobWith({
+    tables: [
+      { name: 'Table 2. Territory Factors', sourcePages: [1], evidenceText: 't', headers: ['Territory code', 'Territory description', 'Factor'], rows: [['SUB', 'Suburban', '1.00']] },
+      { name: 'Table 3. Driver Experience Factors', sourcePages: [1], evidenceText: 't', headers: ['Experience band', 'Definition', 'Factor'], rows: [['EXP-3', 'Senior', '0.90']] },
+    ],
+    routines: [{
+      name: 'Rating Procedure', kind: 'calculation_steps', sourcePages: [2], evidenceText: 'e',
+      dependsOn: ['Table 2. Territory Factors', 'Table 3. Driver Experience Factors'],
+      steps: [
+        { sequence: 2, instruction: 'Step 2 — Territory adjustment: Multiply the base premium by the territory factor from Table 2.', operation: 'expression', expression: 'Base premium * Territory factor', inputs: ['Base premium', 'Territory factor'], output: 'Step 2 result' },
+        { sequence: 3, instruction: 'Step 3 — Driver adjustment: Multiply the Step 2 result by the driver experience factor from Table 3.', operation: 'expression', expression: 'Step 2 result * Driver experience factor', inputs: ['Step 2 result', 'Driver experience factor'], output: 'Step 3 result' },
+      ],
+    }],
+  });
+  const issues = validateJob(job);
+  const msgs = issues.map((i) => i.message).join(' | ');
+  const territory = issues.find((i) => /Step 2 uses "Territory factor" from Table "Table 2\. Territory Factors"/.test(i.message));
+  assert.ok(territory, `fallback attribution must warn with its table: ${msgs}`);
+  assert.match(territory.message, /key column is ambiguous \("Territory code", "Territory description"\)/);
+  const driver = issues.find((i) => /Step 3 uses "Driver experience factor" from Table "Table 3\. Driver Experience Factors"/.test(i.message));
+  assert.ok(driver, `fallback attribution must warn with its table: ${msgs}`);
+  assert.match(driver.message, /no routine input or preceding step provides the lookup key/);
+});
+
+test('validate: explicit lookup resolves its factor under routine-level attribution', () => {
+  // Fallback attribution is not a lookup, but a genuine lookup step still
+  // introduces its factor: the factor stays silent with no step mentions.
+  const job = jobWith({
+    tables: [
+      { name: 'Table 2. Territory Factors', sourcePages: [1], evidenceText: 't', headers: ['Territory code', 'Factor'], rows: [['SUB', '1.00']] },
+    ],
+    routines: [{
+      name: 'Rating Procedure', kind: 'calculation_steps', sourcePages: [2], evidenceText: 'e',
+      inputs: ['Territory'],
+      dependsOn: ['Table 2. Territory Factors'],
+      steps: [
+        { sequence: 1, instruction: 'Step 1 — Territory factor: Look up the territory factor from Table 2 using Territory.', operation: 'lookup', inputs: ['Territory'], output: 'Territory factor' },
+        { sequence: 2, instruction: 'Step 2 — Zone scaling: Multiply the base tallage by the Territory factor.', operation: 'expression', expression: 'Base tallage * Territory factor', inputs: ['Base tallage', 'Territory factor'], output: 'Zone scaling' },
+      ],
+    }],
+  });
+  const issues = validateJob(job);
+  const msgs = issues.map((i) => i.message).join(' | ');
+  assert.ok(!issues.some((i) => /"Territory factor"/.test(i.message)), `introduced factor must stay silent: ${msgs}`);
+  assert.ok(!issues.some((i) => /"Territory"/.test(i.message)), `bound lookup key must stay silent: ${msgs}`);
+});
+
+test('validate: explicit table references resolve without warnings', () => {
+  // A step input naming the table itself — short form or full title —
+  // keeps resolving; only bare value mentions lost the fuzzy fallback.
+  const job = jobWith({
+    tables: [
+      { name: 'Table 2. Territory Factors', sourcePages: [1], evidenceText: 't', headers: ['Territory code', 'Factor'], rows: [['SUB', '1.00']] },
+    ],
+    routines: [{
+      name: 'Rating Procedure', kind: 'calculation_steps', sourcePages: [2], evidenceText: 'e',
+      steps: [
+        { sequence: 1, instruction: 'Step 1 — Check tables.', operation: 'expression', expression: 'X', inputs: ['Table 2', 'Table 2. Territory Factors'], output: 'X' },
+      ],
+    }],
+  });
+  const issues = validateJob(job);
+  const msgs = issues.map((i) => i.message).join(' | ');
+  const routineRefs = issues.filter((i) => i.target_type === 'routine' && /references|uses/.test(i.message));
+  assert.ok(!routineRefs.some((i) => /"Table 2"/.test(i.message)), `short table reference must stay silent: ${msgs}`);
+  assert.ok(!routineRefs.some((i) => /"Table 2\. Territory Factors"/.test(i.message)), `full table reference must stay silent: ${msgs}`);
+});
+
+test('validate: ambiguous routine-level attribution stays ambiguous', () => {
+  // The routine names two factor tables and the step names none: a factor
+  // matching both keeps the ambiguous-table warning, never a guess.
+  const job = jobWith({
+    tables: [
+      { name: 'Schedule S. Cover Factors', sourcePages: [1], evidenceText: 't', headers: ['Cover code', 'Factor'], rows: [['C1', '1.10']] },
+      { name: 'Table 9. Cover Factors Riders', sourcePages: [1], evidenceText: 't', headers: ['Rider code', 'Factor'], rows: [['R1', '1.00']] },
+    ],
+    routines: [{
+      name: 'Cover Rating Procedure', kind: 'calculation_steps', sourcePages: [2], evidenceText: 'e',
+      dependsOn: ['Schedule S. Cover Factors', 'Table 9. Cover Factors Riders'],
+      steps: [
+        { sequence: 1, instruction: 'Step 1 — Adjusted amount: Multiply the base amount by the cover factor.', operation: 'expression', expression: 'Base amount * cover factor', inputs: ['Base amount', 'cover factor'], output: 'Adjusted amount' },
+      ],
+    }],
+  });
+  const issues = validateJob(job);
+  const msgs = issues.map((i) => i.message).join(' | ');
+  const hit = issues.find((i) => /Step 1 uses "cover factor", which matches tables \("Schedule S\. Cover Factors", "Table 9\. Cover Factors Riders"\)/.test(i.message));
+  assert.ok(hit, `multi-table factor must name each table: ${msgs}`);
+  assert.match(hit.message, /flagged as unresolved/);
+});
+
+test('validate: missing dependencies keep the generic unresolved warning', () => {
+  // No step mentions and no routine mentions: the factor keeps the
+  // generic warning instead of resolving through a fuzzy table-title
+  // match. This is the false-resolution regression test.
+  const job = jobWith({
+    tables: [
+      { name: 'Table 2. Territory Factors', sourcePages: [1], evidenceText: 't', headers: ['Territory code', 'Factor'], rows: [['SUB', '1.00']] },
+    ],
+    routines: [{
+      name: 'Rating Procedure', kind: 'calculation_steps', sourcePages: [2], evidenceText: 'e',
+      steps: [
+        { sequence: 1, instruction: 'Step 1 — Zone scaling: Multiply the base tallage by the territory factor.', operation: 'expression', expression: 'Base tallage * territory factor', inputs: ['Base tallage', 'territory factor'], output: 'Zone scaling' },
+      ],
+    }],
+  });
+  const issues = validateJob(job);
+  const msgs = issues.map((i) => i.message).join(' | ');
+  const hit = issues.find((i) => /Step 1 references "territory factor", which matches no defined input/.test(i.message));
+  assert.ok(hit, `unattributed factor must keep the generic warning: ${msgs}`);
+});

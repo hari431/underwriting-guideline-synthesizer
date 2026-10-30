@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { assignmentTargetFromBranch, cleanStepInputValue, conditionsMutuallyExclusive, createJob, createDocument, diagnoseFactorLookup, findTableCandidates, generateParameterizedLookups, normalizeJob, resolveTableReference, splitBranchIsValue, splitSequentialConditionParts, stepInputTables } from '../src/models.js';
+import { assignmentTargetFromBranch, cleanStepInputValue, conditionsMutuallyExclusive, createJob, createDocument, diagnoseFactorLookup, findTableCandidates, generateParameterizedLookups, normalizeJob, resolveExplicitTableReference, resolveTableReference, splitBranchIsValue, splitSequentialConditionParts, stepInputTables } from '../src/models.js';
 
 test('normalizeJob assigns stable sequential IDs and preserves evidence', () => {
   const job = normalizeJob(
@@ -984,7 +984,7 @@ test('models: lookup generation skips factors naming no extracted table', () => 
 test('models: lookup generation skips factors matching several tables', () => {
   const tables = [
     coverFactorTable(),
-    { name: 'Table 9. Cover Factor Riders', headers: ['Rider code', 'Factor'], rows: [['R1', '1.00']] },
+    { name: 'Table 9. Cover Factors Riders', headers: ['Rider code', 'Factor'], rows: [['R1', '1.00']] },
   ];
   const routine = coverRatingRoutine();
   routine.steps_detailed[1].depends_on = ['Schedule S', 'Table 9'];
@@ -996,7 +996,7 @@ test('models: lookup generation skips factors matching several tables', () => {
 test('models: lookup generation skips factors used from different tables', () => {
   const tables = [
     coverFactorTable(),
-    { name: 'Table 9. Cover Factor Riders', headers: ['Cover code', 'Factor'], rows: [['C1', '1.05']] },
+    { name: 'Table 9. Cover Factors Riders', headers: ['Cover code', 'Factor'], rows: [['C1', '1.05']] },
   ];
   const routine = coverRatingRoutine();
   routine.steps_detailed[2].depends_on = ['Table 9'];
@@ -1150,4 +1150,107 @@ test('models: lookup generation binds the exact match in either candidate order'
     assert.equal(routine.steps[1], 'Look up the cover factor from Schedule S using Cover code.');
     assert.deepEqual(routine.steps_detailed[1].inputs, ['Cover code']);
   }
+});
+
+// ---------- factor attribution fallback + explicit table resolution ----------
+
+test('models: stepInputTables falls back to routine dependencies without step mentions', () => {
+  // Latest live-extraction shape: the step states no table, the routine
+  // does. The factor attributes to its unique table; without routine
+  // evidence the old behavior stands.
+  const table = coverFactorTable();
+  const routine = { depends_on: ['Schedule S. Cover Factors'], steps_detailed: [] };
+  const step = { operation: 'expression', inputs: ['Base amount', 'cover factor'], output: 'Adjusted' };
+  assert.deepEqual(stepInputTables(step, [table], 'cover factor', routine).map((t) => t.name), ['Schedule S. Cover Factors']);
+  assert.deepEqual(stepInputTables(step, [table], 'cover factor'), []);
+  assert.deepEqual(stepInputTables(step, [table], 'cover factor', {}), []);
+});
+
+test('models: stepInputTables prefers step mentions over routine fallback', () => {
+  // An explicit but unresolvable step mention is not overridden by the
+  // routine: the step's own (broken) reference stands for review.
+  const table = coverFactorTable();
+  const routine = { depends_on: ['Schedule S. Cover Factors'] };
+  const step = { operation: 'expression', inputs: ['cover factor'], output: 'X', depends_on: ['Schedule Z'] };
+  assert.deepEqual(stepInputTables(step, [table], 'cover factor', routine), []);
+});
+
+test('models: stepInputTables fallback keeps ambiguous attribution ambiguous', () => {
+  const tables = [
+    coverFactorTable(),
+    { name: 'Table 9. Cover Factors Riders', headers: ['Rider code', 'Factor'], rows: [['R1', '1.00']] },
+  ];
+  const routine = { depends_on: ['Schedule S. Cover Factors', 'Table 9. Cover Factors Riders'] };
+  const step = { operation: 'expression', inputs: ['cover factor'], output: 'X' };
+  assert.deepEqual(
+    stepInputTables(step, tables, 'cover factor', routine).map((t) => t.name),
+    ['Schedule S. Cover Factors', 'Table 9. Cover Factors Riders']);
+});
+
+test('models: resolveExplicitTableReference resolves explicit mentions only', () => {
+  const tables = [
+    { id: 'T1', name: 'Table 1. Base Rates', aliases: ['SYN-BASE'] },
+    { id: 'T2', name: 'Table 2. Territory Factors' },
+    { id: 'TA', name: 'Table A - Base property rate' },
+  ];
+  assert.equal(resolveExplicitTableReference(tables, 'Table 2. Territory Factors')?.id, 'T2');
+  assert.equal(resolveExplicitTableReference(tables, 'T2')?.id, 'T2');
+  assert.equal(resolveExplicitTableReference(tables, 'Table 2')?.id, 'T2');
+  assert.equal(resolveExplicitTableReference(tables, 'SYN-BASE')?.id, 'T1');
+  assert.equal(resolveExplicitTableReference(tables, 'Base property table')?.id, 'TA');
+  assert.equal(resolveExplicitTableReference(tables, 'territory factor'), null);
+  assert.equal(resolveExplicitTableReference(tables, 'Territory Factors'), null);
+  assert.equal(resolveExplicitTableReference(tables, 'base premium'), null);
+  assert.equal(resolveExplicitTableReference(tables, ''), null);
+});
+
+test('models: resolveExplicitTableReference refuses ambiguous prefixes', () => {
+  const tables = [
+    { id: 'T2', name: 'Table 2. Territory Factors' },
+    { id: 'T2B', name: 'Table 2 - Territory Surcharges' },
+  ];
+  assert.equal(resolveExplicitTableReference(tables, 'Table 2'), null);
+  assert.equal(resolveExplicitTableReference(tables, 'Table 2 - Territory Surcharges')?.id, 'T2B');
+});
+
+test('models: lookup generation uses routine fallback evidence with a bound key', () => {
+  // Steps without depends_on still generate when the routine names one
+  // table and the key binds: the generated lookup cites the table name.
+  const table = coverFactorTable();
+  const routine = {
+    name: 'Cover Rating Procedure', kind: 'calculation_steps', source_pages: [2], evidence_text: 'e',
+    inputs: ['Cover'],
+    outputs: [],
+    depends_on: ['Schedule S. Cover Factors'],
+    steps: [
+      'Step 1 \u2014 Base amount: Select the base amount.',
+      'Step 2 \u2014 Adjusted amount: Multiply the base amount by the cover factor from Schedule S.',
+    ],
+    steps_detailed: [
+      { instruction: 'Step 1 \u2014 Base amount: Select the base amount.', operation: 'lookup', inputs: ['ledger class'], output: 'Base amount', evidence: 'Select the base amount.', source_pages: [2] },
+      { instruction: 'Step 2 \u2014 Adjusted amount: Multiply the base amount by the cover factor from Schedule S.', operation: 'expression', expression: 'Base amount * cover factor', inputs: ['Base amount', 'cover factor'], output: 'Adjusted amount', evidence: 'Multiply the base amount by the cover factor from Schedule S.', source_pages: [2] },
+    ],
+  };
+  assert.equal(generateParameterizedLookups(routine, [table]), 1);
+  assert.equal(routine.steps[1], 'Look up the cover factor from Schedule S. Cover Factors using Cover.');
+  assert.deepEqual(routine.steps_detailed[1].depends_on, ['Schedule S. Cover Factors']);
+});
+
+test('models: lookup generation stays silent for fallback attribution without a binding', () => {
+  // Fallback evidence triggers attribution but never a lookup by itself:
+  // the live-extraction shape (no step mentions, no key) generates nothing.
+  const table = coverFactorTable();
+  const routine = {
+    name: 'Cover Rating Procedure', kind: 'calculation_steps', source_pages: [2], evidence_text: 'e',
+    inputs: [],
+    outputs: [],
+    depends_on: ['Schedule S. Cover Factors'],
+    steps: ['Use cover.'],
+    steps_detailed: [
+      { instruction: 'Use cover.', operation: 'expression', expression: 'Base * cover factor', inputs: ['Base', 'cover factor'], output: 'Adjusted', evidence: 'Use cover.', source_pages: [2] },
+    ],
+  };
+  const before = JSON.stringify(routine);
+  assert.equal(generateParameterizedLookups(routine, [table]), 0);
+  assert.equal(JSON.stringify(routine), before);
 });

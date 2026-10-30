@@ -183,3 +183,26 @@ test('pipeline: procedure without key support keeps the unresolved factor warnin
   assert.ok(hit, `unsupported factor must warn with its table: ${msgs}`);
   assert.match(hit.message, /no routine input or preceding step provides the lookup key/);
 });
+
+test('pipeline: live-extraction shape without step dependencies warns with attribution', () => {
+  // Routine-level dependencies only (latest live extraction): factors
+  // attribute to their unique tables and warn unresolved; nothing generates.
+  const job = buildJobFromExtraction({
+    tables: [
+      { name: 'Table 2. Territory Factors', sourcePages: [1], evidenceText: 't', headers: ['Territory code', 'Territory description', 'Factor'], rows: [['SUB', 'Suburban', '1.00']] },
+      { name: 'Table 3. Driver Experience Factors', sourcePages: [1], evidenceText: 't', headers: ['Experience band', 'Definition', 'Factor'], rows: [['EXP-3', 'Senior', '0.90']] },
+    ],
+    routines: [{
+      name: 'Rating Procedure', kind: 'calculation_steps', sourcePages: [2], evidenceText: 'e',
+      dependsOn: ['Table 2. Territory Factors', 'Table 3. Driver Experience Factors'],
+      steps: [
+        { sequence: 2, instruction: 'Step 2 — Territory adjustment: Multiply the base premium by the territory factor from Table 2.', operation: 'expression', expression: 'Base premium * Territory factor', inputs: ['Base premium', 'Territory factor'], output: 'Step 2 result' },
+        { sequence: 3, instruction: 'Step 3 — Driver adjustment: Multiply the Step 2 result by the driver experience factor from Table 3.', operation: 'expression', expression: 'Step 2 result * Driver experience factor', inputs: ['Step 2 result', 'Driver experience factor'], output: 'Step 3 result' },
+      ],
+    }],
+  }, { filename: 'p.pdf', pageCount: 2 });
+  const msgs = job.issues.map((i) => i.message).join(' | ');
+  assert.ok(job.issues.some((i) => /Step 2 uses "Territory factor" from Table "Table 2\. Territory Factors"/.test(i.message)), `territory must warn: ${msgs}`);
+  assert.ok(job.issues.some((i) => /Step 3 uses "Driver experience factor" from Table "Table 3\. Driver Experience Factors"/.test(i.message)), `driver must warn: ${msgs}`);
+  assert.equal(job.routines[0].steps_detailed.length, 2);
+});
