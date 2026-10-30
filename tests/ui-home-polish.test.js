@@ -53,11 +53,23 @@ test('ui home polish: branding, sidebar steps, and upload adjacency preserved', 
 test('ui home polish: only supported claims, responsive without heavy layout', async () => {
   const html = await readHome();
   const lower = html.toLowerCase();
-  for (const banned of ['confidence score', 'accuracy', 'job history']) {
+  for (const banned of ['confidence score', 'accuracy', 'job history', 'certif', 'production-ready', 'production ready']) {
     assert.ok(!lower.includes(banned), `no unsupported claim: ${banned}`);
   }
   const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
   assert.ok(style.includes('.intro-grid'), 'intro grid styled');
   assert.ok(style.includes('@media (max-width: 900px)'), 'responsive breakpoint preserved');
   assert.ok(style.includes('[data-theme="dark"]'), 'dark theme block preserved');
+});
+
+test('ui home polish: engine positioning, tagline, and honest extraction copy', async () => {
+  const html = await readHome();
+  assert.match(html, /<title>RateCraft [^<]*AI-Powered Underwriting Extraction Engine<\/title>/, 'title carries engine positioning');
+  assert.match(html, /<h1>RateCraft<\/h1>/, 'product name unchanged');
+  assert.ok(html.includes('Transform complex underwriting guideline PDFs into structured, traceable rating requirements for analyst review.'), 'tagline present');
+  assert.ok(html.includes('Meta Muse Spark 1.3'), 'extraction layer named');
+  assert.ok(html.includes('RateCraft Extraction Engine'), 'engine named');
+  assert.match(html, /offline sample replays a recorded extraction/, 'offline playback distinguished');
+  assert.match(html, /no model call/, 'offline honesty kept');
+  assert.match(html, /Excel export/, 'export layer named');
 });

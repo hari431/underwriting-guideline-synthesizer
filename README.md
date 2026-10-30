@@ -1,8 +1,16 @@
-# RateCraft — Underwriting Requirements Extraction & Analyst-Review Tool (hackathon demo)
+# RateCraft — AI-Powered Underwriting Extraction Engine (hackathon demo)
 
-RateCraft turns P&C insurance underwriting guideline PDFs into structured, traceable Excel requirements. It extracts rating tables and rating routines with source-page references and evidence text, flags what needs a human decision, and exports a review-ready workbook.
+Transform complex underwriting guideline PDFs into structured, traceable rating requirements for analyst review.
+
+RateCraft is an AI-powered extraction engine: Meta Muse Spark 1.3 extracts rating tables and rating routines from guideline PDFs, the RateCraft Extraction Engine normalizes them and resolves references with deterministic validation, and Excel export produces structured requirements with source evidence and warnings for analyst review.
 
 Zero runtime dependencies — Node.js 20+ only. Demo scope: one guideline PDF per run. No rating-engine code generation or platform-specific implementation.
+
+## Architecture
+
+- **Meta Muse Spark 1.3 — AI-powered extraction.** Live runs send PDF text to Meta Muse Spark 1.3, which extracts rating tables and rating routines with source pages and evidence. The offline sample instead replays a recorded extraction with no model call.
+- **RateCraft Extraction Engine — normalization and validation.** Deterministic local stages normalize text, separate merged grids, expand record columns, infer column metadata, group step routines, resolve references, and validate: structural breaks become `error` issues, uncertain findings become `warning` issues.
+- **Excel export — review-ready requirements.** The workbook carries structured requirements, source evidence, and analyst-review warnings (one sheet per table/routine plus an Issues sheet). Export with warnings is allowed; errors block the download until fixed.
 
 ## Problem
 
