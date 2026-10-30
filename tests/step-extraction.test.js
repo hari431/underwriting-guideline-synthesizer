@@ -1536,14 +1536,76 @@ test('steps: sequential conditionals do not leak nested variables into inputs', 
   assert.equal(det.inputs, undefined);
 });
 
-test('steps: stated-value conditional step keeps its branch subject as output', () => {
+test('steps: conditional step adopts its descriptive label when branches agree on the subject', () => {
+  // Both branches assign the same subject (`rebate`), and the step label
+  // (`Ledger rebate`) names that same value more fully: the label becomes
+  // the output so both branches and later steps referencing it stay
+  // consistent. Conditions, values, and source text stay verbatim.
   const r = ledgerRoutine([
     'Step 6 — Ledger rebate: If the policy covers 3 to 10 ledgers, the rebate is 5% of the pre-rebate tallage. If the policy covers 1 or 2 ledgers, the rebate is 0%.',
   ]);
   const det = r.steps_detailed[0];
   assert.equal(det.operation, 'condition');
-  assert.equal(det.output, 'rebate');
+  assert.equal(det.output, 'Ledger rebate');
   assert.equal(det.inputs, undefined);
+  assert.equal(det.expression, 'If the policy covers 3 to 10 ledgers, the rebate is 5% of the pre-rebate tallage. If the policy covers 1 or 2 ledgers, the rebate is 0%');
+  assert.equal(r.steps[0], 'Step 6 — Ledger rebate: If the policy covers 3 to 10 ledgers, the rebate is 5% of the pre-rebate tallage. If the policy covers 1 or 2 ledgers, the rebate is 0%.');
+});
+
+test('steps: single-branch conditional step adopts an agreeing descriptive label', () => {
+  const r = ledgerRoutine([
+    'Step 6 — Ledger rebate: If the policy covers 3 to 10 ledgers, the rebate is 5% of the pre-rebate tallage.',
+  ]);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, 'condition');
+  assert.equal(det.output, 'Ledger rebate');
+});
+
+test('steps: conditional step keeps the branch subject when the label disagrees', () => {
+  // `Final review` does not extend the branch subject `rebate`, so the
+  // label is not adopted; the evidenced branch subject stays the output.
+  const r = ledgerRoutine([
+    'Step 6 — Final review: If the policy covers 3 to 10 ledgers, the rebate is 5% of the pre-rebate tallage.',
+  ]);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, 'condition');
+  assert.equal(det.output, 'rebate');
+});
+
+test('steps: conditional step keeps the first subject when branches disagree', () => {
+  // Branches assigning different subjects are not alternatives on one
+  // value: no label adoption, and the first branch subject stays put.
+  const r = ledgerRoutine([
+    'Step 6 — Ledger rebate: If the policy covers 3 to 10 ledgers, the rebate is 5% of the pre-rebate tallage. If the ledger is coastal, the surcharge is 2%.',
+  ]);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, 'condition');
+  assert.equal(det.output, 'rebate');
+});
+
+test('steps: labelless conditional step keeps its branch subject as output', () => {
+  const r = ledgerRoutine([
+    'If the policy covers 3 to 10 ledgers, the rebate is 5% of the pre-rebate tallage.',
+  ]);
+  const det = r.steps_detailed[0];
+  assert.equal(det.operation, 'condition');
+  assert.equal(det.output, 'rebate');
+});
+test('steps: downstream inputs reuse the producing step display name', () => {
+  // The lookup produces `Base tallage`; the later step reuses that exact
+  // display name in its inputs and expression, while its instruction
+  // keeps the source wording and unproduced references stay untouched.
+  const r = ledgerRoutine([
+    'Step 1 — Base tallage: Select the base tallage for the ledger class from Table L.',
+    'Step 2 — Zone scaling: Multiply the base tallage by the zone factor from Table Z.',
+  ]);
+  const [first, second] = r.steps_detailed;
+  assert.equal(first.output, 'Base tallage');
+  assert.deepEqual(second.inputs, ['Base tallage', 'zone factor']);
+  assert.equal(second.expression, 'Base tallage * zone factor');
+  assert.equal(second.output, 'Zone scaling');
+  assert.deepEqual(second.depends_on, ['Table Z']);
+  assert.equal(r.steps[1], 'Step 2 — Zone scaling: Multiply the base tallage by the zone factor from Table Z.');
 });
 
 test('steps: conditional branches without a stated value keep no output', () => {

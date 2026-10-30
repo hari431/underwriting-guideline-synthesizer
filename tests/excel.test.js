@@ -2210,11 +2210,12 @@ test('excel: input codes shared by two tables stay unresolved', () => {
   assert.equal(inputs.body[0][1], 'unresolved — verify');
 });
 
-test('excel: sequential condition statements render each branch without review or invented else', () => {
-  // A condition step stating two independent IF branches (no ELSE anywhere)
-  // renders one IF/ENDIF group per branch in source order. The structured
-  // expression carries only a branch fragment, so the clause comes from the
-  // instruction; no fallback is invented for either branch.
+test('excel: same-subject sequential branches chain as IF/ELSEIF/ENDIF without invented else', () => {
+  // A condition step stating two IF branches that assign the same subject
+  // (no ELSE anywhere) renders one IF/ELSEIF/ENDIF chain in source order.
+  // The structured expression carries only a branch fragment, so the clause
+  // comes from the instruction; the explicit output is preserved on both
+  // branch rows and no fallback is invented.
   const job = normalizeJob(
     createJob({
       document: createDocument({ filename: 'synthetic.pdf', pageCount: 1 }),
@@ -2248,17 +2249,209 @@ test('excel: sequential condition statements render each branch without review o
   const opIndex = steps.header.indexOf('Op');
   assert.ok(steps.body.every((row) => row[opIndex] !== 'REVIEW'), `unexpected REVIEW rows: ${JSON.stringify(steps.body)}`);
   const instructions = steps.body.map((row) => row[1]);
-  assert.deepEqual(instructions.filter((v) => v === 'IF').length, 2);
-  assert.deepEqual(instructions.filter((v) => v === 'ENDIF').length, 2);
+  assert.deepEqual(instructions.filter((v) => v === 'IF').length, 1);
+  assert.deepEqual(instructions.filter((v) => v === 'ELSEIF').length, 1);
+  assert.deepEqual(instructions.filter((v) => v === 'ENDIF').length, 1);
   assert.ok(!instructions.includes('ELSE'), `invented ELSE row: ${JSON.stringify(steps.body)}`);
-  const operands = steps.body.map((row) => row[4]);
-  assert.ok(operands.includes('the policy covers 3 to 10 ledgers'));
-  assert.ok(operands.includes('the policy covers 1 or 2 ledgers'));
+  assert.deepEqual(steps.body.map((row) => row[0]), ['6.1', '6.2', '6.3', '6.4', '6.5']);
+  assert.deepEqual(steps.body[0].slice(0, 6), ['6.1', 'IF', '', '', 'the policy covers 3 to 10 ledgers', '']);
+  assert.deepEqual(steps.body[2].slice(0, 6), ['6.3', 'ELSEIF', '', '', 'the policy covers 1 or 2 ledgers', '']);
+  assert.deepEqual(steps.body[4].slice(0, 6), ['6.5', 'ENDIF', '', '', '', '']);
   assert.ok(steps.body.some((row) => row[1] === 'tally discount' && String(row[4]).includes('5%')));
   assert.ok(steps.body.some((row) => row[1] === 'tally discount' && String(row[4]).includes('0%')));
   assert.ok(steps.body.every((row) => row.length === 7 && row[6] !== ''));
 });
 
+test('excel: independent sequential branches keep separate IF groups', () => {
+  // Sequential IF branches assigning different subjects are independent
+  // conditions, not alternatives: each keeps its own IF/ENDIF group in
+  // source order with no ELSEIF chaining and no ELSE invented.
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'synthetic.pdf', pageCount: 1 }),
+      routines: [{
+        name: 'Ledger Tally Procedure', kind: 'calculation_steps', sourcePages: [1],
+        evidenceText: 'synthetic tally procedure with independent branches',
+        steps: [{
+          sequence: 6,
+          instruction: 'Step 6 — Ledger checks: If the policy covers 3 to 10 ledgers, the rebate is 5% of the pre-rebate tallage. If the ledger is coastal, the surcharge is 2%.',
+          operation: 'condition',
+          expression: 'If the policy covers 3 to 10 ledgers, the rebate is 5% of the pre-rebate tallage. If the ledger is coastal, the surcharge is 2%.',
+          output: 'ledger checks',
+        }],
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Ledger Tally Procedure'), strings);
+  const steps = sectionRows(values, 'Steps');
+  const opIndex = steps.header.indexOf('Op');
+  assert.ok(steps.body.every((row) => row[opIndex] !== 'REVIEW'), `unexpected REVIEW rows: ${JSON.stringify(steps.body)}`);
+  const instructions = steps.body.map((row) => row[1]);
+  assert.deepEqual(instructions.filter((v) => v === 'IF').length, 2);
+  assert.deepEqual(instructions.filter((v) => v === 'ENDIF').length, 2);
+  assert.ok(!instructions.includes('ELSEIF'), `invented ELSEIF row: ${JSON.stringify(steps.body)}`);
+  assert.ok(!instructions.includes('ELSE'), `invented ELSE row: ${JSON.stringify(steps.body)}`);
+  const operands = steps.body.map((row) => row[4]);
+  assert.ok(operands.includes('the policy covers 3 to 10 ledgers'));
+  assert.ok(operands.includes('the ledger is coastal'));
+  assert.ok(operands.includes('5% of the pre-rebate tallage'));
+  assert.ok(operands.includes('2%'));
+  assert.ok(steps.body.every((row) => row.length === 7 && row[6] !== ''));
+});
+test('excel: overlapping same-subject branches keep separate IF groups', () => {
+  // Same assigned subject is not enough to chain: overlapping ranges may
+  // both apply, so each branch keeps its own IF/ENDIF group in source
+  // order with no ELSEIF chaining and no ELSE invented.
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'synthetic.pdf', pageCount: 1 }),
+      routines: [{
+        name: 'Ledger Tally Procedure', kind: 'calculation_steps', sourcePages: [1],
+        evidenceText: 'synthetic tally procedure with overlapping branches',
+        steps: [{
+          sequence: 6,
+          instruction: 'Step 6 — Ledger rebate bands: If the policy covers 3 to 10 ledgers, the rebate is 5% of the pre-rebate tallage. If the policy covers 5 to 12 ledgers, the rebate is 2%.',
+          operation: 'condition',
+          expression: 'If the policy covers 3 to 10 ledgers, the rebate is 5% of the pre-rebate tallage. If the policy covers 5 to 12 ledgers, the rebate is 2%.',
+          output: 'ledger rebate',
+        }],
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Ledger Tally Procedure'), strings);
+  const steps = sectionRows(values, 'Steps');
+  const opIndex = steps.header.indexOf('Op');
+  assert.ok(steps.body.every((row) => row[opIndex] !== 'REVIEW'), `unexpected REVIEW rows: ${JSON.stringify(steps.body)}`);
+  const instructions = steps.body.map((row) => row[1]);
+  assert.deepEqual(instructions.filter((v) => v === 'IF').length, 2);
+  assert.deepEqual(instructions.filter((v) => v === 'ENDIF').length, 2);
+  assert.ok(!instructions.includes('ELSEIF'), `invented ELSEIF row: ${JSON.stringify(steps.body)}`);
+  assert.ok(!instructions.includes('ELSE'), `invented ELSE row: ${JSON.stringify(steps.body)}`);
+  const operands = steps.body.map((row) => row[4]);
+  assert.ok(operands.includes('the policy covers 3 to 10 ledgers'));
+  assert.ok(operands.includes('the policy covers 5 to 12 ledgers'));
+  assert.ok(operands.includes('5% of the pre-rebate tallage'));
+  assert.ok(operands.includes('2%'));
+  assert.ok(steps.body.every((row) => row.length === 7 && row[6] !== ''));
+});
+test('excel: explicit three-branch chain keeps source order without invented else', () => {
+  // A source-stated IF/ELSEIF/ELSEIF chain (three condition branches, no
+  // ELSE anywhere) renders every stage in source order with the step's
+  // descriptive output on each branch row; no fallback is invented.
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'synthetic.pdf', pageCount: 1 }),
+      routines: [{
+        name: 'Ledger Tally Procedure', kind: 'calculation_steps', sourcePages: [1],
+        evidenceText: 'synthetic tally procedure with three rebate bands',
+        steps: [{
+          sequence: 6,
+          instruction: 'Step 6 — Ledger rebate: If the policy covers 1 or 2 ledgers, the rebate is 0%; else if the policy covers 3 to 5 ledgers, the rebate is 3%; else if the policy covers 6 to 10 ledgers, the rebate is 5%.',
+        }],
+      }],
+    })
+  );
+  assert.equal(job.routines[0].steps_detailed[0].output, 'Ledger rebate');
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Ledger Tally Procedure'), strings);
+  const steps = sectionRows(values, 'Steps');
+  const opIndex = steps.header.indexOf('Op');
+  assert.ok(steps.body.every((row) => row[opIndex] !== 'REVIEW'), `unexpected REVIEW rows: ${JSON.stringify(steps.body)}`);
+  assert.deepEqual(steps.body.map((row) => row[1]), ['IF', 'Ledger rebate', 'ELSEIF', 'Ledger rebate', 'ELSEIF', 'Ledger rebate', 'ENDIF']);
+  assert.deepEqual(steps.body.map((row) => row[0]), ['6.1', '6.2', '6.3', '6.4', '6.5', '6.6', '6.7']);
+  const operands = steps.body.map((row) => row[4]);
+  assert.ok(operands.includes('the policy covers 1 or 2 ledgers'));
+  assert.ok(operands.includes('the policy covers 3 to 5 ledgers'));
+  assert.ok(operands.includes('the policy covers 6 to 10 ledgers'));
+  assert.ok(operands.includes('0%'));
+  assert.ok(operands.includes('3%'));
+  assert.ok(operands.includes('5%'));
+  assert.ok(steps.body.every((row) => row.length === 7 && row[6] !== ''));
+});
+
+test('excel: explicit ELSE branch is preserved verbatim in source order', () => {
+  // A source-stated IF/OTHERWISE sentence keeps its false branch verbatim
+  // in an ELSE row; conditions, values, and order are preserved exactly.
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'synthetic.pdf', pageCount: 1 }),
+      routines: [{
+        name: 'Ledger Tally Procedure', kind: 'calculation_steps', sourcePages: [1],
+        evidenceText: 'synthetic tally procedure with a stated fallback',
+        steps: [{
+          sequence: 6,
+          instruction: 'Step 6 — Ledger rebate: If the policy covers 3 to 10 ledgers, the rebate is 5% of the pre-rebate tallage; otherwise the rebate is 0%.',
+        }],
+      }],
+    })
+  );
+  assert.equal(job.routines[0].steps_detailed[0].output, 'Ledger rebate');
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Ledger Tally Procedure'), strings);
+  const steps = sectionRows(values, 'Steps');
+  const opIndex = steps.header.indexOf('Op');
+  assert.ok(steps.body.every((row) => row[opIndex] !== 'REVIEW'), `unexpected REVIEW rows: ${JSON.stringify(steps.body)}`);
+  assert.deepEqual(steps.body.map((row) => row[1]), ['IF', 'Ledger rebate', 'ELSE', 'Ledger rebate', 'ENDIF']);
+  assert.deepEqual(steps.body.map((row) => row[0]), ['6.1', '6.2', '6.3', '6.4', '6.5']);
+  const operands = steps.body.map((row) => row[4]);
+  assert.ok(operands.includes('the policy covers 3 to 10 ledgers'));
+  assert.ok(operands.includes('5% of the pre-rebate tallage'));
+  assert.ok(operands.includes('0%'));
+  assert.ok(steps.body.every((row) => row.length === 7 && row[6] !== ''));
+});
+
+test('excel: sequential chain with a stated ELSE stays split with the ELSE intact', () => {
+  // Two same-subject branches over disjoint ranges would chain — except
+  // the first carries its own stated ELSE. Restructuring would corrupt the
+  // fallback, so each branch keeps its own group with the stated ELSE
+  // preserved verbatim.
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'synthetic.pdf', pageCount: 1 }),
+      routines: [{
+        name: 'Ledger Tally Procedure', kind: 'calculation_steps', sourcePages: [1],
+        evidenceText: 'synthetic tally procedure with a stated fallback plus a second band',
+        steps: [{
+          sequence: 6,
+          instruction: 'Step 6 — Ledger rebate bands: If the policy covers 3 to 10 ledgers, the rebate is 5% of the pre-rebate tallage. Otherwise the rebate is 1%. If the policy covers 1 or 2 ledgers, the rebate is 0%.',
+          operation: 'condition',
+          expression: 'If the policy covers 3 to 10 ledgers, the rebate is 5% of the pre-rebate tallage. Otherwise the rebate is 1%. If the policy covers 1 or 2 ledgers, the rebate is 0%.',
+          output: 'ledger rebate',
+        }],
+      }],
+    })
+  );
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Ledger Tally Procedure'), strings);
+  const steps = sectionRows(values, 'Steps');
+  const opIndex = steps.header.indexOf('Op');
+  assert.ok(steps.body.every((row) => row[opIndex] !== 'REVIEW'), `unexpected REVIEW rows: ${JSON.stringify(steps.body)}`);
+  assert.deepEqual(steps.body.map((row) => row[1]), ['IF', 'ledger rebate', 'ELSE', 'ledger rebate', 'ENDIF', 'IF', 'ledger rebate', 'ENDIF']);
+  const operands = steps.body.map((row) => row[4]);
+  assert.ok(operands.includes('the policy covers 3 to 10 ledgers'));
+  assert.ok(operands.includes('the policy covers 1 or 2 ledgers'));
+  assert.ok(operands.includes('5% of the pre-rebate tallage'));
+  assert.ok(operands.includes('1%'));
+  assert.ok(operands.includes('0%'));
+  assert.ok(steps.body.every((row) => row.length === 7 && row[6] !== ''));
+});
 test('excel: rounding row keeps its stated target in the operand', () => {
   const job = normalizeJob(
     createJob({
@@ -2384,11 +2577,13 @@ test('excel: worked inputs keep selected values with evidenced keys and transiti
   assert.deepEqual(byInput.get('Mystery factor XQZ').slice(1), ['unresolved — verify', '']);
 });
 
-test('excel: stated-value branches render output assignments per branch without invented else', () => {
+test('excel: stated-value branches share one descriptive output in an IF/ELSEIF chain', () => {
   // Live shape: a condition step with no explicit output whose branches
-  // state `<subject> is <value>`. Each branch keeps its subject as the
-  // assigned output with the stated value as the expression, in source
-  // order, with no ELSE invented between the independent branches.
+  // state `<subject> is <value>` for the same subject. Both branches carry
+  // the step's descriptive label as their output in one IF/ELSEIF/ENDIF
+  // chain, in source order, with no ELSE invented. Routine-level condition
+  // rows keep their own bare-subject outputs; only the step output — the
+  // one later steps reference — takes the descriptive label.
   const job = normalizeJob(
     createJob({
       document: createDocument({ filename: 'synthetic.pdf', pageCount: 1 }),
@@ -2399,13 +2594,14 @@ test('excel: stated-value branches render output assignments per branch without 
           'If the policy covers 3 to 10 ledgers, the rebate is 5% of the pre-rebate tallage.',
           'If the policy covers 1 or 2 ledgers, the rebate is 0%.',
         ],
-        steps: [
-          'Step 6 — Ledger rebate: If the policy covers 3 to 10 ledgers, the rebate is 5% of the pre-rebate tallage. If the policy covers 1 or 2 ledgers, the rebate is 0%.',
-        ],
+        steps: [{
+          sequence: 6,
+          instruction: 'Step 6 — Ledger rebate: If the policy covers 3 to 10 ledgers, the rebate is 5% of the pre-rebate tallage. If the policy covers 1 or 2 ledgers, the rebate is 0%.',
+        }],
       }],
     })
   );
-  assert.equal(job.routines[0].steps_detailed[0].output, 'rebate');
+  assert.equal(job.routines[0].steps_detailed[0].output, 'Ledger rebate');
   assert.equal(job.routines[0].conditions_detailed[0].output, 'rebate');
   assert.equal(job.routines[0].conditions_detailed[1].output, 'rebate');
   job.issues = validateJob(job);
@@ -2417,16 +2613,52 @@ test('excel: stated-value branches render output assignments per branch without 
   const opIndex = steps.header.indexOf('Op');
   assert.ok(steps.body.every((row) => row[opIndex] !== 'REVIEW'), `unexpected REVIEW rows: ${JSON.stringify(steps.body)}`);
   const instructions = steps.body.map((row) => row[1]);
-  assert.deepEqual(instructions.filter((v) => v === 'IF').length, 2);
-  assert.deepEqual(instructions.filter((v) => v === 'ENDIF').length, 2);
+  assert.deepEqual(instructions.filter((v) => v === 'IF').length, 1);
+  assert.deepEqual(instructions.filter((v) => v === 'ELSEIF').length, 1);
+  assert.deepEqual(instructions.filter((v) => v === 'ENDIF').length, 1);
   assert.ok(!instructions.includes('ELSE'), `invented ELSE row: ${JSON.stringify(steps.body)}`);
+  assert.deepEqual(steps.body.map((row) => row[0]), ['6.1', '6.2', '6.3', '6.4', '6.5']);
   const operands = steps.body.map((row) => row[4]);
   assert.ok(operands.includes('the policy covers 3 to 10 ledgers'));
   assert.ok(operands.includes('the policy covers 1 or 2 ledgers'));
-  assert.ok(steps.body.some((row) => row[1] === 'rebate' && row[2] === '<--' && row[4] === '5% of the pre-rebate tallage'));
-  assert.ok(steps.body.some((row) => row[1] === 'rebate' && row[2] === '<--' && row[4] === '0%'));
+  assert.ok(steps.body.some((row) => row[1] === 'Ledger rebate' && row[2] === '<--' && row[4] === '5% of the pre-rebate tallage'));
+  assert.ok(steps.body.some((row) => row[1] === 'Ledger rebate' && row[2] === '<--' && row[4] === '0%'));
   assert.ok(steps.body.every((row) => row.length === 7 && row[6] !== ''));
   const conds = sectionRows(values, 'Conditions');
   assert.deepEqual(conds.body[0].slice(0, 3), ['1', 'If the policy covers 3 to 10 ledgers, the rebate is 5% of the pre-rebate tallage.', 'the rebate is 5% of the pre-rebate tallage.']);
   assert.deepEqual(conds.body[1].slice(0, 3), ['2', 'If the policy covers 1 or 2 ledgers, the rebate is 0%.', 'the rebate is 0%.']);
+});
+
+test('excel: later step subtracting the branch value traces to the chained branches', () => {
+  // The step after a same-subject branch chain subtracts the branch value
+  // by its descriptive name: the subtraction operand traces back to the
+  // branch rows, proving one consistent name across branches and use.
+  const job = normalizeJob(
+    createJob({
+      document: createDocument({ filename: 'synthetic.pdf', pageCount: 1 }),
+      routines: [{
+        name: 'Ledger Tally Procedure', kind: 'calculation_steps', sourcePages: [1],
+        evidenceText: 'synthetic tally procedure with rebate chain and subtraction',
+        steps: [
+          { sequence: 6, instruction: 'Step 6 — Ledger rebate: If the policy covers 3 to 10 ledgers, the rebate is 5% of the pre-rebate tallage. If the policy covers 1 or 2 ledgers, the rebate is 0%.' },
+          { sequence: 7, instruction: 'Step 7 — Final tallage: Subtract the ledger rebate from the pre-rebate tallage.' },
+        ],
+      }],
+    })
+  );
+  assert.equal(job.routines[0].steps_detailed[0].output, 'Ledger rebate');
+  assert.deepEqual(job.routines[0].steps_detailed[1].inputs, ['pre-rebate tallage', 'Ledger rebate']);
+  assert.equal(job.routines[0].steps_detailed[1].expression, 'pre-rebate tallage - Ledger rebate');
+  job.issues = validateJob(job);
+  const zip = readZip(buildWorkbookXlsx(job, { source: 'recorded' }));
+  const workbook = zip.get('xl/workbook.xml');
+  const strings = zip.get('xl/sharedStrings.xml');
+  const values = sheetRowsAsValues(sheetXmlByName(zip, workbook, 'Ledger Tally Procedure'), strings);
+  const steps = sectionRows(values, 'Steps');
+  const bySeq = new Map(steps.body.map((row) => [row[0], row]));
+  assert.deepEqual(bySeq.get('6.2').slice(0, 6), ['6.2', 'Ledger rebate', '<--', '', '5% of the pre-rebate tallage', '']);
+  assert.deepEqual(bySeq.get('6.4').slice(0, 6), ['6.4', 'Ledger rebate', '<--', '', '0%', '']);
+  assert.equal(bySeq.get('7.2')[2], '-');
+  assert.equal(bySeq.get('7.2')[4], 'Ledger rebate');
+  assert.match(bySeq.get('7.2')[6], /uses Ledger rebate from step 6\.4/);
 });

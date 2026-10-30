@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cleanStepInputValue, createJob, createDocument, findTableCandidates, normalizeJob, resolveTableReference } from '../src/models.js';
+import { assignmentTargetFromBranch, cleanStepInputValue, conditionsMutuallyExclusive, createJob, createDocument, findTableCandidates, normalizeJob, resolveTableReference, splitBranchIsValue, splitSequentialConditionParts } from '../src/models.js';
 
 test('normalizeJob assigns stable sequential IDs and preserves evidence', () => {
   const job = normalizeJob(
@@ -759,4 +759,39 @@ test('models: branches without a stated value keep no condition output', () => {
   assert.equal(det[0].true_branch, 'the tallage is reviewed annually.');
   assert.equal(det[3].true_branch, 'IF ledger zone is metro THEN apply metro factor ELSE apply base factor');
   assert.equal(det[3].false_branch, 'refer');
+});
+
+test('models: branch readers shared with the chain renderer agree on subjects and parts', () => {
+  // assignmentTargetFromBranch and splitSequentialConditionParts are the
+  // shared contract behind same-subject chain detection: every branch form
+  // the renderer may chain resolves to the same subject reading here.
+  assert.equal(assignmentTargetFromBranch('the rebate is 5% of the pre-rebate tallage.'), 'rebate');
+  assert.equal(assignmentTargetFromBranch('rebate is 0%'), 'rebate');
+  assert.equal(assignmentTargetFromBranch('set tally_total to 350'), 'tally_total');
+  assert.equal(assignmentTargetFromBranch('band_total = base + margin'), 'band_total');
+  assert.equal(assignmentTargetFromBranch('refer for manual review'), null);
+  assert.equal(splitBranchIsValue('the ledger is coastal'), null);
+  assert.deepEqual(
+    splitSequentialConditionParts('If the policy covers 3 to 10 ledgers, the rebate is 5%. If the policy covers 1 or 2 ledgers, the rebate is 0%.'),
+    [
+      'If the policy covers 3 to 10 ledgers, the rebate is 5%',
+      'If the policy covers 1 or 2 ledgers, the rebate is 0%',
+    ]
+  );
+  assert.equal(splitSequentialConditionParts('If the policy covers 3 to 10 ledgers, the rebate is 5%.'), null);
+  assert.equal(splitSequentialConditionParts('Review tallages annually.'), null);
+});
+test('models: mutual exclusivity needs disjoint coverage of one measure', () => {
+  // Disjoint ranges on identical measure wording establish exclusivity;
+  // overlaps, touching endpoints, differing measures, thresholds, and
+  // numberless prose all decline so chains are never inferred.
+  assert.equal(conditionsMutuallyExclusive('the policy covers 3 to 10 vehicles', 'the policy covers 1 or 2 vehicles'), true);
+  assert.equal(conditionsMutuallyExclusive('the policy covers 3 to 10 vehicles', 'the policy covers 5 to 12 vehicles'), false);
+  assert.equal(conditionsMutuallyExclusive('the policy covers 1 to 5 vehicles', 'the policy covers 5 to 10 vehicles'), false);
+  assert.equal(conditionsMutuallyExclusive('the policy covers 3 to 10 vehicles', 'the policy covers 1 or 2 trailers'), false);
+  assert.equal(conditionsMutuallyExclusive('fleet size exceeds 30 units', 'fleet size exceeds 25 units'), false);
+  assert.equal(conditionsMutuallyExclusive('the policy covers up to 10 vehicles', 'the policy covers 1 or 2 vehicles'), false);
+  assert.equal(conditionsMutuallyExclusive('the ledger is coastal', 'the ledger is inland'), false);
+  assert.equal(conditionsMutuallyExclusive('the policy covers 5 vehicles', 'the policy covers 6 to 10 vehicles'), true);
+  assert.equal(conditionsMutuallyExclusive('the policy covers 3 to 10 vehicles', 'the policy covers 3 to 10 vehicles'), false);
 });

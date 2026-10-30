@@ -297,6 +297,7 @@ export function createRatingRoutine({
       resolveStepBackrefs(finalDetailed);
     }
   }
+  canonicalizeStepReferences(finalDetailed);
   return {
     id: id ?? routine_id ?? null,
     name: String(title ?? name ?? ''),
@@ -2433,8 +2434,9 @@ function extractConditionalClause(body) {
 
 // Assignment target of one branch ("set X to", "X is set to", "store as X",
 // "X = ...", "X equals ...", "X is <stated value>"). Generic syntax, not
-// domain vocabulary.
-function assignmentTargetFromBranch(branch) {
+// domain vocabulary. Exported for the Excel chain renderer so the
+// same-subject merge gate reads branches exactly as normalization does.
+export function assignmentTargetFromBranch(branch) {
   const text = String(branch ?? '');
   if (!text.trim()) return null;
   let m = /\bset\s+([A-Za-z_]\w*)\s+to\b/i.exec(text);
@@ -2485,6 +2487,194 @@ export function splitBranchIsValue(branch) {
   if (!/^[-+₹$€£¥\d.\u2212]/.test(value)) return null;
   if (!/\d/.test(value)) return null;
   return { subject, value };
+}
+
+// Split a conditional clause stating several sequential IF/WHEN sentences
+// (`IF A, X. IF B, Y.`) into its parts in source order, or null when the
+// clause holds fewer than two. Shared by step-output naming and the Excel
+// chain renderer so both agree on the same boundaries. Generic sentence
+// shapes, never branch contents.
+export function splitSequentialConditionParts(clause) {
+  const parts = String(clause ?? '')
+    .split(/(?<=[.;?!])\s+(?=(?:if|when)\b)/i)
+    .map((s) => String(s ?? '').trim().replace(/[.;]+$/, '').trim())
+    .filter(Boolean);
+  return parts.length >= 2 ? parts : null;
+}
+
+// Normalized assignment subject shared by every sequential IF part of a
+// conditional clause, or an empty string when any part states no confident
+// subject or the parts disagree. Single-IF clauses qualify trivially
+// through the same per-part reading.
+function unanimousBranchSubjectKey(clause) {
+  const parts = splitSequentialConditionParts(clause) ?? [String(clause ?? '').trim()];
+  let key = '';
+  for (const part of parts) {
+    const parsed = parseConditionalBranches(part);
+    const subject = parsed
+      ? (assignmentTargetFromBranch(parsed.true_branch) ?? assignmentTargetFromBranch(parsed.false_branch))
+      : null;
+    const subjectKey = subject ? normalizeVariableKey(subject) : '';
+    if (!subjectKey) return '';
+    if (!key) key = subjectKey;
+    else if (key !== subjectKey) return '';
+  }
+  return key;
+}
+
+// True when the branch subject's words are the step label's trailing words
+// (`discount` in `Fleet discount`), compared case-insensitively: the label
+// names the same value more fully. Unrelated labels, and subjects longer
+// than the label, stay false so the label is never adopted without
+// demonstrated agreement.
+function labelExtendsSubject(label, subject) {
+  const labelWords = String(label ?? '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  const subjectWords = String(subject ?? '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  if (labelWords.length === 0 || subjectWords.length === 0) return false;
+  if (subjectWords.length > labelWords.length) return false;
+  return subjectWords.every((word, i) => word === labelWords[labelWords.length - subjectWords.length + i]);
+}
+
+// A conditional step's descriptive output: the step label (`Step 6 — Fleet
+// discount: If ...`) when the instruction carries that label before a
+// colon, every sequential branch assigns the same subject matching the
+// derived output, and the label extends the branch subject. The label is
+// source evidence for the fuller name, so both branches and later steps
+// referencing it stay consistent without inventing a technical variable.
+// Returns '' unless every check holds.
+function descriptiveConditionOutput(instruction, clause, output) {
+  if (!output) return '';
+  const label = stepLabelForOutput(instruction);
+  if (!label) return '';
+  const stripped = stripStepLabel(instruction).trim();
+  if (!stripped.startsWith(label)) return '';
+  if (!stripped.slice(label.length).trimStart().startsWith(':')) return '';
+  const unanimous = unanimousBranchSubjectKey(clause);
+  if (!unanimous || unanimous !== normalizeVariableKey(output)) return '';
+  if (!labelExtendsSubject(label, output)) return '';
+  return label;
+}
+// Canonicalize each step's downstream references to the exact display name
+// of the producing step — the nearest preceding step with the same
+// normalized output and a structured operation — including capitalization:
+// input terms take the producer's display name, and the same term
+// occurrences in the step expression follow, so the calculation chain names
+// one value one way. Operands naming a produced variable canonicalize the
+// same way, carrying an in-place output (same variable as the operand) with
+// them. Definitions keep their own form: step outputs naming a new value,
+// and references without a structured producer, stay untouched, as do
+// instructions, evidence, and cells.
+function canonicalizeStepReferences(detailed) {
+  const list = Array.isArray(detailed) ? detailed : [];
+  const producers = new Map();
+  for (const det of list) {
+    if (!det || typeof det !== 'object') continue;
+    const inputs = Array.isArray(det.inputs) ? det.inputs : [];
+    if (inputs.length > 0) {
+      det.inputs = inputs.map((term) => producers.get(normalizeVariableKey(term)) || term);
+      if (typeof det.expression === 'string' && det.expression) {
+        det.expression = canonicalizeExpressionTerms(det.expression, inputs, det.operand, producers);
+      }
+    }
+    const operand = String(det.operand ?? '').trim();
+    if (operand) {
+      const display = producers.get(normalizeVariableKey(operand));
+      if (display && display !== operand) {
+        const inPlace = normalizeVariableKey(det.output) === normalizeVariableKey(operand);
+        det.operand = display;
+        if (inPlace) det.output = display;
+      }
+    }
+    const output = String(det.output ?? '').trim();
+    const operation = String(det.operation ?? '').trim();
+    if (output && operation && normalizeVariableKey(output)) {
+      producers.set(normalizeVariableKey(output), output);
+    }
+  }
+}
+
+// Rewrite reference-term occurrences in a step expression to producer
+// display names: each evidenced term (inputs plus operand) recases
+// case-insensitively as a whole phrase, so `fleet discount` becomes `Fleet
+// discount` while longer identifiers never match. Terms with no producer
+// pass through untouched.
+function canonicalizeExpressionTerms(expression, inputs, operand, producers) {
+  let out = String(expression ?? '');
+  const seen = new Set();
+  const terms = [...(Array.isArray(inputs) ? inputs : []), operand];
+  for (const term of terms) {
+    const display = producers.get(normalizeVariableKey(term));
+    if (!display) continue;
+    const words = String(term ?? '').trim().split(/\s+/).filter(Boolean);
+    if (words.length === 0) continue;
+    const pattern = words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+');
+    const key = pattern.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out = out.replace(new RegExp(`(?<![A-Za-z0-9_-])${pattern}(?![A-Za-z0-9_-])`, 'gi'), () => display);
+  }
+  return out;
+}
+
+// Threshold markers that leave a numeric coverage unbounded (`exceeds 30`,
+// `up to 10`, `1 or more`): exclusivity can never be established, so such
+// conditions always decline. Generic comparison wording, never measure
+// contents. Symbolic comparators decline the same way.
+const EXCLUSIVITY_THRESHOLD_WORDS = /\b(exceeds|exceed|exceeding|more than|greater than|less than|fewer than|at least|at most|up to|or more|or less|over|above|under|below)\b/i;
+const EXCLUSIVITY_SYMBOLS = /[><=]/;
+const EXCLUSIVITY_NUMBER = /\d[\d,]*(?:\.\d+)?/g;
+const EXCLUSIVITY_GAP = /^[\s,–—-]*(to|through|thru|or)?[\s,–—-]*$/i;
+const EXCLUSIVITY_GAP_JOINER = /to|through|thru|or|[,–—-]/i;
+
+// Numeric coverage of one condition as { residue, min, max }, or null when
+// the condition does not state exactly one bounded numeric cluster: no
+// numbers, threshold markers, symbolic comparators, or numbers outside the
+// cluster all decline. Spans (`3 to 10`, `3-10`) and enumerations (`1 or 2`,
+// `1, 2, 3`) bound coverage; `and`-joined numbers never cluster
+// (conjunction, not alternation). The residue is the condition wording with
+// the cluster folded to `#`, so identical measures compare equal.
+function conditionCoverage(condition) {
+  const text = String(condition ?? '');
+  if (!text.trim() || EXCLUSIVITY_SYMBOLS.test(text)) return null;
+  if (EXCLUSIVITY_THRESHOLD_WORDS.test(text)) return null;
+  const matches = [...text.matchAll(EXCLUSIVITY_NUMBER)];
+  if (matches.length === 0) return null;
+  const numbers = [];
+  for (const m of matches) {
+    const value = Number(m[0].replace(/,/g, ''));
+    if (!Number.isFinite(value)) return null;
+    let start = m.index;
+    let signed = value;
+    const sign = text[start - 1];
+    if ((sign === '-' || sign === '−') && !/[\d–—-]/.test(text[start - 2] ?? '')) {
+      start -= 1;
+      signed = -signed;
+    }
+    const end = m.index + m[0].replace(/,+$/, '').length;
+    numbers.push({ value: signed, start, end });
+  }
+  for (let i = 1; i < numbers.length; i += 1) {
+    const gap = text.slice(numbers[i - 1].end, numbers[i].start).replace(/[%‰$€£¥]/g, '');
+    if (!gap.trim() || !EXCLUSIVITY_GAP.test(gap) || !EXCLUSIVITY_GAP_JOINER.test(gap)) return null;
+  }
+  const residue = (text.slice(0, numbers[0].start) + '#' + text.slice(numbers[numbers.length - 1].end))
+    .toLowerCase().replace(/\s+/g, ' ').trim();
+  const values = numbers.map((n) => n.value);
+  return { residue, min: Math.min(...values), max: Math.max(...values) };
+}
+
+// True when two condition wordings are demonstrably mutually exclusive:
+// identical measure wording around one bounded numeric cluster each, with
+// strictly disjoint coverage. Touching endpoints, thresholds, and prose
+// stay false: exclusivity must be established, never guessed. Exported for
+// the Excel chain renderer so same-subject branches chain only over
+// disjoint conditions.
+export function conditionsMutuallyExclusive(a, b) {
+  const first = conditionCoverage(a);
+  const second = conditionCoverage(b);
+  if (!first || !second) return false;
+  if (first.residue !== second.residue) return false;
+  return first.max < second.min || second.max < first.min;
 }
 
 // Right-hand variables of one branch: values read (after equals, after
@@ -3392,6 +3582,8 @@ function deriveStepDetail(text) {
       const output = assignmentTargetFromBranch(parsed.true_branch)
         ?? assignmentTargetFromBranch(parsed.false_branch);
       if (output) entry.output = output;
+      const descriptive = output ? descriptiveConditionOutput(full, clause, output) : '';
+      if (descriptive) entry.output = descriptive;
       const branchText = `${parsed.true_branch ?? ''} ${parsed.false_branch ?? ''}`;
       const condVars = parsed.condition ? conditionInputVars(parsed.condition, stripNestedConditionClauses(branchText), output) : [];
       const rhsVars = [...rhsVarsFromBranch(parsed.true_branch), ...rhsVarsFromBranch(parsed.false_branch)];

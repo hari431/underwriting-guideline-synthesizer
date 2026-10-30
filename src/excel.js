@@ -17,7 +17,7 @@
 // Cover and the summaries link each asset name to its detail worksheet.
 // Fixed ZIP timestamps keep builds byte-deterministic.
 import { deflateRawSync } from 'node:zlib';
-import { cleanStepInputValue, cleanStepOutputValue, extractCellCodeTokens, normalizeVariableKey, parseAssignmentOperands, resolveTableReference, sanitizeExplicitStep, splitAssignmentSegment, splitBranchIsValue, splitHyphenSubtraction, splitTopLevel, tableCellCodes, tableReferenceTerms } from './models.js';
+import { assignmentTargetFromBranch, cleanStepInputValue, cleanStepOutputValue, conditionsMutuallyExclusive, extractCellCodeTokens, normalizeVariableKey, parseAssignmentOperands, resolveTableReference, sanitizeExplicitStep, splitAssignmentSegment, splitBranchIsValue, splitHyphenSubtraction, splitSequentialConditionParts, splitTopLevel, tableCellCodes, tableReferenceTerms } from './models.js';
 
 // ---------- CRC32 + minimal ZIP writer ----------
 
@@ -1735,11 +1735,8 @@ function expandCheckEntry(entry) {
 // yields null so the caller keeps the single-chain reading instead of
 // inventing boundaries. Generic sentence shapes, never branch contents.
 function splitSequentialConditions(clause) {
-  const parts = String(clause ?? '')
-    .split(/(?<=[.;?!])\s+(?=(?:if|when)\b)/i)
-    .map((s) => String(s ?? '').trim().replace(/[.;]+$/, '').trim())
-    .filter(Boolean);
-  if (parts.length < 2) return null;
+  const parts = splitSequentialConditionParts(clause);
+  if (!parts) return null;
   if (!parts.every((p) => parseRatingConditionChain(p))) return null;
   return parts;
 }
@@ -1755,6 +1752,43 @@ function hasAssignmentConditionalForm(clause) {
 }
 // A percent value (`5%`, `5% of X`) states a value, not a modulo operation.
 const PERCENT_VALUE_PROSE = /%\s*(of\b|$)/;
+
+// Merge sequential IF sentences into one IF -> ELSEIF chain when they are
+// demonstrably mutually exclusive alternatives on the same subject: every
+// part states a lone IF with no ELSE/ELSEIF of its own, every pair of
+// conditions covers disjoint ranges of one measure, and every branch
+// assigns the same subject. Returns the merged stages (first IF,
+// rest ELSEIF) or null when the parts read as independent conditions. No
+// ELSE is ever invented: a chain without a stated fallback ends at ENDIF.
+function mergeSequentialStages(parts) {
+  const stages = [];
+  const seenConditions = new Set();
+  let subjectKey = '';
+  for (const part of parts) {
+    const parsed = parseRatingConditionChain(part);
+    if (!parsed || (parsed.stages ?? []).length !== 1) return null;
+    const [stage] = parsed.stages;
+    if (stage.keyword !== 'IF') return null;
+    if (String(parsed.elseBranch ?? '').trim()) return null;
+    if (!String(stage.branch ?? '').trim()) return null;
+    const conditionKey = normalizeVariableKey(stage.condition);
+    if (!conditionKey || seenConditions.has(conditionKey)) return null;
+    seenConditions.add(conditionKey);
+    const subject = assignmentTargetFromBranch(stage.branch);
+    const key = subject ? normalizeVariableKey(subject) : '';
+    if (!key) return null;
+    if (!subjectKey) subjectKey = key;
+    else if (subjectKey !== key) return null;
+    stages.push(stage);
+  }
+  if (stages.length < 2) return null;
+  for (let i = 0; i < stages.length; i += 1) {
+    for (let j = i + 1; j < stages.length; j += 1) {
+      if (!conditionsMutuallyExclusive(stages[i].condition, stages[j].condition)) return null;
+    }
+  }
+  return stages.map((stage, idx) => (idx === 0 ? stage : { ...stage, keyword: 'ELSEIF' }));
+}
 
 function expandConditionEntry(entry, clauseOverride) {
   const det = entry?.det ?? null;
@@ -1784,22 +1818,30 @@ function expandConditionEntry(entry, clauseOverride) {
   }
   const cleanedClause = clause.replace(/[.;]+$/, '').trim() || clause;
   const sequential = splitSequentialConditions(cleanedClause);
+  let stages;
+  let elseBranch;
   if (sequential) {
-    // Independent branches render as sequential IF/ENDIF groups in source
-    // order with no ELSE invented between them.
-    const groups = [];
-    for (const part of sequential) {
-      const group = expandConditionEntry(entry, part);
-      if (!group) return null;
-      groups.push(...group);
+    const merged = mergeSequentialStages(sequential);
+    if (!merged) {
+      // Independent branches render as sequential IF/ENDIF groups in source
+      // order with no ELSE invented between them.
+      const groups = [];
+      for (const part of sequential) {
+        const group = expandConditionEntry(entry, part);
+        if (!group) return null;
+        groups.push(...group);
+      }
+      return groups;
     }
-    return groups;
+    stages = merged;
+    elseBranch = '';
+  } else {
+    const parsed = clause ? parseRatingConditionChain(cleanedClause) : null;
+    if (!parsed) return null;
+    stages = (parsed.stages ?? []).filter((s) => String(s?.branch ?? '').trim());
+    elseBranch = String(parsed.elseBranch ?? '').trim();
+    if (stages.length === 0 && !elseBranch) return null;
   }
-  const parsed = clause ? parseRatingConditionChain(cleanedClause) : null;
-  if (!parsed) return null;
-  const stages = (parsed.stages ?? []).filter((s) => String(s?.branch ?? '').trim());
-  const elseBranch = String(parsed.elseBranch ?? '').trim();
-  if (stages.length === 0 && !elseBranch) return null;
   const rows = [];
   const pushBranchRow = (branch, kind) => {
     const value = extractBranchValue(branch);
