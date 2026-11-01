@@ -1,6 +1,6 @@
 # RateCraft — AI-Powered Underwriting Extraction Engine
 
-Transform complex underwriting guideline PDFs into structured, traceable rating requirements for analyst review.
+From P&C guidelines to review-ready Excel
 
 RateCraft is an analyst-assistance tool for Property & Casualty (P&C) insurance: Meta Muse Spark 1.3 extracts rating tables and rating routines from P&C underwriting guideline PDFs, the RateCraft Extraction Engine normalizes them and resolves references with deterministic validation, and Excel export produces structured requirements with source evidence and warnings for analyst review.
 

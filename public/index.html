@@ -163,6 +163,11 @@ try { if (localStorage.getItem('ratecraft.theme') === 'dark') document.documentE
   .workspace-inner { max-width: 1080px; margin: 0 auto; padding-bottom: 1rem; }
   .topbar h1 { font-size: 1.5rem; margin: 0; font-weight: 800; letter-spacing: -0.02em; }
   .topbar .sub { color: var(--muted); margin: 0.3rem 0 0; font-size: 0.9rem; max-width: 62ch; }
+  .engine-id { display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap; margin: 0.35rem 0 0; font-size: 0.92rem; }
+  .engine-id .ic { font-size: 1.05rem; color: var(--forest-600); }
+  .engine-id strong { font-weight: 700; letter-spacing: -0.01em; }
+  .engine-id .engine-sub { color: var(--muted); font-size: 0.82rem; }
+  [data-theme="dark"] .engine-id .ic { color: #8fd6b4; }
   ::placeholder { color: var(--muted); opacity: 0.85; }
   section { margin-top: 1.75rem; }
   section > h2 {
@@ -903,7 +908,12 @@ try { if (localStorage.getItem('ratecraft.theme') === 'dark') document.documentE
       <div class="workspace-inner">
         <header class="topbar">
           <h1>RateCraft</h1>
-          <p class="sub">Transform complex underwriting guideline PDFs into structured, traceable rating requirements for analyst review. Built for Property &amp; Casualty (P&amp;C) underwriting teams.</p>
+          <p class="engine-id">
+            <svg class="ic" aria-hidden="true"><use href="#i-routine"></use></svg>
+            <strong>Extraction Engine</strong>
+            <span class="engine-sub">The processing core for P&amp;C underwriting requirements.</span>
+          </p>
+          <p class="sub">Transform complex P&amp;C underwriting guidelines into structured, traceable rating requirements for analyst review.</p>
         </header>
 
         <section class="home-intro" aria-label="What you'll get">
@@ -911,22 +921,22 @@ try { if (localStorage.getItem('ratecraft.theme') === 'dark') document.documentE
           <div class="intro-grid">
             <article class="intro-card">
               <h3><svg class="ic" aria-hidden="true"><use href="#i-table"></use></svg>Rating Tables</h3>
-              <p>Headers, rows, footnotes and purpose from P&amp;C underwriting guidelines, extracted into tables you can review and correct.</p>
+              <p>Extract rating tables, including headers, rows, footnotes, and purpose, for analyst review.</p>
             </article>
             <article class="intro-card">
               <h3><svg class="ic" aria-hidden="true"><use href="#i-routine"></use></svg>Rating Routines</h3>
-              <p>P&amp;C rating formulas, conditions and calculation steps shown as Excel-style step detail.</p>
+              <p>Structure P&amp;C rating formulas, conditions, and calculation steps in an Excel-friendly format.</p>
             </article>
             <article class="intro-card">
               <h3><svg class="ic" aria-hidden="true"><use href="#i-evidence"></use></svg>Validation &amp; Source Evidence</h3>
-              <p>Deterministic checks by the RateCraft Extraction Engine flag issues for analyst review; every item links back to its source pages.</p>
+              <p>Deterministic checks flag issues for analyst review, with source-page references to support traceability.</p>
             </article>
           </div>
-          <p class="trust-note"><svg class="ic" aria-hidden="true"><use href="#i-review"></use></svg><span><strong>Analyst review required.</strong> RateCraft is an analyst-assistance tool for P&amp;C rating work — extracted results are a starting point, and source gaps and conflicts stay flagged in Review until you resolve or acknowledge them. Live runs extract with Meta Muse Spark 1.3; the offline sample replays a recorded extraction with no model call. The RateCraft Extraction Engine then normalizes tables and routines, resolves references, and runs deterministic validation before Excel export.</span></p>
+          <p class="trust-note"><svg class="ic" aria-hidden="true"><use href="#i-review"></use></svg><span><strong>Analyst review required.</strong> RateCraft assists P&amp;C analysts — source gaps and conflicts stay flagged for review until resolved. Live runs extract with Meta Muse Spark 1.3; the offline sample replays a recorded extraction with no model call. The RateCraft Extraction Engine then normalizes tables and routines, resolves references, and runs deterministic validation before Excel export.</span></p>
         </section>
 
         <section id="upload">
-          <h2><span class="step-no">1</span> <svg class="ic sec-ic" aria-hidden="true"><use href="#i-upload"></use></svg> Upload <span class="hint">P&amp;C guideline PDF in — reviewed Excel out</span></h2>
+          <h2><span class="step-no">1</span> <svg class="ic sec-ic" aria-hidden="true"><use href="#i-upload"></use></svg> Upload <span class="hint">From P&amp;C guidelines to review-ready Excel</span></h2>
           <div class="panel">
             <div class="docbar" id="docBar" hidden>
               <svg class="ic docbar-ic" aria-hidden="true"><use href="#i-doc"></use></svg>

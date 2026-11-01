@@ -9,7 +9,7 @@ async function readReadme() {
 test('readme copy: engine positioning and tagline', async () => {
   const md = await readReadme();
   assert.match(md, /^# RateCraft .*AI-Powered Underwriting Extraction Engine/m, 'title carries engine positioning');
-  assert.ok(md.includes('Transform complex underwriting guideline PDFs into structured, traceable rating requirements for analyst review.'), 'tagline present');
+  assert.ok(md.includes('From P&C guidelines to review-ready Excel'), 'tagline present');
   assert.ok(md.includes('RateCraft Extraction Engine'), 'engine named');
 });
 

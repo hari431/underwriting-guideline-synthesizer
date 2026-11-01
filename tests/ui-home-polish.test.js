@@ -66,7 +66,7 @@ test('ui home polish: engine positioning, tagline, and honest extraction copy', 
   const html = await readHome();
   assert.match(html, /<title>RateCraft [^<]*AI-Powered Underwriting Extraction Engine<\/title>/, 'title carries engine positioning');
   assert.match(html, /<h1>RateCraft<\/h1>/, 'product name unchanged');
-  assert.ok(html.includes('Transform complex underwriting guideline PDFs into structured, traceable rating requirements for analyst review.'), 'tagline present');
+  assert.ok(html.includes('Transform complex P&amp;C underwriting guidelines into structured, traceable rating requirements for analyst review.'), 'tagline present');
   assert.ok(html.includes('Meta Muse Spark 1.3'), 'extraction layer named');
   assert.ok(html.includes('RateCraft Extraction Engine'), 'engine named');
   assert.match(html, /offline sample replays a recorded extraction/, 'offline playback distinguished');
