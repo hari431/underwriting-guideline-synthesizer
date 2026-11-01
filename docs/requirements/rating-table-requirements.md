@@ -2,7 +2,9 @@
 
 ## Purpose
 
-Define how RateCraft should identify, structure, validate, review, and export rating tables from underwriting guidelines.
+Define how RateCraft should identify, structure, validate, review, and export rating tables from Property & Casualty (P&C) underwriting guidelines.
+
+RateCraft is an analyst-assistance tool for the P&C underwriting workflow: extraction drafts rating requirements for analyst review, and validation flags structural and traceability issues without guaranteeing business correctness.
 
 These requirements are format-neutral. Examples below are synthetic and intentionally use changed names and values. They are not production rates or instructions to implement a particular insurance platform.
 

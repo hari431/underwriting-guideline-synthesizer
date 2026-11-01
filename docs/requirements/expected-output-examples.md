@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document gives the implementation and test team examples of the structure RateCraft should produce. The examples are synthetic and intentionally use changed names, factor values, and calculation steps. They are not production rating guidance.
+This document gives the implementation and test team examples of the structure RateCraft should produce when drafting P&C rating requirements from underwriting guidelines. The examples are synthetic and intentionally use changed names, factor values, and calculation steps. They are not production rating guidance.
 
 Status labels follow [README.md](README.md). UI and export shapes below are **Implemented and verified**; extraction fidelity from any real source is an **Unverified capability** that must be checked against source evidence.
 

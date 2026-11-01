@@ -2,9 +2,15 @@
 
 Transform complex underwriting guideline PDFs into structured, traceable rating requirements for analyst review.
 
-RateCraft is an AI-powered extraction engine: Meta Muse Spark 1.3 extracts rating tables and rating routines from guideline PDFs, the RateCraft Extraction Engine normalizes them and resolves references with deterministic validation, and Excel export produces structured requirements with source evidence and warnings for analyst review.
+RateCraft is an analyst-assistance tool for Property & Casualty (P&C) insurance: Meta Muse Spark 1.3 extracts rating tables and rating routines from P&C underwriting guideline PDFs, the RateCraft Extraction Engine normalizes them and resolves references with deterministic validation, and Excel export produces structured requirements with source evidence and warnings for analyst review.
 
 Zero runtime dependencies — Node.js 20+ only. Demo scope: one guideline PDF per run. No rating-engine code generation or platform-specific implementation.
+
+## Industry context: Property & Casualty (P&C) insurance
+
+In the P&C insurance industry, underwriting guidelines contain complex rating tables, factors, formulas, eligibility rules, conditions, and calculation dependencies. Translating these documents into structured rating requirements is time-consuming and requires careful interpretation, creating a risk of manual errors.
+
+RateCraft addresses this problem by drafting structured rating requirements from P&C underwriting guideline PDFs: AI extraction proposes rating tables and rating routines with source-page traceability, deterministic checks flag structural and traceability issues, analysts review and correct every item against its source evidence, and the reviewed result exports to Excel. Extraction is a best-effort draft — it is not always correct — and validation does not guarantee business correctness.
 
 ## Architecture
 
@@ -14,7 +20,7 @@ Zero runtime dependencies — Node.js 20+ only. Demo scope: one guideline PDF pe
 
 ## Problem
 
-Underwriting guidelines bury rating logic in long PDFs: rate tables, formulas, conditions, calculation steps, and dependencies. Manually transcribing them into rating or configuration work is slow, error-prone, and hard to trace back to the source page. RateCraft speeds up the first draft and keeps every item linked to its evidence — but the analyst still decides what is correct.
+In Property & Casualty (P&C) insurance, underwriting guidelines bury rating logic in long PDFs: rating tables, factors, formulas, eligibility rules, conditions, calculation steps, and dependencies. Manually transcribing them into rating requirements or configuration work is slow, error-prone, and hard to trace back to the source page. RateCraft speeds up the first draft and keeps every item linked to its evidence — but the analyst still decides what is correct.
 
 ## Key capabilities
 
@@ -26,7 +32,7 @@ Underwriting guidelines bury rating logic in long PDFs: rate tables, formulas, c
 
 ## Workflow
 
-1. **Upload PDF** — open http://localhost:3000 and upload one guideline PDF (`POST /api/jobs`, max 25 MB), or click **Load sample guideline (offline)** (`POST /api/demo/sample`) to replay a recorded extraction with no model call.
+1. **Upload PDF** — open http://localhost:3000 and upload one P&C underwriting guideline PDF (`POST /api/jobs`, max 25 MB), or click **Load sample guideline (offline)** (`POST /api/demo/sample`) to replay a recorded extraction with no model call.
 2. **Extract requirements** — the server ingests PDF text per page, runs extraction (live Meta model when enabled, otherwise recorded playback), then deterministic local stages: normalize → separate merged grids → expand record columns → infer column metadata → group step routines → validate.
 3. **Review warnings / source evidence** — check Extraction totals, browse and edit tables and routines, then work through the grouped Review view. **Save edits & re-validate** re-runs deterministic validation only — it never calls the model. Editing an item clears its acknowledgement.
 4. **Export Excel** — **Export Excel** downloads the workbook. Export with warnings is allowed; any `error` issue blocks the download until fixed.
@@ -35,14 +41,15 @@ Sidebar steps: Upload → Extract → Tables → Routines → Review → Export.
 
 ## Intended users
 
-- Business analysts and underwriting analysts drafting rating requirements from guideline PDFs.
-- Rating / policy-configuration analysts who need a traceable starting point (with source evidence) before entering rules in their own system.
-- Hackathon judges evaluating an analyst-in-the-loop extraction demo.
+- Business analysts and underwriting analysts drafting P&C rating requirements from underwriting guideline PDFs.
+- Rating / policy-configuration analysts who need a traceable starting point (with source evidence) before entering P&C rules in their own system.
+- Hackathon judges evaluating an analyst-in-the-loop extraction demo for the P&C underwriting workflow.
 
 ## Accuracy and review expectations
 
-- **Extraction can vary between runs.** Live model output is best-effort and may differ run to run, even with `temperature: 0`.
-- **Validation and the Excel build are deterministic for identical raw inputs** (same extractor output plus same edits produces the same issues and the same workbook bytes).
+- **RateCraft is an analyst-assistance tool.** It drafts rating requirements to speed up P&C underwriting analysis; it does not replace the analyst.
+- **Extraction can vary between runs.** Live model output is best-effort and may differ run to run, even with `temperature: 0`. AI extraction is not always correct.
+- **Validation and the Excel build are deterministic for identical raw inputs** (same extractor output plus same edits produces the same issues and the same workbook bytes). Validation checks structure and traceability only; it does not guarantee business correctness.
 - **Human review is required.** Every extraction must be checked against its source evidence before reuse. RateCraft does not verify that rates are correct and does not replace actuarial, underwriting, or compliance review.
 
 ## Excel export

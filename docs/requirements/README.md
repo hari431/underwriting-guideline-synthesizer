@@ -1,6 +1,8 @@
 # RateCraft Requirements Reference
 
-These documents define generic expected behavior for rating-table and rating-routine extraction. They live in `docs/requirements/` in the RateCraft repository.
+RateCraft is an analyst-assistance tool for the Property & Casualty (P&C) insurance underwriting workflow: it drafts structured rating requirements from P&C underwriting guideline PDFs so analysts can review, correct, and export them. Extraction is a best-effort draft and every result must be checked against its source evidence.
+
+These documents define generic expected behavior for rating-table and rating-routine extraction from P&C underwriting guidelines. They live in `docs/requirements/` in the RateCraft repository.
 
 ## Files
 
