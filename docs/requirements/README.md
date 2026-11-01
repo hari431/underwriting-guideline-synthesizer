@@ -32,6 +32,6 @@ These requirements stay generic on purpose: they name no source document, fixtur
 
 - Ingest covers text-based PDFs only: one PDF per run. Spreadsheet files are not accepted as upload input; the data model preserves a `source_type` field, but spreadsheet ingest is **Future work**.
 - Scanned-image and encrypted PDFs are out of scope.
-- Live model extraction is disabled by default and is an **Unverified capability**; recorded fixtures and the deterministic pipeline (normalize, separate, validate, review, export) are **Implemented and verified**.
+- Live model extraction is disabled by default and is an **Unverified capability**; recorded fixtures and the RateCraft Extraction Engine's deterministic pipeline (normalize, separate, validate, review, export) are **Implemented and verified**. AI extraction proposes results from the source document; the engine processes and validates those results without calling the model.
 
 This is a requirements reference only; it does not itself change the application's code.

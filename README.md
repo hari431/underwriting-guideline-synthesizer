@@ -18,6 +18,16 @@ RateCraft addresses this problem by drafting structured rating requirements from
 - **RateCraft Extraction Engine — normalization and validation.** Deterministic local stages normalize text, separate merged grids, expand record columns, infer column metadata, group step routines, resolve references, and validate: structural breaks become `error` issues, uncertain findings become `warning` issues.
 - **Excel export — review-ready requirements.** The workbook carries structured requirements, source evidence, and analyst-review warnings (one sheet per table/routine plus an Issues sheet). Export with warnings is allowed; errors block the download until fixed.
 
+## RateCraft Extraction Engine
+
+AI extraction and the engine are separate steps. AI extraction reads the underwriting guideline and proposes rating tables and rating routines; the RateCraft Extraction Engine then processes those results locally — it never calls the model. Its responsibilities:
+
+- Accepts the extraction output (`tables` and `routines` with source pages and evidence).
+- Normalizes rating tables and rating routines (separates merged grids, expands record columns, infers column metadata, groups step routines).
+- Resolves references and dependencies where supported (table lookups, routine outputs, continuation links).
+- Runs deterministic validation and identifies issues for analyst review (`error` for structural breaks, `warning` for uncertain findings). These checks cover structure and traceability only; they do not guarantee business correctness.
+- Supports traceable Excel export of the reviewed requirements (one sheet per table/routine plus an Issues sheet).
+
 ## Problem
 
 In Property & Casualty (P&C) insurance, underwriting guidelines bury rating logic in long PDFs: rating tables, factors, formulas, eligibility rules, conditions, calculation steps, and dependencies. Manually transcribing them into rating requirements or configuration work is slow, error-prone, and hard to trace back to the source page. RateCraft speeds up the first draft and keeps every item linked to its evidence — but the analyst still decides what is correct.
